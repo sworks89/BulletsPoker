@@ -9,7 +9,10 @@
 //! - `Unknown`: we can't tell (e.g. the reply could not be decoded). Money stays
 //!   where it is and the op is re-sent, unchanged, by the retry loop. The ledger
 //!   either executes it now or answers `Duplicate`, so it can never run twice.
-//!   After the ledger's 24h dedup window an admin resolves it by hand.
+//!   A retry that fails does NOT settle it: the ledger may reject a retry (busy,
+//!   upgrading) without checking for the original, which may have gone through.
+//!   Only a success/`Duplicate` reply, or an admin after the ledger's 24h dedup
+//!   window has closed, settles an unknown op.
 //!
 //! Also here: the emergency pause switches and the solvency record.
 
@@ -21,6 +24,9 @@ const NANOS: u64 = 1_000_000_000;
 /// Unknown ops are retried while the ledger can still deduplicate them.
 pub const RETRY_WINDOW_NS: u64 = 23 * 60 * 60 * NANOS;
 pub const RETRY_EVERY_NS: u64 = 60 * NANOS;
+/// Admins may settle an unknown op by hand only once the ledger can no longer
+/// execute it: its 24h dedup window plus the allowed clock drift, with margin.
+pub const RESOLVE_AFTER_NS: u64 = (24 * 60 + 10) * 60 * NANOS;
 /// Recent op ids kept per player for their wallet history.
 const MY_OPS: usize = 20;
 
@@ -159,6 +165,11 @@ impl State {
         if self.pause.deposits {
             return Err(self.paused_msg("Deposits"));
         }
+        if amount == 0 {
+            return Err("Enter an amount".into());
+        }
+        // Without a profile the pulled ICP would have nowhere to go.
+        self.user(&user)?;
         self.check_not_banned(&user, now)?;
         let mut op = self.new_op(OpKind::Deposit, user, amount, to, now);
         op.from = Some(from);
@@ -188,6 +199,12 @@ impl State {
             OpStatus::Unknown { attempts, .. } => *attempts,
             _ => 0,
         };
+        let was_unknown = op.is_unknown();
+        let outcome = match outcome {
+            // A failed retry proves nothing about the original attempt.
+            Outcome::Failed(reason) if was_unknown => Outcome::Unknown(format!("Retry failed: {reason}")),
+            o => o,
+        };
         op.status = match outcome {
             Outcome::Ok(block) => {
                 self.apply_success(&op);
@@ -199,7 +216,9 @@ impl State {
                 OpStatus::Failed { reason }
             }
             Outcome::Unknown(reason) => {
-                self.counters.ledger_ops_unknown += 1;
+                if !was_unknown {
+                    self.counters.ledger_ops_unknown += 1;
+                }
                 OpStatus::Unknown { reason, attempts: attempts + 1 }
             }
         };
@@ -271,16 +290,38 @@ impl State {
     /// Admin resolution of an op the ledger can no longer deduplicate: the admin
     /// checked the ledger and says whether the transfer happened.
     pub fn resolve_op(&mut self, id: u64, executed: bool, block: Option<u64>, now: u64) -> R<LedgerOp> {
-        let op = self.stores.ledger_ops.get(&id).ok_or("No such operation")?;
+        let mut op = self.stores.ledger_ops.get(&id).ok_or("No such operation")?;
         if !op.is_unknown() {
             return Err("Only operations with an unknown outcome can be resolved".into());
         }
-        let outcome = if executed {
-            Outcome::Ok(block.ok_or("Give the ledger block index of the transfer")?)
-        } else {
-            Outcome::Failed("Resolved by admin: the transfer did not happen".into())
-        };
-        self.finish_op(id, outcome, now)
+        // Before then a retry (automatic or admin) could still execute it.
+        let ready_at = op.created_at_time.saturating_add(RESOLVE_AFTER_NS);
+        if now < ready_at {
+            let mins = (ready_at - now).div_ceil(60 * NANOS);
+            return Err(format!("The ledger can still execute this operation; settle it by hand in {mins} minutes"));
+        }
+        if executed {
+            return self.finish_op(id, Outcome::Ok(block.ok_or("Give the ledger block index of the transfer")?), now);
+        }
+        // finish_op keeps a failed *unknown* op unknown, so settle it directly.
+        self.apply_failure(&op);
+        self.counters.ledger_ops_failed += 1;
+        op.status = OpStatus::Failed { reason: "Resolved by admin: the transfer did not happen".into() };
+        op.updated_at = now;
+        self.unresolved.remove(&id);
+        self.stores.ledger_ops.insert(id, op.clone());
+        Ok(op)
+    }
+
+    /// ICP debited for outgoing transfers the ledger hasn't confirmed yet. It is
+    /// still in the canister's ledger account until the transfer executes.
+    pub fn outgoing_in_flight(&self) -> u64 {
+        self.unresolved
+            .iter()
+            .filter_map(|id| self.stores.ledger_ops.get(id))
+            .filter(|op| matches!(op.kind, OpKind::Withdraw | OpKind::Treasury))
+            .map(|op| op.amount + op.fee)
+            .sum()
     }
 
     /// The caller's most recent ledger operations, newest first.
@@ -393,10 +434,12 @@ mod tests {
         let op = s.begin_withdraw(p(1), acct(9), E8S, 0).unwrap();
         s.finish_op(op.id, Outcome::Unknown("timeout".into()), 1).unwrap();
         assert!(s.retryable_ops(RETRY_WINDOW_NS + 1).is_empty(), "outside the dedup window");
-        assert!(s.resolve_op(op.id, true, None, 2).is_err(), "needs a block index");
-        s.resolve_op(op.id, false, None, 2).unwrap();
+        assert!(s.resolve_op(op.id, false, None, RETRY_WINDOW_NS + 1).unwrap_err().contains("still execute"), "too early");
+        let late = RESOLVE_AFTER_NS;
+        assert!(s.resolve_op(op.id, true, None, late).is_err(), "needs a block index");
+        s.resolve_op(op.id, false, None, late).unwrap();
         assert_eq!(balance(&s), 10 * E8S, "refunded after the admin confirmed it never happened");
-        assert!(s.resolve_op(op.id, false, None, 3).is_err());
+        assert!(s.resolve_op(op.id, false, None, late + 1).is_err());
     }
 
     #[test]
@@ -423,9 +466,36 @@ mod tests {
         s.mark_interrupted_ops(10);
         assert_eq!(s.unresolved_ops().len(), 1);
         assert_eq!(s.retryable_ops(10 + RETRY_EVERY_NS).len(), 1);
-        s.finish_op(op.id, Outcome::Failed("InsufficientFunds".into()), 11).unwrap();
+        s.finish_op(op.id, Outcome::Ok(9), 11).unwrap();
         assert!(s.unresolved_ops().is_empty());
-        assert_eq!(balance(&s), 10 * E8S);
+        assert_eq!(balance(&s), 9 * E8S - 10_000);
+    }
+
+    #[test]
+    fn a_failed_retry_never_refunds_an_unknown_withdrawal() {
+        let mut s = setup();
+        let op = s.begin_withdraw(p(1), acct(9), E8S, 0).unwrap();
+        assert_eq!(s.outgoing_in_flight(), E8S + 10_000);
+        s.finish_op(op.id, Outcome::Unknown("reply lost".into()), 1).unwrap();
+        // The retry hits a busy or upgrading ledger: the first send may still have executed.
+        let after = s.finish_op(op.id, Outcome::Failed("Ledger rejected the call: CanisterError".into()), 2).unwrap();
+        assert!(after.is_unknown(), "still unknown, not failed");
+        assert_eq!(balance(&s), 9 * E8S - 10_000, "no refund");
+        assert_eq!(s.unresolved_ops().len(), 1);
+        assert_eq!(s.counters.ledger_ops_unknown, 1, "counted once");
+        // A later retry learns it went through.
+        s.finish_op(op.id, Outcome::Ok(42), 3).unwrap();
+        assert_eq!(balance(&s), 9 * E8S - 10_000);
+        assert_eq!(s.outgoing_in_flight(), 0);
+    }
+
+    #[test]
+    fn deposits_need_a_profile_and_an_amount() {
+        let mut s = setup();
+        let me = Account { owner: Principal::anonymous(), subaccount: None };
+        assert!(s.begin_deposit(p(7), acct(7), me, E8S, 0).is_err(), "no profile");
+        assert!(s.begin_deposit(p(1), acct(1), me, 0, 0).is_err(), "zero");
+        assert!(s.my_ops(p(1), 10).is_empty(), "nothing recorded");
     }
 
     #[test]

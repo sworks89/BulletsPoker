@@ -142,6 +142,18 @@ impl State {
         }
     }
 
+    /// Who may moderate whom: nobody acts on themselves, and only admins act on
+    /// admins or moderators.
+    pub fn check_mod_target(&self, caller: &Principal, caller_is_admin: bool, target: &Principal, target_is_admin: bool) -> R<()> {
+        if caller == target {
+            return Err("You can't moderate yourself".into());
+        }
+        if !caller_is_admin && (target_is_admin || self.is_moderator(target)) {
+            return Err("Only admins can moderate admins or moderators".into());
+        }
+        Ok(())
+    }
+
     pub fn is_moderator(&self, p: &Principal) -> bool {
         self.moderators.contains(p)
     }

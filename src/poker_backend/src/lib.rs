@@ -80,14 +80,25 @@ fn admin() -> R<Principal> {
     Ok(p)
 }
 
-/// Controllers and appointed moderators.
+/// Controllers and appointed moderators (a suspended moderator can't moderate).
 fn moderator() -> R<Principal> {
     let p = ic_cdk::api::msg_caller();
-    if ic_cdk::api::is_controller(&p) || with(|s| s.is_moderator(&p)) {
-        Ok(p)
-    } else {
-        Err("Moderators only".into())
+    if ic_cdk::api::is_controller(&p) {
+        return Ok(p);
     }
+    if !with(|s| s.is_moderator(&p)) {
+        return Err("Moderators only".into());
+    }
+    with(|s| s.check_not_banned(&p, now()))?;
+    Ok(p)
+}
+
+/// A moderator acting on `target`: see `State::check_mod_target`.
+fn moderator_for(target: Principal) -> R<Principal> {
+    let p = moderator()?;
+    let (caller_admin, target_admin) = (ic_cdk::api::is_controller(&p), ic_cdk::api::is_controller(&target));
+    with(|s| s.check_mod_target(&p, caller_admin, &target, target_admin))?;
+    Ok(p)
 }
 
 /// Largest argument any public method needs (chat, notes and reports are a few KB).
@@ -190,20 +201,48 @@ async fn retry_unknown_ops() {
     if RETRYING.get() {
         return;
     }
-    RETRYING.set(true);
+    // Cleared on drop, so a trap mid-loop can't leave retries switched off.
+    let _running = FlagGuard::set(&RETRYING);
     for op in with(|s| s.retryable_ops(now())) {
         let _ = run_op(op).await;
     }
-    RETRYING.set(false);
+}
+
+/// Sets a thread-local flag and clears it when dropped (ic-cdk drops a
+/// trapped call's locals in its cleanup step).
+struct FlagGuard(&'static std::thread::LocalKey<Cell<bool>>);
+
+impl FlagGuard {
+    fn set(flag: &'static std::thread::LocalKey<Cell<bool>>) -> Self {
+        flag.set(true);
+        FlagGuard(flag)
+    }
+}
+
+impl Drop for FlagGuard {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
 }
 
 async fn check_solvency() -> R<SolvencyReport> {
     let ledger = with(|s| s.ledger);
-    // Snapshot liabilities before reading the balance: anything settling during
-    // the call can only make the result look better, never trigger a false alarm.
-    let liabilities = with(|s| s.house_stats().liabilities_total);
-    let balance = ledger::balance_of(ledger, main_account()).await?;
-    Ok(with_mut(|s| s.record_solvency(balance, liabilities, now())))
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        // Transfers can settle while we wait for the balance: a withdrawal that
+        // executes counts in the "before" figure but not the balance, and a
+        // deposit credited before the reply counts "after" but not in the
+        // balance. Compare against the smaller of the two snapshots...
+        let before = with(|s| s.house_stats().liabilities_total);
+        let balance = ledger::balance_of(ledger, main_account()).await?;
+        let liabilities = with(|s| s.house_stats().liabilities_total).min(before);
+        // ...and only pause withdrawals if a second, independent check agrees.
+        let last = attempt >= 2 || balance >= liabilities;
+        if last {
+            return Ok(with_mut(|s| s.record_solvency(balance, liabilities, now())));
+        }
+    }
 }
 
 /// Runs every second: enforces action clocks and deals new hands.
@@ -821,27 +860,28 @@ fn mod_open_reports() -> R<Vec<Report>> {
 
 #[update]
 fn mod_resolve_report(id: u64, action: ModAction, note: String) -> R<()> {
-    let p = moderator()?;
+    let target = with(|s| s.stores.reports.get(&id).map(|r| r.target)).ok_or("No such report")?;
+    let p = moderator_for(target)?;
     with_mut(|s| s.resolve_report(p, id, action, note, now()))
 }
 
 /// Mutes a player in every chat for `hours` (0 lifts the mute).
 #[update]
 fn mod_mute(target: Principal, hours: u32) -> R<()> {
-    let p = moderator()?;
+    let p = moderator_for(target)?;
     with_mut(|s| s.mute(p, target, hours, now()))
 }
 
 /// Suspends a player for `hours` (0 = permanent). They keep access to withdrawals.
 #[update]
 fn mod_ban(target: Principal, hours: u32, reason: String) -> R<()> {
-    let p = moderator()?;
+    let p = moderator_for(target)?;
     with_mut(|s| s.ban(p, target, hours, &reason, now()))
 }
 
 #[update]
 fn mod_unban(target: Principal) -> R<()> {
-    let p = moderator()?;
+    let p = moderator_for(target)?;
     with_mut(|s| s.unban(p, target, now()))
 }
 

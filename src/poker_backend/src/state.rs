@@ -1557,10 +1557,15 @@ impl State {
     }
 
     pub fn sit_out(&mut self, caller: Principal, id: u64, out: bool, now: u64) -> R<()> {
+        if !out {
+            // Suspended players are sat out of tournaments and must stay out.
+            self.check_not_banned(&caller, now)?;
+        }
         self.table_mut(id)?.set_sitting_out(&caller, out, now)
     }
 
     pub fn act(&mut self, caller: Principal, id: u64, action: Action, now: u64) -> R<()> {
+        self.check_not_banned(&caller, now)?;
         self.table_mut(id)?.act(&caller, action, now)?;
         self.after_table_change(id, now);
         Ok(())
@@ -2668,6 +2673,37 @@ mod tests {
     }
 
     #[test]
+    fn entry_fees_are_held_until_the_start() {
+        let mut s = setup();
+        many_players(&mut s, 3);
+        let before = s.house_stats().liabilities_total;
+        let id = open_tournament(&mut s, "ICP Nightly");
+        // Two register: their fees are held by the event, not the treasury.
+        for k in 10..12 {
+            s.register_tournament(p(k), id, SEC).unwrap();
+        }
+        assert_eq!(s.treasury, 0);
+        assert_eq!(s.tournaments[&id].fees_held, 2 * (E8S / 40));
+        assert_eq!(s.house_stats().liabilities_total, before);
+        // One unregisters and gets everything back.
+        s.unregister_tournament(p(11), id).unwrap();
+        assert_eq!(s.users.get(&p(11)).unwrap().balance, 10 * E8S);
+        // Too few players at the start: cancelled and refunded, treasury untouched (it used to underflow here).
+        let start_at = s.tournaments[&id].start_at;
+        s.tick(start_at);
+        assert_eq!(s.tournaments[&id].status, crate::tournament::TournamentStatus::Cancelled);
+        assert_eq!(s.users.get(&p(10)).unwrap().balance, 10 * E8S);
+        assert_eq!(s.treasury, 0);
+        assert_eq!(s.house_stats().liabilities_total, before);
+
+        // When an event does start, the fees move to the treasury.
+        let (id, _) = start_scheduled(&mut s, "ICP Nightly", 10..13);
+        assert_eq!(s.tournaments[&id].fees_held, 0);
+        assert_eq!(s.treasury, 3 * (E8S / 40));
+        assert_eq!(s.house_stats().liabilities_total, before);
+    }
+
+    #[test]
     fn rebuys_charge_no_fee() {
         let mut s = setup();
         many_players(&mut s, 3);
@@ -3022,6 +3058,35 @@ mod tests {
         assert!(s.join_table(p(3), 1, 0, 1_000, None, u64::MAX / 2).is_err(), "permanent");
         s.unban(p(200), p(3), 0).unwrap();
         s.join_table(p(3), 1, 0, 1_000, None, 0).unwrap();
+    }
+
+    #[test]
+    fn suspended_players_stay_out_of_tournaments() {
+        let mut s = setup();
+        many_players(&mut s, 3);
+        let (id, start_at) = start_scheduled(&mut s, "Chip Rebuy Madness", 10..13);
+        let tid = s.tournaments[&id].tables[0];
+        s.ban(p(200), p(10), 24, "collusion", start_at).unwrap();
+        let seat = s.tables[&tid].seat_of(&p(10)).unwrap();
+        assert!(s.tables[&tid].seats[seat].as_ref().unwrap().sitting_out);
+        assert!(s.sit_out(p(10), tid, false, start_at + 1).unwrap_err().contains("suspended"));
+        assert!(s.rebuy(p(10), id, start_at + 1).unwrap_err().contains("suspended"));
+        assert!(s.addon(p(10), id, start_at + 1).unwrap_err().contains("suspended"));
+        assert!(s.act(p(10), tid, Action::Fold, start_at + 1).unwrap_err().contains("suspended"));
+        s.sit_out(p(10), tid, true, start_at + 1).unwrap(); // staying out is always allowed
+    }
+
+    #[test]
+    fn moderators_cannot_act_on_staff_or_themselves() {
+        let mut s = setup();
+        s.moderators.insert(p(1));
+        s.moderators.insert(p(2));
+        assert!(s.check_mod_target(&p(1), false, &p(1), false).is_err(), "self");
+        assert!(s.check_mod_target(&p(1), false, &p(2), false).is_err(), "another moderator");
+        assert!(s.check_mod_target(&p(1), false, &p(3), true).is_err(), "an admin");
+        s.check_mod_target(&p(1), false, &p(3), false).unwrap();
+        s.check_mod_target(&p(200), true, &p(2), false).unwrap();
+        assert!(s.check_mod_target(&p(200), true, &p(200), true).is_err());
     }
 
     #[test]

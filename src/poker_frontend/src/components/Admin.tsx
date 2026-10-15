@@ -16,6 +16,9 @@ import {
 } from '../ic';
 import { countdown, icp, parseIcp, shortPrincipal, timeAgo } from '../format';
 
+/** Matches the backend's RESOLVE_AFTER_NS: the ledger's 24h dedup window plus margin. */
+const SETTLE_AFTER_MS = (24 * 60 + 10) * 60_000;
+
 type Tab = 'overview' | 'reports' | 'players' | 'money' | 'settings' | 'audit';
 
 const TABS: { key: Tab; label: string; adminOnly: boolean }[] = [
@@ -540,25 +543,36 @@ function Money() {
       <div className="panel span2">
         <div className="panel-title">Unconfirmed ledger operations ({ops.length})</div>
         {ops.length === 0 && <p className="muted small">All deposits and withdrawals are settled.</p>}
-        {ops.map((op) => (
-          <div key={String(op.id)} className="op-row">
-            <div className="grow small">
-              <b>#{String(op.id)} {variant(op.kind)}</b> · {icp(op.amount)} ICP · {shortPrincipal(op.user)} → {shortPrincipal(op.to.owner)} ·{' '}
-              <span className="muted">{timeAgo(op.created_at_time)} ago</span>
+        {ops.map((op) => {
+          // The backend refuses manual settlement while the ledger could still execute it.
+          const settleAt = Number(op.created_at_time / 1_000_000n) + SETTLE_AFTER_MS;
+          return (
+            <div key={String(op.id)} className="op-row">
+              <div className="grow small">
+                <b>#{String(op.id)} {variant(op.kind)}</b> · {icp(op.amount)} ICP · {shortPrincipal(op.user)} → {shortPrincipal(op.to.owner)} ·{' '}
+                <span className="muted">{timeAgo(op.created_at_time)} ago</span>
+              </div>
+              <button className="btn ghost small" onClick={() => run(async () => { unwrap(await backend.admin_retry_op(op.id)); await load(); }, 'Re-sent')}>
+                Retry now
+              </button>
+              {Date.now() >= settleAt ? (
+                <>
+                  <button className="btn ghost small" onClick={() => resolveOp(op, true)}>
+                    It went through
+                  </button>
+                  <button className="btn ghost small" onClick={() => resolveOp(op, false)}>
+                    It failed
+                  </button>
+                </>
+              ) : (
+                <span className="muted small">settle by hand in {countdown(BigInt(settleAt) * 1_000_000n)}</span>
+              )}
             </div>
-            <button className="btn ghost small" onClick={() => run(async () => { unwrap(await backend.admin_retry_op(op.id)); await load(); }, 'Re-sent')}>
-              Retry now
-            </button>
-            <button className="btn ghost small" onClick={() => resolveOp(op, true)}>
-              It went through
-            </button>
-            <button className="btn ghost small" onClick={() => resolveOp(op, false)}>
-              It failed
-            </button>
-          </div>
-        ))}
+          );
+        })}
         <p className="muted small">
-          These retry automatically every minute for 24 hours. Only settle one by hand after checking the ledger: the memo is <code>bp-op:&lt;id&gt;</code>.
+          These retry automatically every minute for 23 hours. A failed retry never refunds, because the first attempt may have gone through. Once the
+          ledger's 24-hour window has passed, check the ledger (the memo is <code>bp-op:&lt;id&gt;</code>) and settle it by hand.
         </p>
       </div>
     </div>

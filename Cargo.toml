@@ -6,3 +6,5 @@ resolver = "2"
 opt-level = "s"
 lto = true
 codegen-units = 1
+# Money arithmetic must never wrap silently: an overflow traps and rolls back the call.
+overflow-checks = true

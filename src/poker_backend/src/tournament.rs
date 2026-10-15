@@ -92,6 +92,10 @@ pub struct Tournament {
     /// Prize for each finishing place, 1st first.
     pub payouts: Vec<u64>,
     pub paid: u64,
+    /// ICP entry fees from players registered before the start. They stay
+    /// refundable (and counted as owed) until the event starts, when they move
+    /// to the treasury.
+    pub fees_held: u64,
 }
 
 // ------------------------------------------------------------------- views
@@ -415,6 +419,7 @@ impl State {
                     template_index: idx as u32,
                     prize_pool: 0,
                     collected: 0,
+                    fees_held: 0,
                     template: tpl,
                     status: TournamentStatus::Registering,
                     start_at,
@@ -461,9 +466,14 @@ impl State {
             return Err("Tournament is full".into());
         }
         let (currency, buy_in, fee) = (t.template.currency, t.template.buy_in, t.template.fee);
-        self.debit_in(&caller, currency, buy_in + fee)?;
+        self.debit_in(&caller, currency, buy_in.checked_add(fee).ok_or("Amount too large")?)?;
         if currency == Currency::Icp {
-            self.treasury += fee;
+            if late {
+                // Late entries can't be refunded: the fee is the house's at once.
+                self.treasury += fee;
+            } else {
+                self.tournament_mut(id)?.fees_held += fee;
+            }
         }
         let t = self.tournament_mut(id)?;
         t.collected += buy_in;
@@ -498,16 +508,19 @@ impl State {
         }
         let pos = t.entrants.iter().position(|e| e.player == caller).ok_or("You are not registered")?;
         t.entrants.remove(pos);
-        t.collected -= t.template.buy_in;
+        t.collected = t.collected.saturating_sub(t.template.buy_in);
         t.prize_pool = t.collected;
-        let (currency, buy_in, fee) = (t.template.currency, t.template.buy_in, t.template.fee);
-        self.refund_entry(&caller, currency, buy_in, fee);
+        self.refund_entry(id, &caller);
         Ok(())
     }
 
-    fn refund_entry(&mut self, p: &Principal, currency: Currency, buy_in: u64, fee: u64) {
+    /// Returns a pre-start entry: the buy-in and the fee held for it.
+    fn refund_entry(&mut self, id: u64, p: &Principal) {
+        let Some(t) = self.tournaments.get_mut(&id) else { return };
+        let (currency, buy_in, mut fee) = (t.template.currency, t.template.buy_in, t.template.fee);
         if currency == Currency::Icp {
-            self.treasury -= fee;
+            fee = fee.min(t.fees_held);
+            t.fees_held -= fee;
         }
         let _ = self.credit_in(p, currency, buy_in + fee);
     }
@@ -516,7 +529,7 @@ impl State {
         let t = self.tournaments.get(&id).unwrap().clone();
         if (t.entrants.len() as u32) < t.template.min_players {
             for e in &t.entrants {
-                self.refund_entry(&e.player, t.template.currency, t.template.buy_in, t.template.fee);
+                self.refund_entry(id, &e.player);
             }
             let t = self.tournaments.get_mut(&id).unwrap();
             t.status = TournamentStatus::Cancelled;
@@ -555,11 +568,14 @@ impl State {
         }
         let t = self.tournaments.get_mut(&id).unwrap();
         t.status = TournamentStatus::Running;
+        // Entries are final now: the fees become house revenue.
+        let fees = std::mem::take(&mut t.fees_held);
         t.started_at = now;
         t.level = 0;
         t.level_started_at = now;
         t.tables = table_ids;
         t.recompute_payouts();
+        self.treasury += fees;
         let name = t.template.name.clone();
         self.post(Channel::Lobby, None, String::new(), format!("🏁 {name} is under way with {n} players"), MessageKind::System, now);
     }
@@ -622,6 +638,7 @@ impl State {
     /// Buys a fresh starting stack during the rebuy period: when busted (within
     /// the rebuy window) or when at or below the starting stack between hands.
     pub fn rebuy(&mut self, caller: Principal, id: u64, now: u64) -> R<()> {
+        self.check_not_banned(&caller, now)?;
         let t = self.tournaments.get(&id).ok_or("No such tournament")?;
         if !t.rebuys_open() {
             return Err("The rebuy period is over".into());
@@ -679,6 +696,7 @@ impl State {
 
     /// One-time add-on at the end of the rebuy period. The whole price goes into the pool.
     pub fn addon(&mut self, caller: Principal, id: u64, now: u64) -> R<()> {
+        self.check_not_banned(&caller, now)?;
         let t = self.tournaments.get(&id).ok_or("No such tournament")?;
         if t.template.addon_cost == 0 {
             return Err("This tournament has no add-on".into());
@@ -1105,7 +1123,7 @@ impl State {
             .values()
             .filter(|t| t.template.currency == Currency::Icp)
             .filter(|t| matches!(t.status, TournamentStatus::Registering | TournamentStatus::Running))
-            .map(|t| t.prize_pool - t.paid)
+            .map(|t| t.prize_pool.saturating_sub(t.paid) + t.fees_held)
             .sum()
     }
 

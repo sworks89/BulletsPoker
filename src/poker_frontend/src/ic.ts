@@ -9,8 +9,11 @@ export type Backend = ActorSubclass<_SERVICE>;
 export type * from './declarations/poker_backend/poker_backend.did';
 
 const env = import.meta.env;
-export const network: string = env.DFX_NETWORK ?? 'local';
-const isLocal = network !== 'ic';
+// Fail closed: only an explicit `local` build talks to a local replica and
+// trusts its root key. Anything else (including a build with no dfx env) is
+// mainnet, where the agent verifies responses against the real IC root key.
+export const network: string = env.DFX_NETWORK ?? 'ic';
+const isLocal = network === 'local';
 const host = isLocal ? 'http://127.0.0.1:4943' : 'https://icp-api.io';
 
 export const backendId: string = env.CANISTER_ID_POKER_BACKEND ?? env.VITE_BACKEND_CANISTER_ID ?? '';
@@ -74,7 +77,10 @@ export interface Ledger {
 }
 
 export async function makeActors(identity?: Identity): Promise<{ backend: Backend; ledger: Ledger }> {
-  const agent = await HttpAgent.create({ host, identity, shouldFetchRootKey: isLocal });
+  if (!backendId) throw new Error('This build has no backend canister id. Build it with dfx (dfx deploy / dfx build).');
+  // Never fetch a root key from anything but a replica on this machine.
+  const fetchRootKey = isLocal && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(host);
+  const agent = await HttpAgent.create({ host, identity, shouldFetchRootKey: fetchRootKey });
   const backend = Actor.createActor<_SERVICE>(idlFactory, { agent, canisterId: backendId });
   const ledger = Actor.createActor(ledgerIdl, { agent, canisterId: ledgerId }) as unknown as Ledger;
   return { backend, ledger };

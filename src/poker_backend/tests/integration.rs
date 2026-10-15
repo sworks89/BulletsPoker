@@ -352,6 +352,15 @@ fn ingress_filter_moderation_and_metrics() {
     assert!(view.unwrap().chat_muted_until > 0);
     let denied: R<poker_backend::moderation::ModPlayerView> = env.query(bob, "mod_get_player", encode_one(alice).unwrap());
     assert!(denied.is_err(), "queries check the role too");
+    // Moderators can't act on themselves or other staff.
+    let r: R<()> = env.update(env.admin, "admin_set_moderator", encode_args((bob, true)).unwrap());
+    r.unwrap();
+    let r: R<()> = env.update(alice, "mod_ban", encode_args((bob, 0u32, "rival".to_string())).unwrap());
+    assert!(r.unwrap_err().contains("Only admins"));
+    let r: R<()> = env.update(alice, "mod_unban", encode_one(alice).unwrap());
+    assert!(r.unwrap_err().contains("yourself"));
+    let r: R<()> = env.update(env.admin, "admin_set_moderator", encode_args((bob, false)).unwrap());
+    r.unwrap();
     let r: R<()> = env.update(bob, "send_chat", encode_args((poker_backend::state::Channel::Lobby, "hi".to_string())).unwrap());
     assert!(r.unwrap_err().contains("muted"));
 
@@ -383,5 +392,5 @@ fn ingress_filter_moderation_and_metrics() {
     assert_eq!(get("/health").status_code, 200);
     assert_eq!(get("/nope").status_code, 404);
     let log: R<Vec<poker_backend::moderation::AuditEntry>> = env.query(env.admin, "admin_audit_log", encode_one(10u32).unwrap());
-    assert_eq!(log.unwrap().len(), 2, "moderator appointment and the mute");
+    assert_eq!(log.unwrap().len(), 4, "two moderator appointments, the mute and a removal");
 }
