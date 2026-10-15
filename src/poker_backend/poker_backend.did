@@ -18,6 +18,8 @@ type ChatMessage = record {
   "text" : text;
   time : nat64;
 };
+// What a table plays for: real ICP (1 chip = 1 e8s) or free play chips.
+type Currency = variant { Icp; Chips };
 type DepositInfo = record {
   fee : nat64;
   // Legacy account identifier for exchanges / older wallets.
@@ -33,6 +35,32 @@ type FriendInfo = record {
   avatar : text;
   online : bool;
 };
+type HandPlayer = record {
+  won : nat64;
+  username : text;
+  player : principal;
+  // Hole cards. Stored for everyone; views only reveal your own and shown hands.
+  cards : blob;
+  seat : nat8;
+  committed : nat64;
+  shown : bool;
+};
+type HandRecord = record {
+  id : nat64;
+  log : vec LogEntry;
+  pot : nat64;
+  small_blind : nat64;
+  hand_no : nat64;
+  rake : nat64;
+  time : nat64;
+  table_id : nat64;
+  players : vec HandPlayer;
+  currency : Currency;
+  big_blind : nat64;
+  board : blob;
+  button : nat8;
+  table_name : text;
+};
 type HandResult = record {
   pot : nat64;
   hand_no : nat64;
@@ -41,6 +69,17 @@ type HandResult = record {
   players : vec PlayerResult;
   board : blob;
   winners : vec Winner;
+};
+type HandSummary = record {
+  id : nat64;
+  // What the viewer won minus what they put in.
+  net : int64;
+  pot : nat64;
+  my_cards : blob;
+  time : nat64;
+  currency : Currency;
+  board : blob;
+  table_name : text;
 };
 type HouseStats = record {
   // What the canister's main ledger account must hold to cover everything.
@@ -51,7 +90,7 @@ type HouseStats = record {
   treasury : nat64;
 };
 type InitArgs = record { ledger : opt principal; ledger_fee : opt nat64 };
-type ItemKind = variant { CardBack; Avatar; Gift };
+type ItemKind = variant { CardBack; Throwable; Avatar; Gift };
 type LeaderboardEntry = record {
   id : principal;
   username : text;
@@ -59,7 +98,15 @@ type LeaderboardEntry = record {
   stats : Stats;
   avatar : text;
 };
-type MessageKind = variant { System; Gift; Text };
+// One line of a hand's action log, used for hand histories and replays.
+type LogEntry = record {
+  seat : opt nat8;
+  "text" : text;
+  phase : Phase;
+  // The player's total bet on this street after the action, or the amount won/returned.
+  amount : nat64;
+};
+type MessageKind = variant { System; Gift; Text; Throw };
 type Phase = variant { Flop; Turn; River; HandOver; Waiting; PreFlop };
 type PlayerResult = record {
   won : nat64;
@@ -73,12 +120,19 @@ type Profile = record {
   friend_requests : vec principal;
   username : text;
   balance : nat64;
+  chips : nat64;
   inventory : vec nat32;
+  // When the next daily chip bonus can be claimed (ns).
+  next_daily_at : nat64;
   created_at : nat64;
   level : nat32;
+  // Size of the next daily bonus.
+  next_daily_amount : nat64;
   stats : Stats;
+  settings : Settings;
   card_back : nat32;
   friends : vec principal;
+  daily_streak : nat32;
   avatar : nat32;
 };
 type PublicProfile = record {
@@ -114,6 +168,15 @@ type SeatView = record {
   folded : bool;
   avatar : text;
 };
+type Settings = record {
+  // Refill your stack to the table maximum after each hand when it drops below half.
+  auto_top_up : bool;
+  // Don't show losing hands at showdown.
+  auto_muck : bool;
+  four_color_deck : bool;
+  sound : bool;
+  show_throwables : bool;
+};
 type ShownHand = record {
   player : principal;
   cards : blob;
@@ -121,8 +184,12 @@ type ShownHand = record {
   seat : nat8;
 };
 type Stats = record {
+  // Largest ICP pot won, in e8s.
   biggest_pot_won : nat64;
   hands_won : nat64;
+  // Net play chips won or lost at chip tables.
+  chip_net : int64;
+  // Net ICP won or lost at ICP tables, in e8s.
   net_winnings : int64;
   hands_played : nat64;
 };
@@ -134,6 +201,8 @@ type StoreItem = record {
   name : text;
   description : text;
   available : bool;
+  // Price in play chips. Zero means it can't be bought with chips.
+  chip_price : nat64;
   // Price in e8s. Zero means free.
   price : nat64;
 };
@@ -146,6 +215,7 @@ type TableConfig = record {
   rake_bps : nat16;
   rake_cap : nat64;
   max_seats : nat8;
+  currency : Currency;
   big_blind : nat64;
   max_buy_in : nat64;
 };
@@ -157,6 +227,7 @@ type TableSummary = record {
   max_seats : nat8;
   avg_pot : nat64;
   players : nat8;
+  currency : Currency;
   big_blind : nat64;
   phase : Phase;
   max_buy_in : nat64;
@@ -174,11 +245,20 @@ type TableView = record {
   action_deadline : nat64;
   to_act : opt nat8;
   current_bet : nat64;
+  // Items thrown in the last few seconds, for clients to animate.
+  throws : vec ThrowEvent;
   board : blob;
   phase : Phase;
   config : TableConfig;
   button : nat8;
   max_raise_to : nat64;
+};
+type ThrowEvent = record {
+  id : nat64;
+  from_seat : nat8;
+  to_seat : nat8;
+  icon : text;
+  time : nat64;
 };
 type Winner = record {
   player : principal;
@@ -194,7 +274,9 @@ service : (opt InitArgs) -> {
   admin_set_item_available : (nat32, bool) -> (Result);
   // Withdraws house revenue (rake and store sales) from the treasury.
   admin_withdraw_treasury : (Account, nat64) -> (Result_2);
-  buy_item : (nat32) -> (Result);
+  buy_item : (nat32, Currency) -> (Result);
+  // Claims the daily free play-chip bonus (bigger on consecutive days).
+  claim_daily_chips : () -> (Result_2);
   // Deposit via plain transfer: send ICP to your deposit account (see
   // `get_deposit_info`) from any wallet or exchange, then call this.
   claim_deposit : () -> (Result_2);
@@ -207,6 +289,10 @@ service : (opt InitArgs) -> {
   get_deposit_info : () -> (DepositInfo) query;
   get_dms : (principal, nat64) -> (vec ChatMessage) query;
   get_friends : () -> (vec FriendInfo) query;
+  // Full replay of a hand you played in.
+  get_hand : (nat64) -> (opt HandRecord) query;
+  // Your most recent hands, newest first.
+  get_hand_history : (nat32) -> (vec HandSummary) query;
   get_leaderboard : () -> (vec LeaderboardEntry) query;
   get_my_profile : () -> (opt Profile) query;
   get_profile : (principal) -> (opt PublicProfile) query;
@@ -222,10 +308,12 @@ service : (opt InitArgs) -> {
   send_chat : (Channel, text) -> (Result);
   send_dm : (principal, text) -> (Result);
   send_friend_request : (principal) -> (Result);
-  send_gift : (nat64, principal, nat32) -> (Result);
+  send_gift : (nat64, principal, nat32, Currency) -> (Result);
   set_status : (text) -> (Result);
   sit_out : (nat64, bool) -> (Result);
+  throw_item : (nat64, principal, nat32, Currency) -> (Result);
   top_up : (nat64, nat64) -> (Result);
+  update_settings : (Settings) -> (Result);
   whoami : () -> (principal) query;
   // Sends `amount` e8s to `to`. The ledger fee is charged on top.
   withdraw : (Account, nat64) -> (Result_2);

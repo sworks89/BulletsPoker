@@ -1,14 +1,14 @@
 import { useState } from 'react';
 import { useApp, usePoll } from '../context';
 import type { FriendInfo, TableSummary } from '../ic';
-import { icp } from '../format';
+import { amount, isChips } from '../format';
 import { Chat } from './Chat';
 
 export function Lobby() {
   const { backend, go, profile } = useApp();
   const [tables, setTables] = useState<TableSummary[]>([]);
   const [friends, setFriends] = useState<FriendInfo[]>([]);
-  const [filter, setFilter] = useState<'all' | 'micro' | 'low' | 'high'>('all');
+  const [mode, setMode] = useState<'chips' | 'icp'>('chips');
 
   usePoll(
     async () => {
@@ -20,13 +20,7 @@ export function Lobby() {
     [backend, profile?.id.toText()],
   );
 
-  const shown = tables.filter((t) => {
-    const bb = Number(t.big_blind);
-    if (filter === 'micro') return bb <= 20_000;
-    if (filter === 'low') return bb > 20_000 && bb <= 200_000;
-    if (filter === 'high') return bb > 200_000;
-    return true;
-  });
+  const shown = tables.filter((t) => isChips(t.currency) === (mode === 'chips'));
 
   return (
     <div className="lobby">
@@ -34,18 +28,24 @@ export function Lobby() {
         <div className="panel-title row">
           <span>Cash Tables · No-Limit Hold'em</span>
           <div className="tabs">
-            {(['all', 'micro', 'low', 'high'] as const).map((f) => (
-              <button key={f} className={`chip ${filter === f ? 'active' : ''}`} onClick={() => setFilter(f)}>
-                {f}
-              </button>
-            ))}
+            <button className={`chip ${mode === 'chips' ? 'active' : ''}`} onClick={() => setMode('chips')}>
+              🎲 Play chips
+            </button>
+            <button className={`chip ${mode === 'icp' ? 'active' : ''}`} onClick={() => setMode('icp')}>
+              ∞ ICP
+            </button>
           </div>
         </div>
+        {mode === 'chips' ? (
+          <p className="muted small">Free play chips: no deposit needed. You get 20,000 to start and a daily bonus that grows with your streak.</p>
+        ) : (
+          <p className="muted small">Real ICP tables. Deposit from the Wallet page; 2.5% rake (capped) applies only when there's a flop.</p>
+        )}
         <table className="grid">
           <thead>
             <tr>
               <th>Table</th>
-              <th>Stakes (ICP)</th>
+              <th>Stakes ({mode === 'chips' ? 'chips' : 'ICP'})</th>
               <th>Buy-in</th>
               <th>Players</th>
               <th>Last pot</th>
@@ -60,10 +60,10 @@ export function Lobby() {
                   {t.max_seats === 2 && <span className="tag">HU</span>}
                 </td>
                 <td>
-                  {icp(t.small_blind)} / {icp(t.big_blind)}
+                  {amount(t.small_blind, t.currency)} / {amount(t.big_blind, t.currency)}
                 </td>
                 <td>
-                  {icp(t.min_buy_in)} – {icp(t.max_buy_in)}
+                  {amount(t.min_buy_in, t.currency)} – {amount(t.max_buy_in, t.currency)}
                 </td>
                 <td>
                   <div className="seatbar">
@@ -73,7 +73,7 @@ export function Lobby() {
                   </div>
                   {t.players}/{t.max_seats}
                 </td>
-                <td>{t.avg_pot > 0n ? icp(t.avg_pot, 4) : '—'}</td>
+                <td>{t.avg_pot > 0n ? amount(t.avg_pot, t.currency) : '—'}</td>
                 <td>
                   <button className="btn small">{t.players >= t.max_seats ? 'Watch' : 'Join'}</button>
                 </td>

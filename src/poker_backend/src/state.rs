@@ -3,7 +3,7 @@
 //! caller and the current time are passed in) so it can be unit tested
 //! natively; `lib.rs` wraps it in canister endpoints.
 
-use crate::table::{Action, HandResult, Phase, Table, TableConfig};
+use crate::table::{Action, Currency, HandResult, LogEntry, Phase, Table, TableConfig};
 use candid::{CandidType, Deserialize, Principal};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -14,6 +14,15 @@ const MAX_CHAT_LEN: usize = 280;
 const CHAT_COOLDOWN_NS: u64 = 700_000_000;
 const GIFT_DURATION_NS: u64 = 10 * 60 * 1_000_000_000;
 const ONLINE_WINDOW_NS: u64 = 5 * 60 * 1_000_000_000;
+const DAY_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
+const THROW_COOLDOWN_NS: u64 = 3_000_000_000;
+/// How long a throw stays in the table view so every client sees it.
+const THROW_VISIBLE_NS: u64 = 8_000_000_000;
+const HISTORY_PER_USER: usize = 50;
+const HISTORY_MAX: usize = 20_000;
+pub const SIGNUP_CHIPS: u64 = 20_000;
+pub const DAILY_CHIPS: u64 = 5_000;
+const MAX_STREAK: u32 = 7;
 
 pub type R<T> = Result<T, String>;
 
@@ -21,8 +30,35 @@ pub type R<T> = Result<T, String>;
 pub struct Stats {
     pub hands_played: u64,
     pub hands_won: u64,
+    /// Largest ICP pot won, in e8s.
     pub biggest_pot_won: u64,
+    /// Net ICP won or lost at ICP tables, in e8s.
     pub net_winnings: i64,
+    /// Net play chips won or lost at chip tables.
+    pub chip_net: i64,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct Settings {
+    pub four_color_deck: bool,
+    /// Don't show losing hands at showdown.
+    pub auto_muck: bool,
+    /// Refill your stack to the table maximum after each hand when it drops below half.
+    pub auto_top_up: bool,
+    pub sound: bool,
+    pub show_throwables: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            four_color_deck: false,
+            auto_muck: true,
+            auto_top_up: false,
+            sound: true,
+            show_throwables: true,
+        }
+    }
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -36,8 +72,16 @@ pub struct ActiveGift {
 pub struct User {
     pub username: String,
     pub status: String,
-    /// Wallet balance in e8s (chips not sitting on a table).
+    /// Wallet balance in e8s (ICP not sitting on a table).
     pub balance: u64,
+    /// Free play chips not sitting on a table.
+    pub chips: u64,
+    pub settings: Settings,
+    /// Hand ids of this player's most recent hands, oldest first.
+    pub history: VecDeque<u64>,
+    pub daily_streak: u32,
+    pub last_daily_at: u64,
+    pub last_throw_at: u64,
     pub avatar: u32,
     pub card_back: u32,
     pub inventory: Vec<u32>,
@@ -56,6 +100,7 @@ pub enum ItemKind {
     Avatar,
     CardBack,
     Gift,
+    Throwable,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -65,6 +110,8 @@ pub struct StoreItem {
     pub kind: ItemKind,
     /// Price in e8s. Zero means free.
     pub price: u64,
+    /// Price in play chips. Zero means it can't be bought with chips.
+    pub chip_price: u64,
     /// Emoji or image URL rendered by the frontend.
     pub icon: String,
     pub description: String,
@@ -76,6 +123,7 @@ pub enum MessageKind {
     Text,
     System,
     Gift,
+    Throw,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -86,6 +134,58 @@ pub struct ChatMessage {
     pub text: String,
     pub time: u64,
     pub kind: MessageKind,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct ThrowEvent {
+    pub id: u64,
+    pub from_seat: u8,
+    pub to_seat: u8,
+    pub icon: String,
+    pub time: u64,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct HandPlayer {
+    pub seat: u8,
+    pub player: Principal,
+    pub username: String,
+    /// Hole cards. Stored for everyone; views only reveal your own and shown hands.
+    pub cards: Vec<u8>,
+    pub shown: bool,
+    pub committed: u64,
+    pub won: u64,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct HandRecord {
+    pub id: u64,
+    pub table_id: u64,
+    pub table_name: String,
+    pub currency: Currency,
+    pub small_blind: u64,
+    pub big_blind: u64,
+    pub hand_no: u64,
+    pub time: u64,
+    pub button: u8,
+    pub board: Vec<u8>,
+    pub pot: u64,
+    pub rake: u64,
+    pub players: Vec<HandPlayer>,
+    pub log: Vec<LogEntry>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct HandSummary {
+    pub id: u64,
+    pub table_name: String,
+    pub currency: Currency,
+    pub time: u64,
+    pub board: Vec<u8>,
+    pub my_cards: Vec<u8>,
+    pub pot: u64,
+    /// What the viewer won minus what they put in.
+    pub net: i64,
 }
 
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -111,6 +211,10 @@ pub struct State {
     pub next_msg_id: u64,
     /// House revenue (rake and store sales) in e8s, withdrawable by controllers.
     pub treasury: u64,
+    pub hands: BTreeMap<u64, HandRecord>,
+    pub next_hand_id: u64,
+    pub throws: BTreeMap<u64, VecDeque<ThrowEvent>>,
+    pub next_throw_id: u64,
 }
 
 // ------------------------------------------------------------------ views
@@ -121,6 +225,13 @@ pub struct Profile {
     pub username: String,
     pub status: String,
     pub balance: u64,
+    pub chips: u64,
+    pub settings: Settings,
+    pub daily_streak: u32,
+    /// When the next daily chip bonus can be claimed (ns).
+    pub next_daily_at: u64,
+    /// Size of the next daily bonus.
+    pub next_daily_amount: u64,
     pub avatar: u32,
     pub card_back: u32,
     pub inventory: Vec<u32>,
@@ -183,12 +294,15 @@ pub struct TableView {
     pub to_call: u64,
     pub min_raise_to: u64,
     pub max_raise_to: u64,
+    /// Items thrown in the last few seconds, for clients to animate.
+    pub throws: Vec<ThrowEvent>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct TableSummary {
     pub id: u64,
     pub name: String,
+    pub currency: Currency,
     pub small_blind: u64,
     pub big_blind: u64,
     pub min_buy_in: u64,
@@ -250,54 +364,76 @@ fn dm_key(a: Principal, b: Principal) -> (Principal, Principal) {
     }
 }
 
-fn default_items() -> Vec<(ItemKind, &'static str, u64, &'static str, &'static str)> {
+/// (kind, name, ICP price in e8s, chip price, icon, description)
+type ItemSpec = (ItemKind, &'static str, u64, u64, &'static str, &'static str);
+
+fn default_items() -> Vec<ItemSpec> {
     use ItemKind::*;
     vec![
-        (Avatar, "Rookie", 0, "🙂", "Everyone starts somewhere"),
-        (Avatar, "Cool Cat", 0, "😎", "Too cool for the rail"),
-        (Avatar, "Robot", 0, "🤖", "Calculating pot odds"),
-        (Avatar, "Cowboy", E8S / 20, "🤠", "Yeehaw, all in"),
-        (Avatar, "Alien", E8S / 20, "👽", "Plays from another galaxy"),
-        (Avatar, "Ninja", E8S / 10, "🥷", "Silent and deadly"),
-        (Avatar, "Shark", E8S / 10, "🦈", "Smells fish at the table"),
-        (Avatar, "Dragon", E8S / 4, "🐉", "Hoards every pot"),
-        (Avatar, "Unicorn", E8S / 4, "🦄", "Rare as a royal flush"),
-        (Avatar, "Crown", E8S, "👑", "Table royalty"),
-        (CardBack, "Classic Red", 0, "#b91c1c", "The house deck"),
-        (CardBack, "Midnight", E8S / 50, "#1e3a8a", "Deep blue backs"),
-        (CardBack, "Emerald", E8S / 50, "#047857", "Felt-green backs"),
-        (CardBack, "Gold Foil", E8S / 5, "#ca8a04", "Shine on every deal"),
-        (Gift, "Beer", E8S / 1000, "🍺", "Buy the table a round"),
-        (Gift, "Coffee", E8S / 1000, "☕", "For the long session"),
-        (Gift, "Rose", E8S / 500, "🌹", "Show some love"),
-        (Gift, "Cocktail", E8S / 500, "🍸", "Shaken, not stirred"),
-        (Gift, "Pizza", E8S / 200, "🍕", "Fuel for the grind"),
-        (Gift, "Cigar", E8S / 200, "🚬", "Celebrate the big win"),
-        (Gift, "Champagne", E8S / 100, "🍾", "Pop it after a monster pot"),
-        (Gift, "Trophy", E8S / 20, "🏆", "Crown the champ"),
+        (Avatar, "Rookie", 0, 0, "🙂", "Everyone starts somewhere"),
+        (Avatar, "Cool Cat", 0, 0, "😎", "Too cool for the rail"),
+        (Avatar, "Robot", 0, 0, "🤖", "Calculating pot odds"),
+        (Avatar, "Cowboy", E8S / 20, 100_000, "🤠", "Yeehaw, all in"),
+        (Avatar, "Alien", E8S / 20, 100_000, "👽", "Plays from another galaxy"),
+        (Avatar, "Ninja", E8S / 10, 250_000, "🥷", "Silent and deadly"),
+        (Avatar, "Shark", E8S / 10, 250_000, "🦈", "Smells fish at the table"),
+        (Avatar, "Dragon", E8S / 4, 0, "🐉", "Hoards every pot"),
+        (Avatar, "Unicorn", E8S / 4, 0, "🦄", "Rare as a royal flush"),
+        (Avatar, "Crown", E8S, 0, "👑", "Table royalty"),
+        (CardBack, "Classic Red", 0, 0, "#b91c1c", "The house deck"),
+        (CardBack, "Midnight", E8S / 50, 50_000, "#1e3a8a", "Deep blue backs"),
+        (CardBack, "Emerald", E8S / 50, 50_000, "#047857", "Felt-green backs"),
+        (CardBack, "Gold Foil", E8S / 5, 0, "#ca8a04", "Shine on every deal"),
+        (Gift, "Beer", E8S / 1000, 500, "🍺", "Buy the table a round"),
+        (Gift, "Coffee", E8S / 1000, 500, "☕", "For the long session"),
+        (Gift, "Rose", E8S / 500, 1_000, "🌹", "Show some love"),
+        (Gift, "Cocktail", E8S / 500, 1_000, "🍸", "Shaken, not stirred"),
+        (Gift, "Pizza", E8S / 200, 2_500, "🍕", "Fuel for the grind"),
+        (Gift, "Cigar", E8S / 200, 2_500, "🚬", "Celebrate the big win"),
+        (Gift, "Champagne", E8S / 100, 5_000, "🍾", "Pop it after a monster pot"),
+        (Gift, "Trophy", E8S / 20, 0, "🏆", "Crown the champ"),
+        (Throwable, "Tomato", E8S / 2000, 200, "🍅", "Splat! For a bad call"),
+        (Throwable, "Pie", E8S / 2000, 200, "🥧", "Pie to the face"),
+        (Throwable, "Snowball", E8S / 2000, 200, "❄️", "Chill out"),
+        (Throwable, "Fish", E8S / 1000, 500, "🐟", "You know what you did"),
+        (Throwable, "Kiss", E8S / 1000, 500, "💋", "Mwah"),
+        (Throwable, "Money", E8S / 500, 1_000, "💸", "Make it rain"),
+        (Throwable, "Bomb", E8S / 500, 1_000, "💣", "Boom"),
     ]
 }
 
 pub fn default_tables() -> Vec<TableConfig> {
-    let t = |name: &str, sb: u64, seats: u8| TableConfig {
+    let t = |name: &str, currency: Currency, sb: u64, seats: u8| TableConfig {
         name: name.into(),
+        currency,
         small_blind: sb,
         big_blind: sb * 2,
         min_buy_in: sb * 2 * 20,
         max_buy_in: sb * 2 * 100,
         max_seats: seats,
-        rake_bps: 250,
-        rake_cap: sb * 2 * 3,
+        // Play-chip tables are rake free; the house only earns on real ICP.
+        rake_bps: if currency == Currency::Icp { 250 } else { 0 },
+        rake_cap: if currency == Currency::Icp { sb * 2 * 3 } else { 0 },
         action_timeout_secs: 25,
     };
+    use Currency::*;
     vec![
-        t("Penny Lane", 10_000, 9),
-        t("Micro Madness", 10_000, 6),
-        t("Low Rollers", 100_000, 9),
-        t("Heads Up Arena", 100_000, 2),
-        t("Mid Stakes Saloon", 1_000_000, 6),
-        t("High Roller Lounge", 10_000_000, 6),
+        t("Free Roll Fun", Chips, 5, 9),
+        t("Chip Chasers", Chips, 25, 6),
+        t("Heads Up Hangout", Chips, 25, 2),
+        t("Big Stack Saloon", Chips, 250, 9),
+        t("Penny Lane", Icp, 10_000, 9),
+        t("Micro Madness", Icp, 10_000, 6),
+        t("Low Rollers", Icp, 100_000, 9),
+        t("Heads Up Arena", Icp, 100_000, 2),
+        t("Mid Stakes Saloon", Icp, 1_000_000, 6),
+        t("High Roller Lounge", Icp, 10_000_000, 6),
     ]
+}
+
+/// Daily chip bonus for a given streak day (1-based): grows each day up to a week.
+pub fn daily_amount(streak: u32) -> u64 {
+    DAILY_CHIPS * streak.clamp(1, MAX_STREAK) as u64
 }
 
 impl State {
@@ -316,13 +452,18 @@ impl State {
             dms: BTreeMap::new(),
             next_msg_id: 1,
             treasury: 0,
+            hands: BTreeMap::new(),
+            next_hand_id: 1,
+            throws: BTreeMap::new(),
+            next_throw_id: 1,
         };
-        for (kind, name, price, icon, description) in default_items() {
+        for (kind, name, price, chip_price, icon, description) in default_items() {
             s.add_item(StoreItem {
                 id: 0,
                 name: name.into(),
                 kind,
                 price,
+                chip_price,
                 icon: icon.into(),
                 description: description.into(),
                 available: true,
@@ -383,6 +524,12 @@ impl State {
                 username,
                 status: String::new(),
                 balance: 0,
+                chips: SIGNUP_CHIPS,
+                settings: Settings::default(),
+                history: VecDeque::new(),
+                daily_streak: 0,
+                last_daily_at: 0,
+                last_throw_at: 0,
                 avatar,
                 card_back,
                 inventory: vec![],
@@ -406,6 +553,11 @@ impl State {
             username: u.username.clone(),
             status: u.status.clone(),
             balance: u.balance,
+            chips: u.chips,
+            settings: u.settings.clone(),
+            daily_streak: u.daily_streak,
+            next_daily_at: if u.last_daily_at == 0 { 0 } else { u.last_daily_at + DAY_NS },
+            next_daily_amount: daily_amount(u.daily_streak + 1),
             avatar: u.avatar,
             card_back: u.card_back,
             inventory: u.inventory.clone(),
@@ -467,29 +619,46 @@ impl State {
     }
 
     fn owns(&self, u: &User, item: &StoreItem) -> bool {
-        item.price == 0 || u.inventory.contains(&item.id)
+        (item.price == 0 && item.chip_price == 0) || u.inventory.contains(&item.id)
     }
 
-    pub fn buy_item(&mut self, caller: Principal, id: u32) -> R<()> {
+    /// Charges the caller for an item in the chosen currency.
+    /// ICP goes to the house treasury; spent chips simply leave circulation.
+    fn pay_for(&mut self, caller: &Principal, item: &StoreItem, currency: Currency) -> R<()> {
+        let treasury_cut = match currency {
+            Currency::Icp => item.price,
+            Currency::Chips => {
+                if item.chip_price == 0 {
+                    return Err(format!("{} can only be bought with ICP", item.name));
+                }
+                0
+            }
+        };
+        let price = match currency {
+            Currency::Icp => item.price,
+            Currency::Chips => item.chip_price,
+        };
+        self.debit_in(caller, currency, price)?;
+        self.treasury += treasury_cut;
+        Ok(())
+    }
+
+    pub fn buy_item(&mut self, caller: Principal, id: u32, currency: Currency) -> R<()> {
         let item = self.items.get(&id).cloned().ok_or("No such item")?;
         if !item.available {
             return Err("Item is not for sale".into());
         }
-        if item.kind == ItemKind::Gift {
-            return Err("Gifts are sent to players at a table".into());
+        if matches!(item.kind, ItemKind::Gift | ItemKind::Throwable) {
+            return Err("Gifts and throwables are used on players at a table".into());
         }
         let owned = self.owns(self.user(&caller)?, &item);
         if owned {
             return Err("You already own this item".into());
         }
+        self.pay_for(&caller, &item, currency)?;
         let u = self.user_mut(&caller)?;
-        if u.balance < item.price {
-            return Err("Insufficient balance".into());
-        }
-        u.balance -= item.price;
         u.inventory.push(id);
         u.xp += 10;
-        self.treasury += item.price;
         Ok(())
     }
 
@@ -502,29 +671,36 @@ impl State {
         match item.kind {
             ItemKind::Avatar => u.avatar = id,
             ItemKind::CardBack => u.card_back = id,
-            ItemKind::Gift => return Err("Gifts can't be equipped".into()),
+            ItemKind::Gift | ItemKind::Throwable => return Err("That item can't be equipped".into()),
         }
         Ok(())
     }
 
-    pub fn send_gift(&mut self, caller: Principal, table_id: u64, to: Principal, item_id: u32, now: u64) -> R<()> {
+    /// Looks up an item of `kind` and the names/seats of sender and recipient at a table.
+    fn table_item_target(
+        &self,
+        caller: &Principal,
+        table_id: u64,
+        to: &Principal,
+        item_id: u32,
+        kind: ItemKind,
+    ) -> R<(StoreItem, String, String, Option<usize>, usize)> {
         let item = self.items.get(&item_id).cloned().ok_or("No such item")?;
-        if item.kind != ItemKind::Gift || !item.available {
-            return Err("That is not a gift".into());
+        if item.kind != kind || !item.available {
+            return Err("That item can't be used here".into());
         }
         let t = self.tables.get(&table_id).ok_or("No such table")?;
-        if t.seat_of(&to).is_none() {
-            return Err("That player is not at this table".into());
-        }
-        let from_name = self.user(&caller)?.username.clone();
-        let to_name = self.user(&to)?.username.clone();
-        let u = self.user_mut(&caller)?;
-        if u.balance < item.price {
-            return Err("Insufficient balance".into());
-        }
-        u.balance -= item.price;
-        u.xp += 5;
-        self.treasury += item.price;
+        let to_seat = t.seat_of(to).ok_or("That player is not at this table")?;
+        let from_seat = t.seat_of(caller);
+        let from_name = self.user(caller)?.username.clone();
+        let to_name = self.user(to)?.username.clone();
+        Ok((item, from_name, to_name, from_seat, to_seat))
+    }
+
+    pub fn send_gift(&mut self, caller: Principal, table_id: u64, to: Principal, item_id: u32, currency: Currency, now: u64) -> R<()> {
+        let (item, from_name, to_name, _, _) = self.table_item_target(&caller, table_id, &to, item_id, ItemKind::Gift)?;
+        self.pay_for(&caller, &item, currency)?;
+        self.user_mut(&caller)?.xp += 5;
         self.user_mut(&to)?.gift = Some(ActiveGift {
             item: item_id,
             from: from_name.clone(),
@@ -541,28 +717,108 @@ impl State {
         Ok(())
     }
 
-    // -------------------------------------------------------------- wallet
-
-    pub fn credit(&mut self, p: &Principal, amount: u64) -> R<()> {
-        let u = self.user_mut(p)?;
-        u.balance = u.balance.checked_add(amount).ok_or("Overflow")?;
+    /// Throws an item from the caller's seat at another player (animated on every client).
+    pub fn throw_item(&mut self, caller: Principal, table_id: u64, to: Principal, item_id: u32, currency: Currency, now: u64) -> R<()> {
+        let (item, from_name, to_name, from_seat, to_seat) =
+            self.table_item_target(&caller, table_id, &to, item_id, ItemKind::Throwable)?;
+        let from_seat = from_seat.ok_or("Sit down to throw things")?;
+        if caller == to {
+            return Err("You can't throw things at yourself".into());
+        }
+        if now.saturating_sub(self.user(&caller)?.last_throw_at) < THROW_COOLDOWN_NS {
+            return Err("Wait a moment before throwing again".into());
+        }
+        self.pay_for(&caller, &item, currency)?;
+        self.user_mut(&caller)?.last_throw_at = now;
+        let id = self.next_throw_id;
+        self.next_throw_id += 1;
+        let q = self.throws.entry(table_id).or_default();
+        q.push_back(ThrowEvent {
+            id,
+            from_seat: from_seat as u8,
+            to_seat: to_seat as u8,
+            icon: item.icon.clone(),
+            time: now,
+        });
+        while q.front().is_some_and(|e| e.time + THROW_VISIBLE_NS < now) || q.len() > 20 {
+            q.pop_front();
+        }
+        self.post(
+            Channel::Table(table_id),
+            Some(caller),
+            from_name.clone(),
+            format!("{} threw a {} {} at {}", from_name, item.name, item.icon, to_name),
+            MessageKind::Throw,
+            now,
+        );
         Ok(())
     }
 
+    // -------------------------------------------------------------- wallet
+
+    pub fn credit(&mut self, p: &Principal, amount: u64) -> R<()> {
+        self.credit_in(p, Currency::Icp, amount)
+    }
+
     pub fn debit(&mut self, p: &Principal, amount: u64) -> R<()> {
-        let u = self.user_mut(p)?;
-        if u.balance < amount {
-            return Err("Insufficient balance".into());
+        self.debit_in(p, Currency::Icp, amount)
+    }
+
+    fn purse(u: &mut User, currency: Currency) -> &mut u64 {
+        match currency {
+            Currency::Icp => &mut u.balance,
+            Currency::Chips => &mut u.chips,
         }
-        u.balance -= amount;
+    }
+
+    pub fn credit_in(&mut self, p: &Principal, currency: Currency, amount: u64) -> R<()> {
+        let bal = Self::purse(self.user_mut(p)?, currency);
+        *bal = bal.checked_add(amount).ok_or("Overflow")?;
+        Ok(())
+    }
+
+    pub fn debit_in(&mut self, p: &Principal, currency: Currency, amount: u64) -> R<()> {
+        let bal = Self::purse(self.user_mut(p)?, currency);
+        if *bal < amount {
+            return Err(match currency {
+                Currency::Icp => "Insufficient ICP balance".into(),
+                Currency::Chips => "Not enough chips".into(),
+            });
+        }
+        *bal -= amount;
+        Ok(())
+    }
+
+    /// Claims the daily free-chip bonus. Claiming on consecutive days grows the bonus.
+    pub fn claim_daily(&mut self, caller: Principal, now: u64) -> R<u64> {
+        let u = self.user_mut(&caller)?;
+        if u.last_daily_at != 0 && now < u.last_daily_at + DAY_NS {
+            let hours = (u.last_daily_at + DAY_NS - now).div_ceil(DAY_NS / 24);
+            return Err(format!("Your next bonus is ready in {hours}h"));
+        }
+        u.daily_streak = if u.last_daily_at != 0 && now < u.last_daily_at + 2 * DAY_NS {
+            u.daily_streak + 1
+        } else {
+            1
+        };
+        u.last_daily_at = now;
+        let amount = daily_amount(u.daily_streak);
+        u.chips += amount;
+        Ok(amount)
+    }
+
+    pub fn update_settings(&mut self, caller: Principal, settings: Settings) -> R<()> {
+        self.user_mut(&caller)?.settings = settings;
         Ok(())
     }
 
     pub fn house_stats(&self) -> HouseStats {
         let wallet_balances: u64 = self.users.values().map(|u| u.balance).sum();
+        // Play-chip tables are not backed by ICP.
         let chips_on_tables: u64 = self
             .tables
             .values()
+            .filter(|t| t.config.currency == Currency::Icp)
             .map(|t| t.chips_in_play() + t.rake_accrued)
             .sum();
         HouseStats {
@@ -742,20 +998,27 @@ impl State {
         self.tables.get_mut(&id).ok_or_else(|| "No such table".to_string())
     }
 
+    fn table_currency(&self, id: u64) -> R<Currency> {
+        Ok(self.tables.get(&id).ok_or("No such table")?.config.currency)
+    }
+
     pub fn join_table(&mut self, caller: Principal, id: u64, seat: u8, buy_in: u64, now: u64) -> R<()> {
         let name = self.user(&caller)?.username.clone();
-        if self.user(&caller)?.balance < buy_in {
-            return Err("Insufficient balance for that buy-in".into());
+        let currency = self.table_currency(id)?;
+        // Check funds before seating so a failed debit can't leave chips on the table.
+        self.debit_in(&caller, currency, buy_in)?;
+        if let Err(e) = self.table_mut(id)?.sit(caller, seat, buy_in) {
+            self.credit_in(&caller, currency, buy_in)?;
+            return Err(e);
         }
-        self.table_mut(id)?.sit(caller, seat, buy_in)?;
-        self.debit(&caller, buy_in)?;
         self.post(Channel::Table(id), None, String::new(), format!("{name} sat down"), MessageKind::System, now);
         Ok(())
     }
 
     pub fn leave_table(&mut self, caller: Principal, id: u64, now: u64) -> R<u64> {
+        let currency = self.table_currency(id)?;
         let chips = self.table_mut(id)?.stand(&caller, now)?;
-        self.credit(&caller, chips)?;
+        self.credit_in(&caller, currency, chips)?;
         let name = self.user(&caller)?.username.clone();
         self.post(Channel::Table(id), None, String::new(), format!("{name} left the table"), MessageKind::System, now);
         self.after_table_change(id, now);
@@ -763,11 +1026,13 @@ impl State {
     }
 
     pub fn top_up(&mut self, caller: Principal, id: u64, amount: u64) -> R<()> {
-        if self.user(&caller)?.balance < amount {
-            return Err("Insufficient balance".into());
+        let currency = self.table_currency(id)?;
+        self.debit_in(&caller, currency, amount)?;
+        if let Err(e) = self.table_mut(id)?.top_up(&caller, amount) {
+            self.credit_in(&caller, currency, amount)?;
+            return Err(e);
         }
-        self.table_mut(id)?.top_up(&caller, amount)?;
-        self.debit(&caller, amount)
+        Ok(())
     }
 
     pub fn sit_out(&mut self, caller: Principal, id: u64, out: bool) -> R<()> {
@@ -780,12 +1045,17 @@ impl State {
         Ok(())
     }
 
-    /// Applies a finished hand to player stats and sweeps rake to the treasury.
+    /// After a hand ends: applies auto-muck, records the hand history, updates
+    /// stats, sweeps rake and runs auto top-ups. Idempotent per hand.
     pub fn after_table_change(&mut self, id: u64, now: u64) {
         let Some(t) = self.tables.get_mut(&id) else {
             return;
         };
-        self.treasury += std::mem::take(&mut t.rake_accrued);
+        let currency = t.config.currency;
+        let rake = std::mem::take(&mut t.rake_accrued);
+        if currency == Currency::Icp {
+            self.treasury += rake;
+        }
         if t.phase != Phase::HandOver {
             return;
         }
@@ -796,23 +1066,171 @@ impl State {
             return;
         }
         self.applied_hand.insert(id, result.hand_no);
+
+        // Auto-muck: losing hands of players who opted in are not shown.
+        let won_by = |p: &Principal| result.players.iter().find(|r| r.player == *p).map_or(0, |r| r.won);
+        let muckers: Vec<Principal> = result
+            .shown
+            .iter()
+            .filter(|sh| won_by(&sh.player) == 0)
+            .filter(|sh| self.users.get(&sh.player).is_some_and(|u| u.settings.auto_muck))
+            .map(|sh| sh.player)
+            .collect();
+        let t = self.tables.get_mut(&id).unwrap();
+        if let Some(r) = t.last_result.as_mut() {
+            r.shown.retain(|sh| !muckers.contains(&sh.player));
+        }
+        let shown: Vec<u8> = t.last_result.as_ref().map_or(vec![], |r| r.shown.iter().map(|sh| sh.seat).collect());
+
+        self.record_hand(id, &result, &shown, now);
+
         for pr in &result.players {
             if let Some(u) = self.users.get_mut(&pr.player) {
                 u.stats.hands_played += 1;
                 u.xp += 1;
-                u.stats.net_winnings += pr.won as i64 - pr.committed as i64;
+                let net = pr.won as i64 - pr.committed as i64;
+                match currency {
+                    Currency::Icp => {
+                        u.stats.net_winnings += net;
+                        if pr.won > 0 {
+                            u.stats.biggest_pot_won = u.stats.biggest_pot_won.max(pr.won);
+                        }
+                    }
+                    Currency::Chips => u.stats.chip_net += net,
+                }
                 if pr.won > 0 {
                     u.stats.hands_won += 1;
                     u.xp += 2;
-                    u.stats.biggest_pot_won = u.stats.biggest_pot_won.max(pr.won);
                 }
             }
         }
         for w in &result.winners {
             let name = self.users.get(&w.player).map(|u| u.username.clone()).unwrap_or_default();
-            let text = format!("{} wins {} ICP ({})", name, fmt_icp(w.amount), w.hand);
+            let text = format!("{} wins {} ({})", name, fmt_amount(currency, w.amount), w.hand);
             self.post(Channel::Table(id), None, String::new(), text, MessageKind::System, now);
         }
+        self.auto_top_up(id);
+    }
+
+    fn record_hand(&mut self, table_id: u64, result: &HandResult, shown: &[u8], now: u64) {
+        let t = &self.tables[&table_id];
+        let players: Vec<HandPlayer> = t
+            .dealt_hands()
+            .into_iter()
+            .map(|(seat, player, cards)| {
+                let r = result.players.iter().find(|r| r.player == player);
+                HandPlayer {
+                    seat,
+                    player,
+                    username: self.users.get(&player).map(|u| u.username.clone()).unwrap_or_default(),
+                    cards,
+                    shown: shown.contains(&seat),
+                    committed: r.map_or(0, |r| r.committed),
+                    won: r.map_or(0, |r| r.won),
+                }
+            })
+            .collect();
+        let id = self.next_hand_id;
+        self.next_hand_id += 1;
+        let record = HandRecord {
+            id,
+            table_id,
+            table_name: t.config.name.clone(),
+            currency: t.config.currency,
+            small_blind: t.config.small_blind,
+            big_blind: t.config.big_blind,
+            hand_no: result.hand_no,
+            time: now,
+            button: t.button as u8,
+            board: result.board.clone(),
+            pot: result.pot,
+            rake: result.rake,
+            players,
+            // Drop the showdown line of anyone who mucked.
+            log: t
+                .log
+                .iter()
+                .filter(|e| !(e.text.starts_with("Shows") && e.seat.is_some_and(|seat| !shown.contains(&seat))))
+                .cloned()
+                .collect(),
+        };
+        for p in &record.players {
+            if let Some(u) = self.users.get_mut(&p.player) {
+                u.history.push_back(id);
+                while u.history.len() > HISTORY_PER_USER {
+                    u.history.pop_front();
+                }
+            }
+        }
+        self.hands.insert(id, record);
+        while self.hands.len() > HISTORY_MAX {
+            self.hands.pop_first();
+        }
+    }
+
+    /// Refills stacks of players with auto top-up on when they drop below half the max buy-in.
+    fn auto_top_up(&mut self, id: u64) {
+        let t = &self.tables[&id];
+        let currency = t.config.currency;
+        let max = t.config.max_buy_in;
+        let wants: Vec<(Principal, u64)> = t
+            .seats
+            .iter()
+            .flatten()
+            .filter(|s| !s.left && s.stack < max / 2)
+            .filter(|s| self.users.get(&s.player).is_some_and(|u| u.settings.auto_top_up))
+            .map(|s| (s.player, max - s.stack))
+            .collect();
+        for (p, want) in wants {
+            let available = self.users.get_mut(&p).map_or(0, |u| *Self::purse(u, currency));
+            let amount = want.min(available);
+            if amount > 0 && self.debit_in(&p, currency, amount).is_ok() {
+                let t = self.tables.get_mut(&id).unwrap();
+                if t.top_up(&p, amount).is_err() {
+                    let _ = self.credit_in(&p, currency, amount);
+                }
+            }
+        }
+    }
+
+    pub fn hand_history(&self, caller: Principal, limit: usize) -> Vec<HandSummary> {
+        let Some(u) = self.users.get(&caller) else {
+            return vec![];
+        };
+        u.history
+            .iter()
+            .rev()
+            .filter_map(|id| self.hands.get(id))
+            .take(limit)
+            .map(|h| {
+                let me = h.players.iter().find(|p| p.player == caller);
+                HandSummary {
+                    id: h.id,
+                    table_name: h.table_name.clone(),
+                    currency: h.currency,
+                    time: h.time,
+                    board: h.board.clone(),
+                    my_cards: me.map(|p| p.cards.clone()).unwrap_or_default(),
+                    pot: h.pot,
+                    net: me.map_or(0, |p| p.won as i64 - p.committed as i64),
+                }
+            })
+            .collect()
+    }
+
+    /// A hand as seen by `caller`: only their own and shown hole cards are revealed.
+    /// Only players who were dealt in can view it.
+    pub fn hand(&self, caller: Principal, id: u64) -> Option<HandRecord> {
+        let mut h = self.hands.get(&id)?.clone();
+        if !h.players.iter().any(|p| p.player == caller) {
+            return None;
+        }
+        for p in h.players.iter_mut() {
+            if p.player != caller && !p.shown {
+                p.cards.clear();
+            }
+        }
+        Some(h)
     }
 
     /// Times out slow players and reports tables that need a new hand dealt.
@@ -853,6 +1271,7 @@ impl State {
             .map(|t| TableSummary {
                 id: t.id,
                 name: t.config.name.clone(),
+                currency: t.config.currency,
                 small_blind: t.config.small_blind,
                 big_blind: t.config.big_blind,
                 min_buy_in: t.config.min_buy_in,
@@ -925,7 +1344,19 @@ impl State {
             to_call,
             min_raise_to,
             max_raise_to,
+            throws: self
+                .throws
+                .get(&id)
+                .map(|q| q.iter().filter(|e| e.time + THROW_VISIBLE_NS > now).cloned().collect())
+                .unwrap_or_default(),
         })
+    }
+}
+
+pub fn fmt_amount(currency: Currency, amount: u64) -> String {
+    match currency {
+        Currency::Icp => format!("{} ICP", fmt_icp(amount)),
+        Currency::Chips => format!("{amount} chips"),
     }
 }
 
@@ -974,20 +1405,21 @@ mod tests {
         let mut s = setup();
         let ninja = s.items.values().find(|i| i.name == "Ninja").unwrap().id;
         assert!(s.equip(p(1), ninja).is_err());
-        s.buy_item(p(1), ninja).unwrap();
-        assert!(s.buy_item(p(1), ninja).is_err());
+        s.buy_item(p(1), ninja, Currency::Icp).unwrap();
+        assert!(s.buy_item(p(1), ninja, Currency::Icp).is_err());
         s.equip(p(1), ninja).unwrap();
         assert_eq!(s.users[&p(1)].balance, 10 * E8S - E8S / 10);
         assert_eq!(s.treasury, E8S / 10);
 
         let beer = s.items.values().find(|i| i.name == "Beer").unwrap().id;
-        assert!(s.send_gift(p(1), 1, p(2), beer, 0).is_err()); // p2 not seated
-        s.join_table(p(2), 1, 0, 1_000_000, 0).unwrap();
-        s.send_gift(p(1), 1, p(2), beer, 0).unwrap();
-        let v = s.table_view(1, None, 1).unwrap();
+        let icp_table = 5; // Penny Lane
+        assert!(s.send_gift(p(1), icp_table, p(2), beer, Currency::Icp, 0).is_err()); // p2 not seated
+        s.join_table(p(2), icp_table, 0, 1_000_000, 0).unwrap();
+        s.send_gift(p(1), icp_table, p(2), beer, Currency::Icp, 0).unwrap();
+        let v = s.table_view(icp_table, None, 1).unwrap();
         assert_eq!(v.seats[0].as_ref().unwrap().gift.as_deref(), Some("🍺"));
         // Gifts expire lazily: they simply stop being shown.
-        let v = s.table_view(1, None, GIFT_DURATION_NS + 1).unwrap();
+        let v = s.table_view(icp_table, None, GIFT_DURATION_NS + 1).unwrap();
         assert!(v.seats[0].as_ref().unwrap().gift.is_none());
     }
 
@@ -1019,7 +1451,7 @@ mod tests {
     fn full_game_flow_conserves_value() {
         let mut s = setup();
         let before = total_value(&s);
-        let table = 3; // Low Rollers: 0.001/0.002 ICP
+        let table = 7; // Low Rollers: 0.001/0.002 ICP
         let buy = s.tables[&table].config.max_buy_in;
         s.join_table(p(1), table, 0, buy, 0).unwrap();
         s.join_table(p(2), table, 3, buy, 0).unwrap();
@@ -1070,6 +1502,142 @@ mod tests {
         assert_eq!(total_value(&s), before);
         let wallets: u64 = (1..=3).map(|k| s.users[&p(k)].balance).sum();
         assert_eq!(wallets + s.treasury, 30 * E8S);
+    }
+
+    fn play_hands(s: &mut State, table: u64, hands: u8, start: u64) -> u64 {
+        let mut now = start;
+        for hand in 0..hands {
+            s.tick(now);
+            s.start_hand(table, [hand.wrapping_add(start as u8); 32], now);
+            while s.tables[&table].phase.is_betting() {
+                let t = &s.tables[&table];
+                let actor = t.seats[t.to_act.unwrap()].as_ref().unwrap().player;
+                if s.act(actor, table, Action::Check, now).is_err() {
+                    s.act(actor, table, Action::Call, now).unwrap();
+                }
+            }
+            now += 6 * SEC;
+        }
+        now
+    }
+
+    #[test]
+    fn play_chips_are_separate_from_icp() {
+        let mut s = setup();
+        assert_eq!(s.users[&p(1)].chips, SIGNUP_CHIPS);
+        let chip_table = 1; // Free Roll Fun, 5/10 chips
+        assert_eq!(s.tables[&chip_table].config.currency, Currency::Chips);
+        let before = s.house_stats();
+        s.join_table(p(1), chip_table, 0, 1_000, 0).unwrap();
+        s.join_table(p(2), chip_table, 1, 1_000, 0).unwrap();
+        // ICP is untouched and chip tables don't count as ICP liabilities.
+        assert_eq!(s.users[&p(1)].balance, 10 * E8S);
+        assert_eq!(s.users[&p(1)].chips, SIGNUP_CHIPS - 1_000);
+        assert_eq!(s.house_stats().liabilities_total, before.liabilities_total);
+        let now = play_hands(&mut s, chip_table, 5, SEC);
+        assert_eq!(s.treasury, 0, "chip tables are rake free");
+        s.leave_table(p(1), chip_table, now).unwrap();
+        s.leave_table(p(2), chip_table, now).unwrap();
+        let chips: u64 = (1..=2).map(|k| s.users[&p(k)].chips).sum();
+        assert_eq!(chips, 2 * SIGNUP_CHIPS);
+        assert_eq!(s.users[&p(1)].stats.chip_net + s.users[&p(2)].stats.chip_net, 0);
+        assert_eq!(s.users[&p(1)].stats.net_winnings, 0);
+        // Not enough chips to sit at the 250/500 table (min buy-in 10,000 is fine, 50,000 is not).
+        assert!(s.join_table(p(3), 4, 0, 50_000, now).is_err());
+        assert_eq!(s.users[&p(3)].chips, SIGNUP_CHIPS);
+    }
+
+    #[test]
+    fn daily_bonus_streak() {
+        let mut s = setup();
+        let day = DAY_NS;
+        assert_eq!(s.claim_daily(p(1), day).unwrap(), DAILY_CHIPS);
+        assert!(s.claim_daily(p(1), day + day / 2).is_err());
+        assert_eq!(s.claim_daily(p(1), 2 * day + 1).unwrap(), 2 * DAILY_CHIPS);
+        assert_eq!(s.profile(&p(1)).unwrap().next_daily_amount, 3 * DAILY_CHIPS);
+        // Missing a day resets the streak.
+        assert_eq!(s.claim_daily(p(1), 5 * day).unwrap(), DAILY_CHIPS);
+        assert_eq!(s.users[&p(1)].chips, SIGNUP_CHIPS + 4 * DAILY_CHIPS);
+    }
+
+    #[test]
+    fn buying_with_chips() {
+        let mut s = setup();
+        let cowboy = s.items.values().find(|i| i.name == "Cowboy").unwrap().id;
+        let crown = s.items.values().find(|i| i.name == "Crown").unwrap().id;
+        assert!(s.buy_item(p(1), cowboy, Currency::Chips).is_err()); // 100k chips needed
+        s.users.get_mut(&p(1)).unwrap().chips = 200_000;
+        s.buy_item(p(1), cowboy, Currency::Chips).unwrap();
+        assert_eq!(s.users[&p(1)].chips, 100_000);
+        assert!(s.buy_item(p(1), crown, Currency::Chips).is_err()); // ICP only
+        assert_eq!(s.treasury, 0);
+    }
+
+    #[test]
+    fn throwables() {
+        let mut s = setup();
+        let tomato = s.items.values().find(|i| i.name == "Tomato").unwrap().id;
+        let table = 1;
+        s.join_table(p(1), table, 0, 1_000, 0).unwrap();
+        assert!(s.throw_item(p(1), table, p(2), tomato, Currency::Chips, SEC).is_err()); // target not seated
+        s.join_table(p(2), table, 4, 1_000, 0).unwrap();
+        assert!(s.throw_item(p(3), table, p(2), tomato, Currency::Chips, SEC).is_err()); // thrower not seated
+        assert!(s.throw_item(p(1), table, p(1), tomato, Currency::Chips, SEC).is_err());
+        s.throw_item(p(1), table, p(2), tomato, Currency::Chips, 10 * SEC).unwrap();
+        assert!(s.throw_item(p(1), table, p(2), tomato, Currency::Chips, 11 * SEC).is_err()); // cooldown
+        let v = s.table_view(table, None, 12 * SEC).unwrap();
+        assert_eq!(v.throws.len(), 1);
+        assert_eq!((v.throws[0].from_seat, v.throws[0].to_seat), (0, 4));
+        assert!(s.table_view(table, None, 30 * SEC).unwrap().throws.is_empty());
+        assert_eq!(s.users[&p(1)].chips, SIGNUP_CHIPS - 1_000 - 200);
+    }
+
+    #[test]
+    fn hand_history_is_private_and_respects_muck() {
+        let mut s = setup();
+        let table = 1;
+        s.join_table(p(1), table, 0, 1_000, 0).unwrap();
+        s.join_table(p(2), table, 1, 1_000, 0).unwrap();
+        // p1 shows losing hands, p2 mucks them (the default).
+        let open = Settings { auto_muck: false, ..Settings::default() };
+        s.update_settings(p(1), open).unwrap();
+        play_hands(&mut s, table, 6, SEC);
+
+        let hist = s.hand_history(p(1), 50);
+        assert_eq!(hist.len(), 6);
+        assert!(s.hand_history(p(3), 50).is_empty());
+        for h in &hist {
+            assert_eq!(h.my_cards.len(), 2);
+            assert!(s.hand(p(3), h.id).is_none(), "outsiders can't see hands");
+            let rec = s.hand(p(1), h.id).unwrap();
+            assert!(!rec.log.is_empty());
+            let opp = rec.players.iter().find(|x| x.player == p(2)).unwrap();
+            if opp.won == 0 {
+                assert!(opp.cards.is_empty(), "losing opponent mucked");
+                assert!(!rec.log.iter().any(|e| e.seat == Some(1) && e.text.starts_with("Shows")));
+            }
+            let me = rec.players.iter().find(|x| x.player == p(1)).unwrap();
+            assert_eq!(me.cards.len(), 2);
+        }
+        // A hand p1 lost at showdown: p2 (the winner) still sees p1's cards.
+        let lost = hist.iter().find(|h| h.net < 0 && h.board.len() == 5).expect("p1 lost a showdown");
+        let rec = s.hand(p(2), lost.id).unwrap();
+        assert_eq!(rec.players.iter().find(|x| x.player == p(1)).unwrap().cards.len(), 2);
+    }
+
+    #[test]
+    fn auto_top_up_refills_stack() {
+        let mut s = setup();
+        let table = 1; // max buy-in 1,000 chips
+        let st = Settings { auto_top_up: true, ..Settings::default() };
+        s.update_settings(p(1), st).unwrap();
+        s.join_table(p(1), table, 0, 200, 0).unwrap();
+        s.join_table(p(2), table, 1, 1_000, 0).unwrap();
+        play_hands(&mut s, table, 1, SEC);
+        let stack = s.tables[&table].seats[0].as_ref().unwrap().stack;
+        assert_eq!(stack, 1_000);
+        let total = s.users[&p(1)].chips + stack;
+        assert_eq!(total as i64, SIGNUP_CHIPS as i64 + s.users[&p(1)].stats.chip_net);
     }
 
     #[test]

@@ -8,9 +8,17 @@
 use crate::cards::{best_hand, category, shuffled_deck, Card, HandScore};
 use candid::{CandidType, Deserialize, Principal};
 
+/// What a table plays for: real ICP (1 chip = 1 e8s) or free play chips.
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Currency {
+    Icp,
+    Chips,
+}
+
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct TableConfig {
     pub name: String,
+    pub currency: Currency,
     pub small_blind: u64,
     pub big_blind: u64,
     pub min_buy_in: u64,
@@ -153,6 +161,16 @@ pub struct PlayerResult {
     pub won: u64,
 }
 
+/// One line of a hand's action log, used for hand histories and replays.
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct LogEntry {
+    pub phase: Phase,
+    pub seat: Option<u8>,
+    pub text: String,
+    /// The player's total bet on this street after the action, or the amount won/returned.
+    pub amount: u64,
+}
+
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct HandResult {
     pub hand_no: u64,
@@ -183,6 +201,8 @@ pub struct Table {
     pub last_result: Option<HandResult>,
     /// Rake collected but not yet swept into the house treasury.
     pub rake_accrued: u64,
+    /// Action log of the current (or just finished) hand.
+    pub log: Vec<LogEntry>,
 }
 
 const NANOS: u64 = 1_000_000_000;
@@ -206,7 +226,17 @@ impl Table {
             phase_changed_at: 0,
             last_result: None,
             rake_accrued: 0,
+            log: vec![],
         }
+    }
+
+    fn log(&mut self, seat: Option<usize>, text: impl Into<String>, amount: u64) {
+        self.log.push(LogEntry {
+            phase: self.phase,
+            seat: seat.map(|i| i as u8),
+            text: text.into(),
+            amount,
+        });
     }
 
     fn n(&self) -> usize {
@@ -314,6 +344,7 @@ impl Table {
         s.left = true;
         s.folded = true;
         s.last_action = Some("Left".into());
+        self.log(Some(i), "Left the table", 0);
         if was_live {
             let from = if self.to_act == Some(i) { Some(i) } else { None };
             self.progress(from, now);
@@ -394,6 +425,8 @@ impl Table {
         self.deck = shuffled_deck(seed);
         self.board.clear();
         self.last_result = None;
+        self.log.clear();
+        self.phase = Phase::PreFlop;
 
         let in_hand = |s: &Seat| s.in_hand;
         self.button = self.next_where(self.button, in_hand).unwrap();
@@ -410,6 +443,9 @@ impl Table {
         self.seat_mut(sb).last_action = Some("Small blind".into());
         self.seat_mut(bb).put(bb_amt);
         self.seat_mut(bb).last_action = Some("Big blind".into());
+        let (sb_posted, bb_posted) = (self.seat(sb).bet, self.seat(bb).bet);
+        self.log(Some(sb), "Small blind", sb_posted);
+        self.log(Some(bb), "Big blind", bb_posted);
         self.current_bet = bb_amt;
         self.min_raise = bb_amt;
 
@@ -518,8 +554,18 @@ impl Table {
             }
         };
         self.set_phase(next, now);
+        self.log_street();
         self.to_act = self.next_where(self.button, |s| s.can_act());
         self.action_deadline = now + self.config.action_timeout_secs * NANOS;
+    }
+
+    fn log_street(&mut self) {
+        let name = match self.board.len() {
+            3 => "Flop",
+            4 => "Turn",
+            _ => "River",
+        };
+        self.log(None, name, 0);
     }
 
     /// Returns the part of the largest commitment that nobody matched.
@@ -543,6 +589,7 @@ impl Table {
             s.bet = s.bet.saturating_sub(excess);
             s.stack += excess;
             s.all_in = false;
+            self.log(Some(i), "Uncalled bet returned", excess);
         }
     }
 
@@ -583,6 +630,7 @@ impl Table {
         self.seat_mut(w).stack += amount;
         let mut won = vec![0; self.n()];
         won[w] = amount;
+        self.log(Some(w), "Wins (uncontested)", amount);
         let s = self.seat(w);
         self.last_result = Some(HandResult {
             hand_no: self.hand_no,
@@ -605,6 +653,12 @@ impl Table {
         while self.board.len() < 5 {
             let n = if self.board.is_empty() { 3 } else { 1 };
             self.deal_board(n);
+            self.phase = match self.board.len() {
+                3 => Phase::Flop,
+                4 => Phase::Turn,
+                _ => Phase::River,
+            };
+            self.log_street();
         }
         self.return_uncalled();
 
@@ -678,9 +732,15 @@ impl Table {
             }
         }
 
+        for &i in &live {
+            let hand = scores[i].as_ref().unwrap().1.clone();
+            self.log(Some(i), format!("Shows {hand}"), 0);
+        }
         let mut winners = vec![];
         for i in 0..n {
             if won[i] > 0 {
+                let hand = scores[i].as_ref().unwrap().1.clone();
+                self.log(Some(i), format!("Wins with {hand}"), won[i]);
                 self.seat_mut(i).stack += won[i];
                 winners.push(Winner {
                     seat: i as u8,
@@ -787,6 +847,9 @@ impl Table {
             }
         };
         s.acted = true;
+        let (text, amount) = (s.last_action.clone().unwrap_or_default(), s.bet);
+        let amount = if matches!(action, Action::Fold | Action::Check) { 0 } else { amount };
+        self.log(Some(i), text, amount);
 
         if let Some(bet) = new_bet {
             if bet > current_bet {
@@ -822,6 +885,18 @@ impl Table {
         self.seat_mut(i).sitting_out = true;
         self.act(&p, action, now).ok()?;
         Some(p)
+    }
+
+    /// Hole cards of everyone dealt into the current/last hand, by seat.
+    pub fn dealt_hands(&self) -> Vec<(u8, Principal, Vec<Card>)> {
+        self.seats
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| {
+                let s = s.as_ref().filter(|s| s.in_hand && !s.hole.is_empty())?;
+                Some((i as u8, s.player, s.hole.clone()))
+            })
+            .collect()
     }
 
     // ------------------------------------------------------------------- view
@@ -863,6 +938,7 @@ mod tests {
     fn config() -> TableConfig {
         TableConfig {
             name: "Test".into(),
+            currency: Currency::Icp,
             small_blind: 5,
             big_blind: 10,
             min_buy_in: 100,
@@ -949,6 +1025,27 @@ mod tests {
         t.act(&utg, Action::Call, 1).unwrap();
         assert_eq!(t.phase, Phase::Flop);
         assert_eq!(t.pot(), 110);
+    }
+
+    #[test]
+    fn hand_log_records_actions_and_streets() {
+        let mut t = Table::new(1, config());
+        t.sit(p(1), 0, 500).unwrap();
+        t.sit(p(2), 1, 500).unwrap();
+        t.start_hand([1; 32], 0).unwrap();
+        while t.phase.is_betting() {
+            let pl = to_act_player(&t);
+            t.act(&pl, Action::Call, 1).unwrap();
+        }
+        let texts: Vec<&str> = t.log.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(&texts[..2], &["Small blind", "Big blind"]);
+        for street in ["Flop", "Turn", "River"] {
+            assert!(texts.contains(&street), "{texts:?}");
+        }
+        assert!(texts.iter().any(|t| t.starts_with("Wins")));
+        let river = t.log.iter().find(|e| e.text == "River").unwrap();
+        assert_eq!(river.phase, Phase::River);
+        assert_eq!(t.dealt_hands().len(), 2);
     }
 
     #[test]

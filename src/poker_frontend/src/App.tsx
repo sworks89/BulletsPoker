@@ -1,5 +1,7 @@
 import { AppProvider, useApp, type View } from './context';
-import { icp } from './format';
+import { countdown, icp } from './format';
+import { unwrap } from './ic';
+import { History } from './components/History';
 import { Lobby } from './components/Lobby';
 import { TablePage } from './components/Table';
 import { Wallet } from './components/Wallet';
@@ -11,12 +13,21 @@ const NAV: { name: View['name']; label: string }[] = [
   { name: 'lobby', label: 'Lobby' },
   { name: 'store', label: 'Store' },
   { name: 'friends', label: 'Friends' },
+  { name: 'history', label: 'History' },
   { name: 'leaderboard', label: 'Leaderboard' },
   { name: 'wallet', label: 'Wallet' },
 ];
 
 function Shell() {
-  const { view, go, principal, profile, items, signIn, signOut, run } = useApp();
+  const { view, go, principal, profile, items, signIn, signOut, run, notify, backend, refreshProfile } = useApp();
+  const dailyReady = !!profile && Number(profile.next_daily_at / 1_000_000n) <= Date.now();
+  const claimDaily = async () => {
+    const got = await run(async () => unwrap(await backend.claim_daily_chips()));
+    if (got !== undefined) {
+      await refreshProfile();
+      notify(`+${got.toLocaleString()} chips! Come back tomorrow to grow your streak.`);
+    }
+  };
   const requests = profile?.friend_requests.length ?? 0;
 
   return (
@@ -37,6 +48,16 @@ function Shell() {
         <div className="account">
           {profile ? (
             <>
+              <button
+                className={`daily ${dailyReady ? 'ready' : ''}`}
+                onClick={claimDaily}
+                title={dailyReady ? `Claim ${profile.next_daily_amount.toLocaleString()} free chips` : `Next bonus in ${countdown(profile.next_daily_at)}`}
+              >
+                🎁 {dailyReady ? `+${profile.next_daily_amount.toLocaleString()}` : countdown(profile.next_daily_at)}
+              </button>
+              <span className="chips-balance" title="Play chips">
+                🎲 {profile.chips.toLocaleString()}
+              </span>
               <button className="balance" onClick={() => go({ name: 'wallet' })}>
                 {icp(profile.balance, 4)} ICP
               </button>
@@ -67,6 +88,7 @@ function Shell() {
         {view.name === 'store' && <Store />}
         {view.name === 'friends' && <Friends />}
         {view.name === 'leaderboard' && <Leaderboard />}
+        {view.name === 'history' && <History />}
         {view.name === 'profile' && <ProfilePage />}
       </main>
 

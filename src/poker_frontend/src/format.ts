@@ -50,3 +50,32 @@ export function timeAgo(ns: bigint): string {
 export function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
+
+export type CurrencyV = { Icp: null } | { Chips: null };
+export const ICP: CurrencyV = { Icp: null };
+export const CHIPS: CurrencyV = { Chips: null };
+export const isChips = (c: CurrencyV): boolean => 'Chips' in c;
+
+/** Formats a table amount: e8s for ICP tables, whole chips for play-chip tables. */
+export function amount(v: bigint | number, currency: CurrencyV, maxDecimals = 4): string {
+  return isChips(currency) ? BigInt(v).toLocaleString() : icp(v, maxDecimals);
+}
+
+export function amountWithUnit(v: bigint | number, currency: CurrencyV): string {
+  return isChips(currency) ? `${BigInt(v).toLocaleString()} chips` : `${icp(v)} ICP`;
+}
+
+/** Suit colors: classic red/black, or four-color (clubs green, diamonds blue). */
+export function suitClass(c: number, fourColor: boolean): string {
+  const s = c % 4;
+  if (fourColor) return ['clubs4', 'diamonds4', 'red', ''][s];
+  return isRed(c) ? 'red' : '';
+}
+
+export function countdown(targetNs: bigint): string {
+  const ms = Number(targetNs / 1_000_000n) - Date.now();
+  if (ms <= 0) return 'now';
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}

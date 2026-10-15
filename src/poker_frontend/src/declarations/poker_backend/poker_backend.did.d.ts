@@ -30,6 +30,11 @@ export interface ChatMessage {
   'text' : string,
   'time' : bigint,
 }
+/**
+ * What a table plays for: real ICP (1 chip = 1 e8s) or free play chips.
+ */
+export type Currency = { 'Icp' : null } |
+  { 'Chips' : null };
 export interface DepositInfo {
   'fee' : bigint,
   /**
@@ -49,6 +54,34 @@ export interface FriendInfo {
   'avatar' : string,
   'online' : boolean,
 }
+export interface HandPlayer {
+  'won' : bigint,
+  'username' : string,
+  'player' : Principal,
+  /**
+   * Hole cards. Stored for everyone; views only reveal your own and shown hands.
+   */
+  'cards' : Uint8Array | number[],
+  'seat' : number,
+  'committed' : bigint,
+  'shown' : boolean,
+}
+export interface HandRecord {
+  'id' : bigint,
+  'log' : Array<LogEntry>,
+  'pot' : bigint,
+  'small_blind' : bigint,
+  'hand_no' : bigint,
+  'rake' : bigint,
+  'time' : bigint,
+  'table_id' : bigint,
+  'players' : Array<HandPlayer>,
+  'currency' : Currency,
+  'big_blind' : bigint,
+  'board' : Uint8Array | number[],
+  'button' : number,
+  'table_name' : string,
+}
 export interface HandResult {
   'pot' : bigint,
   'hand_no' : bigint,
@@ -57,6 +90,19 @@ export interface HandResult {
   'players' : Array<PlayerResult>,
   'board' : Uint8Array | number[],
   'winners' : Array<Winner>,
+}
+export interface HandSummary {
+  'id' : bigint,
+  /**
+   * What the viewer won minus what they put in.
+   */
+  'net' : bigint,
+  'pot' : bigint,
+  'my_cards' : Uint8Array | number[],
+  'time' : bigint,
+  'currency' : Currency,
+  'board' : Uint8Array | number[],
+  'table_name' : string,
 }
 export interface HouseStats {
   /**
@@ -73,6 +119,7 @@ export interface InitArgs {
   'ledger_fee' : [] | [bigint],
 }
 export type ItemKind = { 'CardBack' : null } |
+  { 'Throwable' : null } |
   { 'Avatar' : null } |
   { 'Gift' : null };
 export interface LeaderboardEntry {
@@ -82,9 +129,22 @@ export interface LeaderboardEntry {
   'stats' : Stats,
   'avatar' : string,
 }
+/**
+ * One line of a hand's action log, used for hand histories and replays.
+ */
+export interface LogEntry {
+  'seat' : [] | [number],
+  'text' : string,
+  'phase' : Phase,
+  /**
+   * The player's total bet on this street after the action, or the amount won/returned.
+   */
+  'amount' : bigint,
+}
 export type MessageKind = { 'System' : null } |
   { 'Gift' : null } |
-  { 'Text' : null };
+  { 'Text' : null } |
+  { 'Throw' : null };
 export type Phase = { 'Flop' : null } |
   { 'Turn' : null } |
   { 'River' : null } |
@@ -103,12 +163,23 @@ export interface Profile {
   'friend_requests' : Array<Principal>,
   'username' : string,
   'balance' : bigint,
+  'chips' : bigint,
   'inventory' : Uint32Array | number[],
+  /**
+   * When the next daily chip bonus can be claimed (ns).
+   */
+  'next_daily_at' : bigint,
   'created_at' : bigint,
   'level' : number,
+  /**
+   * Size of the next daily bonus.
+   */
+  'next_daily_amount' : bigint,
   'stats' : Stats,
+  'settings' : Settings,
   'card_back' : number,
   'friends' : Array<Principal>,
+  'daily_streak' : number,
   'avatar' : number,
 }
 export interface PublicProfile {
@@ -149,6 +220,19 @@ export interface SeatView {
   'folded' : boolean,
   'avatar' : string,
 }
+export interface Settings {
+  /**
+   * Refill your stack to the table maximum after each hand when it drops below half.
+   */
+  'auto_top_up' : boolean,
+  /**
+   * Don't show losing hands at showdown.
+   */
+  'auto_muck' : boolean,
+  'four_color_deck' : boolean,
+  'sound' : boolean,
+  'show_throwables' : boolean,
+}
 export interface ShownHand {
   'player' : Principal,
   'cards' : Uint8Array | number[],
@@ -156,8 +240,18 @@ export interface ShownHand {
   'seat' : number,
 }
 export interface Stats {
+  /**
+   * Largest ICP pot won, in e8s.
+   */
   'biggest_pot_won' : bigint,
   'hands_won' : bigint,
+  /**
+   * Net play chips won or lost at chip tables.
+   */
+  'chip_net' : bigint,
+  /**
+   * Net ICP won or lost at ICP tables, in e8s.
+   */
   'net_winnings' : bigint,
   'hands_played' : bigint,
 }
@@ -171,6 +265,10 @@ export interface StoreItem {
   'name' : string,
   'description' : string,
   'available' : boolean,
+  /**
+   * Price in play chips. Zero means it can't be bought with chips.
+   */
+  'chip_price' : bigint,
   /**
    * Price in e8s. Zero means free.
    */
@@ -187,6 +285,7 @@ export interface TableConfig {
   'rake_bps' : number,
   'rake_cap' : bigint,
   'max_seats' : number,
+  'currency' : Currency,
   'big_blind' : bigint,
   'max_buy_in' : bigint,
 }
@@ -198,6 +297,7 @@ export interface TableSummary {
   'max_seats' : number,
   'avg_pot' : bigint,
   'players' : number,
+  'currency' : Currency,
   'big_blind' : bigint,
   'phase' : Phase,
   'max_buy_in' : bigint,
@@ -215,11 +315,22 @@ export interface TableView {
   'action_deadline' : bigint,
   'to_act' : [] | [number],
   'current_bet' : bigint,
+  /**
+   * Items thrown in the last few seconds, for clients to animate.
+   */
+  'throws' : Array<ThrowEvent>,
   'board' : Uint8Array | number[],
   'phase' : Phase,
   'config' : TableConfig,
   'button' : number,
   'max_raise_to' : bigint,
+}
+export interface ThrowEvent {
+  'id' : bigint,
+  'from_seat' : number,
+  'to_seat' : number,
+  'icon' : string,
+  'time' : bigint,
 }
 export interface Winner {
   'player' : Principal,
@@ -237,7 +348,11 @@ export interface _SERVICE {
    * Withdraws house revenue (rake and store sales) from the treasury.
    */
   'admin_withdraw_treasury' : ActorMethod<[Account, bigint], Result_2>,
-  'buy_item' : ActorMethod<[number], Result>,
+  'buy_item' : ActorMethod<[number, Currency], Result>,
+  /**
+   * Claims the daily free play-chip bonus (bigger on consecutive days).
+   */
+  'claim_daily_chips' : ActorMethod<[], Result_2>,
   /**
    * Deposit via plain transfer: send ICP to your deposit account (see
    * `get_deposit_info`) from any wallet or exchange, then call this.
@@ -254,6 +369,14 @@ export interface _SERVICE {
   'get_deposit_info' : ActorMethod<[], DepositInfo>,
   'get_dms' : ActorMethod<[Principal, bigint], Array<ChatMessage>>,
   'get_friends' : ActorMethod<[], Array<FriendInfo>>,
+  /**
+   * Full replay of a hand you played in.
+   */
+  'get_hand' : ActorMethod<[bigint], [] | [HandRecord]>,
+  /**
+   * Your most recent hands, newest first.
+   */
+  'get_hand_history' : ActorMethod<[number], Array<HandSummary>>,
   'get_leaderboard' : ActorMethod<[], Array<LeaderboardEntry>>,
   'get_my_profile' : ActorMethod<[], [] | [Profile]>,
   'get_profile' : ActorMethod<[Principal], [] | [PublicProfile]>,
@@ -269,10 +392,12 @@ export interface _SERVICE {
   'send_chat' : ActorMethod<[Channel, string], Result>,
   'send_dm' : ActorMethod<[Principal, string], Result>,
   'send_friend_request' : ActorMethod<[Principal], Result>,
-  'send_gift' : ActorMethod<[bigint, Principal, number], Result>,
+  'send_gift' : ActorMethod<[bigint, Principal, number, Currency], Result>,
   'set_status' : ActorMethod<[string], Result>,
   'sit_out' : ActorMethod<[bigint, boolean], Result>,
+  'throw_item' : ActorMethod<[bigint, Principal, number, Currency], Result>,
   'top_up' : ActorMethod<[bigint, bigint], Result>,
+  'update_settings' : ActorMethod<[Settings], Result>,
   'whoami' : ActorMethod<[], Principal>,
   /**
    * Sends `amount` e8s to `to`. The ledger fee is charged on top.

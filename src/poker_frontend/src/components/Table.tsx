@@ -1,29 +1,48 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useApp, usePoll } from '../context';
-import { unwrap, type SeatView, type TableView } from '../ic';
-import { bytes, cardRank, cardSuit, icp, isRed } from '../format';
+import { unwrap, type SeatView, type StoreItem, type TableView, type ThrowEvent } from '../ic';
+import { amount, amountWithUnit, bytes, cardRank, cardSuit, CHIPS, ICP, icp, isChips, suitClass, type CurrencyV } from '../format';
+import { sounds } from '../sound';
 import { Chat } from './Chat';
 
 export function Card({ c, back, small }: { c?: number; back?: string; small?: boolean }) {
+  const { profile } = useApp();
   if (c === undefined) {
     return <div className={`card back ${small ? 'sm' : ''}`} style={{ background: back || '#b91c1c' }} />;
   }
   return (
-    <div className={`card ${isRed(c) ? 'red' : ''} ${small ? 'sm' : ''}`}>
+    <div className={`card ${suitClass(c, profile?.settings.four_color_deck ?? false)} ${small ? 'sm' : ''}`}>
       <span className="rank">{cardRank(c)}</span>
       <span className="suit">{cardSuit(c)}</span>
     </div>
   );
 }
 
-function Chips({ amount }: { amount: bigint }) {
-  if (amount === 0n) return null;
+function Chips({ value, currency }: { value: bigint; currency: CurrencyV }) {
+  if (value === 0n) return null;
   return (
     <div className="bet">
       <span className="chip-stack" />
-      {icp(amount, 4)}
+      {amount(value, currency)}
     </div>
   );
+}
+
+/** Which currency to pay for an item with at a table: the table's own if the item supports it. */
+export function payCurrency(item: StoreItem, tableCurrency: CurrencyV): CurrencyV {
+  if (isChips(tableCurrency) && item.chip_price > 0n) return CHIPS;
+  return item.price > 0n ? ICP : CHIPS;
+}
+
+export function priceLabel(item: StoreItem, currency: CurrencyV): string {
+  return isChips(currency) ? `${item.chip_price.toLocaleString()} chips` : `${icp(item.price)} ICP`;
+}
+
+interface Flying {
+  id: bigint;
+  icon: string;
+  from: { left: string; top: string };
+  to: { left: string; top: string };
 }
 
 export function TablePage({ id }: { id: bigint }) {
@@ -35,6 +54,9 @@ export function TablePage({ id }: { id: bigint }) {
   const [selected, setSelected] = useState<SeatView | null>(null);
   const [raiseTo, setRaiseTo] = useState<bigint>(0n);
   const [busy, setBusy] = useState(false);
+  const [flying, setFlying] = useState<Flying[]>([]);
+  const seenThrows = useRef<Set<bigint> | null>(null);
+  const settings = profile?.settings;
 
   const load = async () => {
     const v = (await backend.get_table(id))[0] ?? null;
@@ -48,23 +70,57 @@ export function TablePage({ id }: { id: bigint }) {
     return () => clearInterval(t);
   }, []);
 
-  const myTurn = view && view.my_seat.length && view.to_act.length && view.my_seat[0] === view.to_act[0];
+  const myTurn = !!view && view.my_seat.length > 0 && view.to_act.length > 0 && view.my_seat[0] === view.to_act[0];
   const lastTurnKey = useRef('');
   useEffect(() => {
     if (!view || !myTurn) return;
-    const key = `${view.hand_no}-${view.phase && Object.keys(view.phase)[0]}-${view.current_bet}`;
+    const key = `${view.hand_no}-${Object.keys(view.phase)[0]}-${view.current_bet}`;
     if (key !== lastTurnKey.current) {
       lastTurnKey.current = key;
       setRaiseTo(view.min_raise_to);
+      if (settings?.sound) sounds.yourTurn();
     }
-  }, [view, myTurn]);
+  }, [view, myTurn, settings?.sound]);
+
+  // Sounds for new hands and wins.
+  const lastHand = useRef<bigint>(0n);
+  const lastWin = useRef<bigint>(0n);
+  useEffect(() => {
+    if (!view || !settings?.sound) return;
+    if (view.hand_no !== lastHand.current) {
+      if (lastHand.current !== 0n && view.my_seat.length) sounds.deal();
+      lastHand.current = view.hand_no;
+    }
+    const r = view.last_result[0];
+    if (r && r.hand_no !== lastWin.current && r.winners.some((w) => w.player.toText() === profile?.id.toText())) {
+      lastWin.current = r.hand_no;
+      sounds.win();
+    }
+  }, [view, settings?.sound, profile?.id]);
+
+  // Animate throws we haven't seen yet. Throws already present on first load are skipped.
+  useEffect(() => {
+    if (!view) return;
+    if (seenThrows.current === null) {
+      seenThrows.current = new Set(view.throws.map((t) => t.id));
+      return;
+    }
+    const fresh = view.throws.filter((t) => !seenThrows.current!.has(t.id));
+    if (fresh.length === 0) return;
+    fresh.forEach((t) => seenThrows.current!.add(t.id));
+    if (settings && !settings.show_throwables) return;
+    if (settings?.sound) sounds.splat();
+    const add = fresh.map((t: ThrowEvent) => ({ id: t.id, icon: t.icon, from: seatPos(view, t.from_seat), to: seatPos(view, t.to_seat) }));
+    setFlying((f) => [...f, ...add]);
+    setTimeout(() => setFlying((f) => f.filter((x) => !add.some((a) => a.id === x.id))), 2200);
+    // seatPos is a pure function of the view
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, settings?.show_throwables]);
 
   if (!view) return <div className="splash">Loading table…</div>;
 
-  const n = view.seats.length;
-  const narrow = window.innerWidth < 700;
+  const currency = view.config.currency;
   const mySeat = view.my_seat[0];
-  const rotation = mySeat ?? 0;
   const phase = Object.keys(view.phase)[0];
   const remaining = Math.max(0, Number(view.action_deadline / 1_000_000n) + clockOffset - Date.now());
   const timeout = Number(view.config.action_timeout_secs) * 1000;
@@ -72,16 +128,10 @@ export function TablePage({ id }: { id: bigint }) {
 
   const act = async (action: Parameters<typeof backend.act>[1]) => {
     setBusy(true);
+    if (settings?.sound && !('Fold' in action) && !('Check' in action)) sounds.chips();
     await run(async () => unwrap(await backend.act(id, action)));
     await load();
     setBusy(false);
-  };
-
-  const seatPos = (i: number) => {
-    const k = (i - rotation + n) % n;
-    const angle = Math.PI / 2 + (k * 2 * Math.PI) / n;
-    const rx = narrow ? 36 : 43;
-    return { left: `${50 + rx * Math.cos(angle)}%`, top: `${50 + 40 * Math.sin(angle)}%` };
   };
 
   const potRaise = (fraction: number) => {
@@ -94,6 +144,7 @@ export function TablePage({ id }: { id: bigint }) {
 
   const result = phase === 'HandOver' ? view.last_result[0] : undefined;
   const winnerSeats = new Set(result?.winners.map((w) => w.seat) ?? []);
+  const step = isChips(currency) ? 1 : Number(view.config.small_blind);
 
   return (
     <div className="table-page">
@@ -104,9 +155,10 @@ export function TablePage({ id }: { id: bigint }) {
           </button>
           <div>
             <b>{view.config.name}</b>
+            <span className={`tag ${isChips(currency) ? 'chips' : ''}`}>{isChips(currency) ? 'Play chips' : 'ICP'}</span>
             <span className="muted">
               {' '}
-              · NLHE {icp(view.config.small_blind)}/{icp(view.config.big_blind)} ICP · Hand #{String(view.hand_no)}
+              · NLHE {amount(view.config.small_blind, currency)}/{amount(view.config.big_blind, currency)} · Hand #{String(view.hand_no)}
             </span>
           </div>
           <div className="row gap">
@@ -143,12 +195,14 @@ export function TablePage({ id }: { id: bigint }) {
                 <div key={`e${i}`} className="card slot" />
               ))}
             </div>
-            <div className="pot">{view.pot > 0n ? `Pot ${icp(view.pot, 4)} ICP` : phase === 'Waiting' ? 'Waiting for players…' : ''}</div>
+            <div className="pot">
+              {view.pot > 0n ? `Pot ${amountWithUnit(view.pot, currency)}` : phase === 'Waiting' ? 'Waiting for players…' : ''}
+            </div>
             {result && (
               <div className="result">
                 {result.winners.map((w) => (
                   <div key={w.seat}>
-                    🏆 {view.seats[w.seat][0]?.username ?? 'Player'} wins {icp(w.amount, 4)} — {w.hand}
+                    🏆 {view.seats[w.seat][0]?.username ?? 'Player'} wins {amount(w.amount, currency)} — {w.hand}
                   </div>
                 ))}
               </div>
@@ -157,7 +211,7 @@ export function TablePage({ id }: { id: bigint }) {
 
           {view.seats.map((slot, i) => {
             const s = slot[0];
-            const pos = seatPos(i);
+            const pos = seatPos(view, i);
             if (!s) {
               return (
                 <div key={i} className="seat empty" style={pos}>
@@ -181,7 +235,11 @@ export function TablePage({ id }: { id: bigint }) {
                 onClick={() => s.player.toText() !== profile?.id.toText() && setSelected(s)}
               >
                 <div className="hole">
-                  {cards.length > 0 ? cards.map((c, k) => <Card key={k} c={c} small={i !== mySeat} />) : s.has_cards ? [0, 1].map((k) => <Card key={k} back={s.card_back} small />) : null}
+                  {cards.length > 0
+                    ? cards.map((c, k) => <Card key={k} c={c} small={i !== mySeat} />)
+                    : s.has_cards
+                      ? [0, 1].map((k) => <Card key={k} back={s.card_back} small />)
+                      : null}
                 </div>
                 <div className="avatar">
                   {s.avatar}
@@ -191,7 +249,7 @@ export function TablePage({ id }: { id: bigint }) {
                   <div className="name">
                     {s.username} <span className="lvl">Lv{s.level}</span>
                   </div>
-                  <div className="stack">{s.all_in ? 'ALL-IN' : `${icp(s.stack, 4)}`}</div>
+                  <div className="stack">{s.all_in ? 'ALL-IN' : amount(s.stack, currency)}</div>
                   {acting && <div className="timer" style={{ width: `${(remaining / timeout) * 100}%` }} />}
                 </div>
                 {s.sitting_out && !s.in_hand ? (
@@ -200,10 +258,20 @@ export function TablePage({ id }: { id: bigint }) {
                   s.last_action[0] && <div className="action-tag">{s.last_action[0]}</div>
                 )}
                 {view.button === i && phase !== 'Waiting' && <div className="dealer">D</div>}
-                <Chips amount={s.bet} />
+                <Chips value={s.bet} currency={currency} />
               </div>
             );
           })}
+
+          {flying.map((f) => (
+            <div
+              key={String(f.id)}
+              className="flying"
+              style={{ '--x0': f.from.left, '--y0': f.from.top, '--x1': f.to.left, '--y1': f.to.top } as CSSProperties}
+            >
+              {f.icon}
+            </div>
+          ))}
         </div>
 
         <div className="action-bar">
@@ -218,7 +286,7 @@ export function TablePage({ id }: { id: bigint }) {
                 </button>
               ) : (
                 <button className="btn check" disabled={busy} onClick={() => act({ Call: null })}>
-                  Call {icp(view.to_call, 4)}
+                  Call {amount(view.to_call, currency)}
                 </button>
               )}
               {view.max_raise_to > view.current_bet && view.max_raise_to > view.to_call && (
@@ -241,7 +309,7 @@ export function TablePage({ id }: { id: bigint }) {
                     type="range"
                     min={Number(view.min_raise_to)}
                     max={Number(view.max_raise_to)}
-                    step={Number(view.config.small_blind)}
+                    step={step}
                     value={Number(raiseTo)}
                     onChange={(e) => setRaiseTo(BigInt(e.target.value))}
                   />
@@ -250,7 +318,7 @@ export function TablePage({ id }: { id: bigint }) {
                     disabled={busy}
                     onClick={() => act(raiseTo >= view.max_raise_to ? { AllIn: null } : { Raise: raiseTo })}
                   >
-                    {raiseTo >= view.max_raise_to ? 'All-in' : view.current_bet === 0n ? 'Bet' : 'Raise to'} {icp(raiseTo, 4)}
+                    {raiseTo >= view.max_raise_to ? 'All-in' : view.current_bet === 0n ? 'Bet' : 'Raise to'} {amount(raiseTo, currency)}
                   </button>
                 </div>
               )}
@@ -260,7 +328,7 @@ export function TablePage({ id }: { id: bigint }) {
               {!profile
                 ? 'Sign in and create a profile to play.'
                 : mySeat === undefined
-                  ? 'Pick an empty seat to sit down.'
+                  ? 'Pick an empty seat to sit down. Click a player to send a gift or throw something.'
                   : phase === 'Waiting'
                     ? 'Waiting for another player…'
                     : 'Waiting for your turn…'}
@@ -274,16 +342,28 @@ export function TablePage({ id }: { id: bigint }) {
       </aside>
 
       {buyInSeat !== null && <BuyIn view={view} seat={buyInSeat} onClose={() => setBuyInSeat(null)} onDone={load} />}
-      {selected && <PlayerCard seat={selected} tableId={id} onClose={() => setSelected(null)} />}
+      {selected && <PlayerCard seat={selected} view={view} canThrow={mySeat !== undefined} onClose={() => setSelected(null)} />}
     </div>
   );
 }
 
+/** Seat position around the oval, rotated so the viewer sits at the bottom. */
+function seatPos(view: TableView, i: number) {
+  const n = view.seats.length;
+  const rotation = view.my_seat[0] ?? 0;
+  const k = (i - rotation + n) % n;
+  const angle = Math.PI / 2 + (k * 2 * Math.PI) / n;
+  const rx = window.innerWidth < 700 ? 36 : 43;
+  return { left: `${50 + rx * Math.cos(angle)}%`, top: `${50 + 40 * Math.sin(angle)}%` };
+}
+
 function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number; onClose: () => void; onDone: () => Promise<void> }) {
   const { backend, profile, run, refreshProfile, go } = useApp();
-  const balance = profile?.balance ?? 0n;
+  const currency = view.config.currency;
+  const chips = isChips(currency);
+  const balance = (chips ? profile?.chips : profile?.balance) ?? 0n;
   const max = balance < view.config.max_buy_in ? balance : view.config.max_buy_in;
-  const [amount, setAmount] = useState<bigint>(max);
+  const [value, setValue] = useState<bigint>(max);
   const short = balance < view.config.min_buy_in;
 
   return (
@@ -291,14 +371,18 @@ function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number;
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>Buy in · Seat {seat + 1}</h3>
         <p className="muted">
-          Wallet balance: <b>{icp(balance)} ICP</b>
+          {chips ? 'Play chips' : 'Wallet balance'}: <b>{amountWithUnit(balance, currency)}</b>
         </p>
         {short ? (
           <>
-            <p>You need at least {icp(view.config.min_buy_in)} ICP to sit here.</p>
-            <button className="btn" onClick={() => go({ name: 'wallet' })}>
-              Deposit ICP
-            </button>
+            <p>You need at least {amountWithUnit(view.config.min_buy_in, currency)} to sit here.</p>
+            {chips ? (
+              <p className="muted small">Claim your daily chip bonus from the top bar, or try a smaller table.</p>
+            ) : (
+              <button className="btn" onClick={() => go({ name: 'wallet' })}>
+                Deposit ICP
+              </button>
+            )}
           </>
         ) : (
           <>
@@ -307,10 +391,10 @@ function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number;
               min={Number(view.config.min_buy_in)}
               max={Number(max)}
               step={Number(view.config.big_blind)}
-              value={Number(amount)}
-              onChange={(e) => setAmount(BigInt(e.target.value))}
+              value={Number(value)}
+              onChange={(e) => setValue(BigInt(e.target.value))}
             />
-            <div className="big">{icp(amount)} ICP</div>
+            <div className="big">{amountWithUnit(value, currency)}</div>
             <div className="row gap">
               <button className="btn ghost" onClick={onClose}>
                 Cancel
@@ -318,7 +402,7 @@ function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number;
               <button
                 className="btn"
                 onClick={async () => {
-                  const r = await run(async () => unwrap(await backend.join_table(view.id, seat, amount)), 'Good luck!');
+                  const r = await run(async () => unwrap(await backend.join_table(view.id, seat, value)), 'Good luck!');
                   if (r !== undefined) {
                     onClose();
                     await Promise.all([refreshProfile(), onDone()]);
@@ -335,10 +419,42 @@ function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number;
   );
 }
 
-function PlayerCard({ seat, tableId, onClose }: { seat: SeatView; tableId: bigint; onClose: () => void }) {
+function PlayerCard({ seat, view, canThrow, onClose }: { seat: SeatView; view: TableView; canThrow: boolean; onClose: () => void }) {
   const { backend, items, profile, run, refreshProfile } = useApp();
-  const gifts = [...items.values()].filter((i) => 'Gift' in i.kind);
+  const all = [...items.values()];
+  const gifts = all.filter((i) => 'Gift' in i.kind);
+  const throwables = all.filter((i) => 'Throwable' in i.kind);
   const isFriend = profile?.friends.some((f) => f.toText() === seat.player.toText());
+  const tableCurrency = view.config.currency;
+
+  const use = async (item: StoreItem, kind: 'gift' | 'throw') => {
+    const cur = payCurrency(item, tableCurrency);
+    const r = await run(
+      async () =>
+        unwrap(
+          kind === 'gift'
+            ? await backend.send_gift(view.id, seat.player, item.id, cur)
+            : await backend.throw_item(view.id, seat.player, item.id, cur),
+        ),
+      kind === 'gift' ? `Sent ${item.name}!` : undefined,
+    );
+    if (r !== undefined) {
+      await refreshProfile();
+      onClose();
+    }
+  };
+
+  const grid = (list: StoreItem[], kind: 'gift' | 'throw') => (
+    <div className="gift-grid">
+      {list.map((g) => (
+        <button key={g.id} className="gift-btn" title={g.description} onClick={() => use(g, kind)}>
+          <span className="icon">{g.icon}</span>
+          <span>{g.name}</span>
+          <span className="price">{priceLabel(g, payCurrency(g, tableCurrency))}</span>
+        </button>
+      ))}
+    </div>
+  );
 
   return (
     <div className="modal-bg" onClick={onClose}>
@@ -357,27 +473,14 @@ function PlayerCard({ seat, tableId, onClose }: { seat: SeatView; tableId: bigin
         )}
         {profile && (
           <>
+            {canThrow && (
+              <>
+                <h4>Throw something</h4>
+                {grid(throwables, 'throw')}
+              </>
+            )}
             <h4>Send a gift</h4>
-            <div className="gift-grid">
-              {gifts.map((g) => (
-                <button
-                  key={g.id}
-                  className="gift-btn"
-                  title={g.description}
-                  onClick={async () => {
-                    const r = await run(async () => unwrap(await backend.send_gift(tableId, seat.player, g.id)), `Sent ${g.name}!`);
-                    if (r !== undefined) {
-                      await refreshProfile();
-                      onClose();
-                    }
-                  }}
-                >
-                  <span className="icon">{g.icon}</span>
-                  <span>{g.name}</span>
-                  <span className="price">{icp(g.price)}</span>
-                </button>
-              ))}
-            </div>
+            {grid(gifts, 'gift')}
           </>
         )}
       </div>

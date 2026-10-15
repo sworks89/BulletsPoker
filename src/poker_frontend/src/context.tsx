@@ -10,6 +10,7 @@ export type View =
   | { name: 'store' }
   | { name: 'friends' }
   | { name: 'leaderboard' }
+  | { name: 'history' }
   | { name: 'profile' };
 
 interface Toast {

@@ -14,7 +14,7 @@ use state::*;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::time::Duration;
-use table::{Action, TableConfig};
+use table::{Action, Currency, TableConfig};
 
 /// Mainnet ICP ledger.
 const ICP_LEDGER: &str = "ryjl3-tyaaa-aaaaa-aaaba-cai";
@@ -279,9 +279,9 @@ fn list_store() -> Vec<StoreItem> {
 }
 
 #[update]
-fn buy_item(id: u32) -> R<()> {
+fn buy_item(id: u32, currency: Currency) -> R<()> {
     let p = caller()?;
-    with_mut(|s| s.buy_item(p, id))
+    with_mut(|s| s.buy_item(p, id, currency))
 }
 
 #[update]
@@ -291,9 +291,46 @@ fn equip(id: u32) -> R<()> {
 }
 
 #[update]
-fn send_gift(table_id: u64, to: Principal, item_id: u32) -> R<()> {
+fn send_gift(table_id: u64, to: Principal, item_id: u32, currency: Currency) -> R<()> {
     let p = caller()?;
-    with_mut(|s| s.send_gift(p, table_id, to, item_id, now()))
+    with_mut(|s| s.send_gift(p, table_id, to, item_id, currency, now()))
+}
+
+#[update]
+fn throw_item(table_id: u64, to: Principal, item_id: u32, currency: Currency) -> R<()> {
+    let p = caller()?;
+    with_mut(|s| s.throw_item(p, table_id, to, item_id, currency, now()))
+}
+
+// ------------------------------------------------------- chips & settings
+
+/// Claims the daily free play-chip bonus (bigger on consecutive days).
+#[update]
+fn claim_daily_chips() -> R<u64> {
+    let p = caller()?;
+    with_mut(|s| s.claim_daily(p, now()))
+}
+
+#[update]
+fn update_settings(settings: Settings) -> R<()> {
+    let p = caller()?;
+    with_mut(|s| s.update_settings(p, settings))
+}
+
+// ------------------------------------------------------------ hand history
+
+/// Your most recent hands, newest first.
+#[query]
+fn get_hand_history(limit: u32) -> Vec<HandSummary> {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.hand_history(p, limit.min(50) as usize))
+}
+
+/// Full replay of a hand you played in.
+#[query]
+fn get_hand(id: u64) -> Option<HandRecord> {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.hand(p, id))
 }
 
 // ------------------------------------------------------------------ tables

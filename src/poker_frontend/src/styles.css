@@ -200,3 +200,53 @@ main { padding: 18px 0; }
 }
 .table-main, .lobby > *, .table-page > * { min-width: 0; }
 .tables { overflow-x: auto; }
+
+/* ---- tier 1: play chips, four-color deck, throwables, history, settings ---- */
+.card.clubs4 { color: #15803d; }
+.card.diamonds4 { color: #2563eb; }
+.tag.chips { background: #3b1f5c; color: #e9d5ff; }
+.chip-price { color: #c4b5fd; }
+.btn.chips-btn { background: linear-gradient(180deg, #c4b5fd, #8b5cf6); color: #1e0b3a; }
+.chips-balance { background: #1f1435; border: 1px solid #4c2f7a; color: #d8b4fe; border-radius: 8px; padding: 6px 10px; font-weight: 700; }
+.daily { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; color: var(--muted); font-weight: 600; }
+.daily.ready { color: #1a1200; background: linear-gradient(180deg, var(--accent-2), var(--accent)); border-color: transparent; animation: glow 1.6s ease-in-out infinite; }
+@keyframes glow { 50% { box-shadow: 0 0 14px var(--accent); } }
+
+.flying { position: absolute; z-index: 20; font-size: 36px; pointer-events: none; transform: translate(-50%, -50%); animation: fly 1.1s cubic-bezier(.3,.1,.3,1) forwards, splat 0.9s 1.1s ease-out forwards; }
+@keyframes fly {
+  from { left: var(--x0); top: var(--y0); transform: translate(-50%, -50%) rotate(0deg) scale(0.8); }
+  50% { transform: translate(-50%, -120%) rotate(360deg) scale(1.3); }
+  to { left: var(--x1); top: var(--y1); transform: translate(-50%, -50%) rotate(720deg) scale(1); }
+}
+@keyframes splat { to { left: var(--x1); top: var(--y1); transform: translate(-50%, -50%) scale(2.2); opacity: 0; } }
+
+.setting { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; cursor: pointer; }
+.setting input { width: auto; margin-top: 3px; accent-color: var(--accent); }
+.setting > span { display: flex; flex-direction: column; }
+
+.history { display: grid; grid-template-columns: 360px 1fr; gap: 16px; align-items: start; }
+.history > * { min-width: 0; }
+.hand-list { max-height: 78vh; overflow-y: auto; }
+.hand-row { display: flex; align-items: center; gap: 10px; background: none; border: 1px solid transparent; border-radius: 8px; padding: 6px; text-align: left; width: 100%; }
+.hand-row:hover { background: var(--panel-2); }
+.hand-row.active { border-color: var(--accent); background: var(--panel-2); }
+.hand-cards { display: flex; gap: 2px; min-width: 80px; }
+.replay-felt { background: radial-gradient(ellipse at center, #15904f 0%, var(--felt) 55%, var(--felt-dark) 100%); border: 8px solid var(--rail); border-radius: 999px; padding: 26px 16px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.replay-players { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+.replay-player { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.replay-player .hole { display: flex; gap: 2px; min-height: 40px; align-items: center; }
+.replay-player.acting { border-color: var(--accent); box-shadow: 0 0 10px rgba(245,185,26,.4); }
+.replay-player.winner { border-color: var(--green); }
+.replay-controls .chip { text-transform: none; }
+.hand-log { margin: 0; padding: 0; list-style: none; max-height: 280px; overflow-y: auto; font-size: 14px; display: flex; flex-direction: column; gap: 2px; }
+.hand-log li { cursor: pointer; }
+.hand-log li.future { opacity: 0.35; }
+.hand-log li.current { color: var(--accent-2); }
+.hand-log li.street { color: #86efac; margin-top: 4px; }
+
+@media (max-width: 900px) {
+  .history { grid-template-columns: 1fr; }
+  .hand-list { max-height: 320px; }
+  .daily, .chips-balance { padding: 4px 6px; font-size: 13px; }
+}
+.msg.throw { color: #fdba74; }

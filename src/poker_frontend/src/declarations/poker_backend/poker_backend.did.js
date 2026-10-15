@@ -13,6 +13,7 @@ export const idlFactory = ({ IDL }) => {
   const Result = IDL.Variant({ 'Ok' : IDL.Null, 'Err' : IDL.Text });
   const ItemKind = IDL.Variant({
     'CardBack' : IDL.Null,
+    'Throwable' : IDL.Null,
     'Avatar' : IDL.Null,
     'Gift' : IDL.Null,
   });
@@ -23,9 +24,11 @@ export const idlFactory = ({ IDL }) => {
     'name' : IDL.Text,
     'description' : IDL.Text,
     'available' : IDL.Bool,
+    'chip_price' : IDL.Nat64,
     'price' : IDL.Nat64,
   });
   const Result_1 = IDL.Variant({ 'Ok' : IDL.Nat32, 'Err' : IDL.Text });
+  const Currency = IDL.Variant({ 'Icp' : IDL.Null, 'Chips' : IDL.Null });
   const TableConfig = IDL.Record({
     'small_blind' : IDL.Nat64,
     'action_timeout_secs' : IDL.Nat64,
@@ -34,6 +37,7 @@ export const idlFactory = ({ IDL }) => {
     'rake_bps' : IDL.Nat16,
     'rake_cap' : IDL.Nat64,
     'max_seats' : IDL.Nat8,
+    'currency' : Currency,
     'big_blind' : IDL.Nat64,
     'max_buy_in' : IDL.Nat64,
   });
@@ -53,6 +57,7 @@ export const idlFactory = ({ IDL }) => {
   const Stats = IDL.Record({
     'biggest_pot_won' : IDL.Nat64,
     'hands_won' : IDL.Nat64,
+    'chip_net' : IDL.Int64,
     'net_winnings' : IDL.Int64,
     'hands_played' : IDL.Nat64,
   });
@@ -71,6 +76,7 @@ export const idlFactory = ({ IDL }) => {
     'System' : IDL.Null,
     'Gift' : IDL.Null,
     'Text' : IDL.Null,
+    'Throw' : IDL.Null,
   });
   const ChatMessage = IDL.Record({
     'id' : IDL.Nat64,
@@ -93,12 +99,68 @@ export const idlFactory = ({ IDL }) => {
     'avatar' : IDL.Text,
     'online' : IDL.Bool,
   });
+  const Phase = IDL.Variant({
+    'Flop' : IDL.Null,
+    'Turn' : IDL.Null,
+    'River' : IDL.Null,
+    'HandOver' : IDL.Null,
+    'Waiting' : IDL.Null,
+    'PreFlop' : IDL.Null,
+  });
+  const LogEntry = IDL.Record({
+    'seat' : IDL.Opt(IDL.Nat8),
+    'text' : IDL.Text,
+    'phase' : Phase,
+    'amount' : IDL.Nat64,
+  });
+  const HandPlayer = IDL.Record({
+    'won' : IDL.Nat64,
+    'username' : IDL.Text,
+    'player' : IDL.Principal,
+    'cards' : IDL.Vec(IDL.Nat8),
+    'seat' : IDL.Nat8,
+    'committed' : IDL.Nat64,
+    'shown' : IDL.Bool,
+  });
+  const HandRecord = IDL.Record({
+    'id' : IDL.Nat64,
+    'log' : IDL.Vec(LogEntry),
+    'pot' : IDL.Nat64,
+    'small_blind' : IDL.Nat64,
+    'hand_no' : IDL.Nat64,
+    'rake' : IDL.Nat64,
+    'time' : IDL.Nat64,
+    'table_id' : IDL.Nat64,
+    'players' : IDL.Vec(HandPlayer),
+    'currency' : Currency,
+    'big_blind' : IDL.Nat64,
+    'board' : IDL.Vec(IDL.Nat8),
+    'button' : IDL.Nat8,
+    'table_name' : IDL.Text,
+  });
+  const HandSummary = IDL.Record({
+    'id' : IDL.Nat64,
+    'net' : IDL.Int64,
+    'pot' : IDL.Nat64,
+    'my_cards' : IDL.Vec(IDL.Nat8),
+    'time' : IDL.Nat64,
+    'currency' : Currency,
+    'board' : IDL.Vec(IDL.Nat8),
+    'table_name' : IDL.Text,
+  });
   const LeaderboardEntry = IDL.Record({
     'id' : IDL.Principal,
     'username' : IDL.Text,
     'level' : IDL.Nat32,
     'stats' : Stats,
     'avatar' : IDL.Text,
+  });
+  const Settings = IDL.Record({
+    'auto_top_up' : IDL.Bool,
+    'auto_muck' : IDL.Bool,
+    'four_color_deck' : IDL.Bool,
+    'sound' : IDL.Bool,
+    'show_throwables' : IDL.Bool,
   });
   const Profile = IDL.Record({
     'id' : IDL.Principal,
@@ -107,12 +169,17 @@ export const idlFactory = ({ IDL }) => {
     'friend_requests' : IDL.Vec(IDL.Principal),
     'username' : IDL.Text,
     'balance' : IDL.Nat64,
+    'chips' : IDL.Nat64,
     'inventory' : IDL.Vec(IDL.Nat32),
+    'next_daily_at' : IDL.Nat64,
     'created_at' : IDL.Nat64,
     'level' : IDL.Nat32,
+    'next_daily_amount' : IDL.Nat64,
     'stats' : Stats,
+    'settings' : Settings,
     'card_back' : IDL.Nat32,
     'friends' : IDL.Vec(IDL.Principal),
+    'daily_streak' : IDL.Nat32,
     'avatar' : IDL.Nat32,
   });
   const ShownHand = IDL.Record({
@@ -159,13 +226,12 @@ export const idlFactory = ({ IDL }) => {
     'folded' : IDL.Bool,
     'avatar' : IDL.Text,
   });
-  const Phase = IDL.Variant({
-    'Flop' : IDL.Null,
-    'Turn' : IDL.Null,
-    'River' : IDL.Null,
-    'HandOver' : IDL.Null,
-    'Waiting' : IDL.Null,
-    'PreFlop' : IDL.Null,
+  const ThrowEvent = IDL.Record({
+    'id' : IDL.Nat64,
+    'from_seat' : IDL.Nat8,
+    'to_seat' : IDL.Nat8,
+    'icon' : IDL.Text,
+    'time' : IDL.Nat64,
   });
   const TableView = IDL.Record({
     'id' : IDL.Nat64,
@@ -180,6 +246,7 @@ export const idlFactory = ({ IDL }) => {
     'action_deadline' : IDL.Nat64,
     'to_act' : IDL.Opt(IDL.Nat8),
     'current_bet' : IDL.Nat64,
+    'throws' : IDL.Vec(ThrowEvent),
     'board' : IDL.Vec(IDL.Nat8),
     'phase' : Phase,
     'config' : TableConfig,
@@ -194,6 +261,7 @@ export const idlFactory = ({ IDL }) => {
     'max_seats' : IDL.Nat8,
     'avg_pot' : IDL.Nat64,
     'players' : IDL.Nat8,
+    'currency' : Currency,
     'big_blind' : IDL.Nat64,
     'phase' : Phase,
     'max_buy_in' : IDL.Nat64,
@@ -206,7 +274,8 @@ export const idlFactory = ({ IDL }) => {
     'admin_house_stats' : IDL.Func([], [Result_3], ['query']),
     'admin_set_item_available' : IDL.Func([IDL.Nat32, IDL.Bool], [Result], []),
     'admin_withdraw_treasury' : IDL.Func([Account, IDL.Nat64], [Result_2], []),
-    'buy_item' : IDL.Func([IDL.Nat32], [Result], []),
+    'buy_item' : IDL.Func([IDL.Nat32, Currency], [Result], []),
+    'claim_daily_chips' : IDL.Func([], [Result_2], []),
     'claim_deposit' : IDL.Func([], [Result_2], []),
     'deposit' : IDL.Func([IDL.Nat64], [Result_2], []),
     'equip' : IDL.Func([IDL.Nat32], [Result], []),
@@ -223,6 +292,12 @@ export const idlFactory = ({ IDL }) => {
         ['query'],
       ),
     'get_friends' : IDL.Func([], [IDL.Vec(FriendInfo)], ['query']),
+    'get_hand' : IDL.Func([IDL.Nat64], [IDL.Opt(HandRecord)], ['query']),
+    'get_hand_history' : IDL.Func(
+        [IDL.Nat32],
+        [IDL.Vec(HandSummary)],
+        ['query'],
+      ),
     'get_leaderboard' : IDL.Func([], [IDL.Vec(LeaderboardEntry)], ['query']),
     'get_my_profile' : IDL.Func([], [IDL.Opt(Profile)], ['query']),
     'get_profile' : IDL.Func(
@@ -246,10 +321,20 @@ export const idlFactory = ({ IDL }) => {
     'send_chat' : IDL.Func([Channel, IDL.Text], [Result], []),
     'send_dm' : IDL.Func([IDL.Principal, IDL.Text], [Result], []),
     'send_friend_request' : IDL.Func([IDL.Principal], [Result], []),
-    'send_gift' : IDL.Func([IDL.Nat64, IDL.Principal, IDL.Nat32], [Result], []),
+    'send_gift' : IDL.Func(
+        [IDL.Nat64, IDL.Principal, IDL.Nat32, Currency],
+        [Result],
+        [],
+      ),
     'set_status' : IDL.Func([IDL.Text], [Result], []),
     'sit_out' : IDL.Func([IDL.Nat64, IDL.Bool], [Result], []),
+    'throw_item' : IDL.Func(
+        [IDL.Nat64, IDL.Principal, IDL.Nat32, Currency],
+        [Result],
+        [],
+      ),
     'top_up' : IDL.Func([IDL.Nat64, IDL.Nat64], [Result], []),
+    'update_settings' : IDL.Func([Settings], [Result], []),
     'whoami' : IDL.Func([], [IDL.Principal], ['query']),
     'withdraw' : IDL.Func([Account, IDL.Nat64], [Result_2], []),
   });

@@ -11,10 +11,20 @@ A social Texas Hold'em poker room that runs entirely on the [Internet Computer](
 - A fresh deck every hand, shuffled with on-chain randomness (`raw_rand`)
 - Configurable rake (default 2.5%, capped at 3 big blinds, and none if there's no flop)
 
+**Play chips (free-to-play)**
+- A second currency for free tables: 20,000 chips on signup, plus a daily bonus that grows with a 7-day streak
+- Separate rake-free chip tables; chips are never backed by or exchangeable for ICP
+- Cosmetics, gifts and throwables can be bought with chips as well as ICP (premium items stay ICP only)
+
+**Hand history & settings**
+- Your last 50 hands with a step-by-step replay (board, pot and action log). Only your own cards and hands shown at showdown are revealed
+- Settings saved to your profile: four-color deck, auto-muck losing hands, auto top-up, sounds, show/hide throwables
+
 **Social**
 - Lobby chat and per-table chat with quick emotes, plus rate limiting
 - Friends: search by username, friend requests, online status, "join their table", direct messages
 - Table gifts (beer, roses, champagne, trophies…) shown on the recipient's seat
+- Throwables (tomatoes, pies, fish, bombs…) animated flying from your seat to another player's
 - Profiles with levels/XP, stats (hands, win rate, biggest pot, net winnings), status message
 - Leaderboard
 
@@ -87,4 +97,4 @@ Only controllers can call the `admin_*` methods (create tables, add store items,
 
 ## Roadmap ideas
 
-Sit-and-go and multi-table tournaments · vetKeys-encrypted hole cards · play-chips mode · hand history and replays · achievements · private/password tables · animated avatars as images/NFTs · moderators and mute/report · auto-stand for players sitting out too long.
+Sit-and-go and multi-table tournaments · vetKeys-encrypted hole cards · achievements · private/password tables · animated avatars as images/NFTs · moderators and mute/report · auto-stand for players sitting out too long.

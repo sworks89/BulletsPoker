@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useApp, usePoll } from '../context';
-import { unwrap, type LeaderboardEntry } from '../ic';
+import { unwrap, type LeaderboardEntry, type Settings } from '../ic';
 import { icp } from '../format';
 
 export function ProfilePage() {
@@ -67,8 +67,14 @@ export function ProfilePage() {
             <b className={s.net_winnings < 0n ? 'neg' : 'pos'}>{icp(s.net_winnings, 4)}</b>
             <span>Net ICP</span>
           </div>
+          <div>
+            <b className={s.chip_net < 0n ? 'neg' : 'pos'}>{s.chip_net.toLocaleString()}</b>
+            <span>Net chips</span>
+          </div>
         </div>
       </div>
+
+      <SettingsPanel />
 
       <div className="panel">
         <div className="panel-title">My avatars</div>
@@ -88,6 +94,38 @@ export function ProfilePage() {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+const SETTINGS: { key: keyof Settings; label: string; hint: string }[] = [
+  { key: 'four_color_deck', label: 'Four-color deck', hint: 'Clubs green, diamonds blue — no more mixing up flushes.' },
+  { key: 'auto_muck', label: 'Auto-muck losing hands', hint: "Don't reveal your cards when you lose at showdown." },
+  { key: 'auto_top_up', label: 'Auto top-up', hint: 'Refill your stack to the table max when it drops below half.' },
+  { key: 'sound', label: 'Sounds', hint: 'Chime on your turn, deals, wins and throws.' },
+  { key: 'show_throwables', label: 'Show throwables', hint: 'Animate tomatoes, pies and friends flying across the table.' },
+];
+
+function SettingsPanel() {
+  const { backend, profile, run, refreshProfile } = useApp();
+  if (!profile) return null;
+  const toggle = async (key: keyof Settings) => {
+    const next = { ...profile.settings, [key]: !profile.settings[key] };
+    await run(async () => unwrap(await backend.update_settings(next)));
+    await refreshProfile();
+  };
+  return (
+    <div className="panel">
+      <div className="panel-title">Settings</div>
+      {SETTINGS.map((o) => (
+        <label key={o.key} className="setting">
+          <input type="checkbox" checked={profile.settings[o.key]} onChange={() => toggle(o.key)} />
+          <span>
+            <b>{o.label}</b>
+            <span className="muted small">{o.hint}</span>
+          </span>
+        </label>
+      ))}
     </div>
   );
 }
