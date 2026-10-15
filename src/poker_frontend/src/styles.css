@@ -333,3 +333,30 @@ main { padding: 18px 0; }
 }
 .table-page.compact .felt-wrap { margin-top: 22px; }
 .btn.elsewhere { animation: glow 1.2s ease-in-out infinite; }
+
+/* ---- rebuys & player notes ---- */
+.format-line { color: #fcd34d; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.avatar.note-red { box-shadow: 0 0 0 3px #ef4444; }
+.avatar.note-orange { box-shadow: 0 0 0 3px #f97316; }
+.avatar.note-yellow { box-shadow: 0 0 0 3px #eab308; }
+.avatar.note-green { box-shadow: 0 0 0 3px #22c55e; }
+.avatar.note-blue { box-shadow: 0 0 0 3px #3b82f6; }
+.avatar.note-purple { box-shadow: 0 0 0 3px #a855f7; }
+.avatar.note-plain { box-shadow: 0 0 0 2px #94a3b8; }
+.note-mark { position: absolute; left: -10px; bottom: -4px; font-size: 14px; z-index: 2; }
+.table-page.compact .note-mark { font-size: 10px; left: -7px; bottom: -3px; }
+.note-editor { display: flex; flex-direction: column; gap: 6px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+.note-editor h4 { margin: 0; }
+.note-editor textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; resize: vertical; }
+.note-colors { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.note-swatch { width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; }
+.note-swatch.active { border-color: #fff; transform: scale(1.15); }
+.note-swatch.note-red { background: #ef4444; }
+.note-swatch.note-orange { background: #f97316; }
+.note-swatch.note-yellow { background: #eab308; }
+.note-swatch.note-green { background: #22c55e; }
+.note-swatch.note-blue { background: #3b82f6; }
+.note-swatch.note-purple { background: #a855f7; }
+.note-row { border-top: 1px solid var(--line); padding: 8px 0; display: flex; flex-direction: column; gap: 6px; }
+.note-text { margin: 0; white-space: pre-wrap; color: #cbd5e1; }
+.modal { max-height: 92vh; overflow-y: auto; }

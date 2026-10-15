@@ -15,7 +15,7 @@ const NAV: { name: View['name']; label: string }[] = [
   { name: 'lobby', label: 'Lobby' },
   { name: 'tournaments', label: 'Tournaments' },
   { name: 'store', label: 'Store' },
-  { name: 'friends', label: 'Friends' },
+  { name: 'friends', label: 'Friends & Notes' },
   { name: 'history', label: 'History' },
   { name: 'leaderboard', label: 'Leaderboard' },
   { name: 'wallet', label: 'Wallet' },

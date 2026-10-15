@@ -29,6 +29,8 @@ const MAX_STREAK: u32 = 7;
 pub const HOST_RAKE_SHARE_BPS: u64 = 2_000;
 const ROOM_IDLE_CLOSE_NS: u64 = 30 * 60 * 1_000_000_000;
 const MAX_ROOMS_PER_USER: usize = 2;
+const MAX_NOTE_LEN: usize = 500;
+const MAX_NOTES: usize = 2_000;
 
 pub type R<T> = Result<T, String>;
 
@@ -42,6 +44,35 @@ pub struct Stats {
     pub net_winnings: i64,
     /// Net play chips won or lost at chip tables.
     pub chip_net: i64,
+}
+
+/// Color label for a player note (a quick read on a player's style).
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub enum NoteColor {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+}
+
+/// A private note one player keeps about another. Only its author can see it.
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct PlayerNote {
+    pub text: String,
+    pub color: Option<NoteColor>,
+    pub updated_at: u64,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct NoteView {
+    pub player: Principal,
+    pub username: String,
+    pub avatar: String,
+    pub text: String,
+    pub color: Option<NoteColor>,
+    pub updated_at: u64,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -92,6 +123,8 @@ pub struct User {
     pub medals: BTreeMap<String, u64>,
     pub gifts_sent: u64,
     pub throws_made: u64,
+    /// Private notes about other players.
+    pub notes: BTreeMap<Principal, PlayerNote>,
     pub avatar: u32,
     pub card_back: u32,
     pub inventory: Vec<u32>,
@@ -318,6 +351,8 @@ pub struct SeatView {
     pub cards: Vec<u8>,
     pub last_action: Option<String>,
     pub gift: Option<String>,
+    /// The viewer's own note about this player, if any.
+    pub note: Option<PlayerNote>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -591,6 +626,7 @@ impl State {
                 medals: BTreeMap::new(),
                 gifts_sent: 0,
                 throws_made: 0,
+                notes: BTreeMap::new(),
                 avatar,
                 card_back,
                 inventory: vec![],
@@ -881,6 +917,49 @@ impl State {
             self.award(&caller, "dedicated", None, now);
         }
         Ok(amount)
+    }
+
+    /// Saves (or, when both text and color are empty, deletes) a private note about a player.
+    pub fn set_note(&mut self, caller: Principal, player: Principal, text: String, color: Option<NoteColor>, now: u64) -> R<()> {
+        if caller == player {
+            return Err("You can't keep notes on yourself".into());
+        }
+        self.user(&player).map_err(|_| "No such player".to_string())?;
+        let text = text.trim().to_string();
+        if text.chars().count() > MAX_NOTE_LEN {
+            return Err(format!("Notes are limited to {MAX_NOTE_LEN} characters"));
+        }
+        let notes = &mut self.user_mut(&caller)?.notes;
+        if text.is_empty() && color.is_none() {
+            notes.remove(&player);
+            return Ok(());
+        }
+        if !notes.contains_key(&player) && notes.len() >= MAX_NOTES {
+            return Err(format!("You can keep up to {MAX_NOTES} notes"));
+        }
+        notes.insert(player, PlayerNote { text, color, updated_at: now });
+        Ok(())
+    }
+
+    pub fn notes(&self, caller: Principal) -> Vec<NoteView> {
+        let Some(me) = self.users.get(&caller) else { return vec![] };
+        let mut v: Vec<NoteView> = me
+            .notes
+            .iter()
+            .map(|(p, n)| {
+                let u = self.users.get(p);
+                NoteView {
+                    player: *p,
+                    username: u.map(|u| u.username.clone()).unwrap_or_default(),
+                    avatar: u.map(|u| self.icon(u.avatar)).unwrap_or_default(),
+                    text: n.text.clone(),
+                    color: n.color,
+                    updated_at: n.updated_at,
+                }
+            })
+            .collect();
+        v.sort_by_key(|n| std::cmp::Reverse(n.updated_at));
+        v
     }
 
     pub fn update_settings(&mut self, caller: Principal, settings: Settings) -> R<()> {
@@ -1523,6 +1602,10 @@ impl State {
                         .and_then(|u| u.gift.as_ref())
                         .filter(|g| g.expires_at > now)
                         .map(|g| self.icon(g.item)),
+                    note: viewer
+                        .and_then(|v| self.users.get(&v))
+                        .and_then(|me| me.notes.get(&s.player))
+                        .cloned(),
                 })
             })
             .collect();
@@ -2127,6 +2210,163 @@ mod tests {
         }
         let chips: u64 = (1..=3).map(|k| s.users[&p(k)].chips).sum();
         assert_eq!(chips, 3 * SIGNUP_CHIPS);
+    }
+
+    fn start_scheduled(s: &mut State, name: &str, players: std::ops::Range<u8>) -> (u64, u64) {
+        let id = open_tournament(s, name);
+        for k in players {
+            s.register_tournament(p(k), id, SEC).unwrap();
+        }
+        let start_at = s.tournaments[&id].start_at;
+        s.tick(start_at);
+        assert_eq!(s.tournaments[&id].status, crate::tournament::TournamentStatus::Running);
+        (id, start_at)
+    }
+
+    fn stack_of(s: &State, id: u64, who: Principal) -> Option<u64> {
+        let t = &s.tournaments[&id];
+        t.tables.iter().find_map(|tid| {
+            let tb = s.tables.get(tid)?;
+            tb.seat_of(&who).and_then(|i| tb.seats[i].as_ref()).map(|x| x.stack)
+        })
+    }
+
+    #[test]
+    fn late_registration() {
+        let mut s = setup();
+        many_players(&mut s, 4);
+        let (id, start_at) = start_scheduled(&mut s, "Chip Rebuy Madness", 10..13);
+        assert_eq!(s.tournaments[&id].prize_pool, 25_000, "guarantee");
+        let summary = s.list_tournaments(Some(p(13))).into_iter().find(|t| t.id == id).unwrap();
+        assert!(summary.can_register);
+        s.register_tournament(p(13), id, start_at + SEC).unwrap();
+        assert_eq!(stack_of(&s, id, p(13)), Some(3_000), "late entrant gets a seat and a starting stack");
+        assert_eq!(s.tournaments[&id].collected, 8_000);
+        assert!(s.register_tournament(p(13), id, start_at + SEC).is_err());
+        // Late registration closes after level 4.
+        s.tick(start_at + 4 * 300 * SEC);
+        assert_eq!(s.tournaments[&id].level, 4);
+        assert!(s.register_tournament(p(1), id, start_at + 4 * 300 * SEC).is_err());
+        assert!(!s.list_tournaments(Some(p(1))).into_iter().find(|t| t.id == id).unwrap().can_register);
+    }
+
+    #[test]
+    fn rebuy_window_and_knockout() {
+        use crate::tournament::REBUY_WINDOW_NS;
+        let mut s = setup();
+        many_players(&mut s, 3);
+        let (id, start_at) = start_scheduled(&mut s, "Chip Rebuy Madness", 10..13);
+        let table = s.tournaments[&id].tables[0];
+        let now = start_at + SEC;
+
+        // Above the starting stack you can't rebuy.
+        s.tables.get_mut(&table).unwrap().seats.iter_mut().flatten().find(|x| x.player == p(10)).unwrap().stack = 3_001;
+        assert!(s.rebuy(p(10), id, now).is_err());
+        // At or below it you can, between hands: a fresh stack is added.
+        s.tables.get_mut(&table).unwrap().seats.iter_mut().flatten().find(|x| x.player == p(10)).unwrap().stack = 500;
+        let chips = s.users[&p(10)].chips;
+        s.rebuy(p(10), id, now).unwrap();
+        assert_eq!(stack_of(&s, id, p(10)), Some(3_500));
+        assert_eq!(s.users[&p(10)].chips, chips - 2_000);
+        assert_eq!(s.tournaments[&id].collected, 8_000);
+
+        // Play until somebody busts: they get a rebuy window, not a knockout.
+        let mut now = run_until(&mut s, now, 5_000, |s| s.tournaments[&id].entrants.iter().any(|e| e.rebuy_deadline != 0));
+        let busted = s.tournaments[&id].entrants.iter().find(|e| e.rebuy_deadline != 0).unwrap().player;
+        assert!(s.tournaments[&id].entrants.iter().all(|e| e.place.is_none()));
+        let badge = s.tournament_badge(id, Some(busted)).unwrap();
+        assert!(badge.can_rebuy && badge.rebuy_deadline > 0);
+        s.rebuy(busted, id, now).unwrap();
+        assert_eq!(stack_of(&s, id, busted), Some(3_000));
+
+        // Next bust: let the window expire and they're knocked out.
+        now = run_until(&mut s, now, 5_000, |s| s.tournaments[&id].entrants.iter().any(|e| e.rebuy_deadline != 0));
+        let busted = s.tournaments[&id].entrants.iter().find(|e| e.rebuy_deadline != 0).unwrap().player;
+        s.tick(now + REBUY_WINDOW_NS);
+        let e = s.tournaments[&id].entrants.iter().find(|e| e.player == busted).unwrap();
+        assert_eq!(e.place, Some(3));
+    }
+
+    /// Plays a rebuy event to the end with every busted player rebuying while they can.
+    fn play_rebuy_event(s: &mut State, id: u64, start: u64) {
+        use crate::tournament::TournamentStatus::Finished;
+        let mut now = start;
+        for _ in 0..200 {
+            now = run_until(s, now, 20_000, |s| {
+                s.tournaments[&id].status == Finished || s.tournaments[&id].entrants.iter().any(|e| e.rebuy_deadline != 0)
+            });
+            if s.tournaments[&id].status == Finished {
+                return;
+            }
+            let waiting: Vec<Principal> =
+                s.tournaments[&id].entrants.iter().filter(|e| e.rebuy_deadline != 0).map(|e| e.player).collect();
+            for w in waiting {
+                if s.rebuy(w, id, now).is_err() {
+                    s.tick(now + 31 * SEC);
+                }
+            }
+            now += 31 * SEC;
+        }
+        panic!("tournament didn't finish");
+    }
+
+    #[test]
+    fn rebuy_tournament_pays_out_exactly() {
+        let mut s = setup();
+        many_players(&mut s, 12);
+        let chips_before: u64 = s.users.values().map(|u| u.chips).sum();
+        let (id, start_at) = start_scheduled(&mut s, "Chip Rebuy Madness", 10..22);
+        play_rebuy_event(&mut s, id, start_at + SEC);
+        let t = &s.tournaments[&id];
+        assert!(t.entries() > 12, "some players rebought");
+        assert!(t.entrants.iter().all(|e| e.rebuys <= 3));
+        let mut places: Vec<u32> = t.entrants.iter().map(|e| e.place.unwrap()).collect();
+        places.sort();
+        assert_eq!(places, (1..=12).collect::<Vec<_>>());
+        assert_eq!(t.paid, t.prize_pool);
+        assert_eq!(t.collected, 2_000 * t.entries() as u64);
+        let chips_after: u64 = s.users.values().map(|u| u.chips).sum();
+        assert_eq!(chips_after, chips_before - t.collected + t.prize_pool);
+    }
+
+    #[test]
+    fn icp_rebuy_tournament_accounting() {
+        let mut s = setup();
+        many_players(&mut s, 4);
+        let before = s.house_stats().liabilities_total;
+        let (id, start_at) = start_scheduled(&mut s, "ICP Nightly", 10..14);
+        assert_eq!(s.house_stats().liabilities_total, before);
+        play_rebuy_event(&mut s, id, start_at + SEC);
+        let t = &s.tournaments[&id];
+        assert_eq!(s.house_stats().liabilities_total, before);
+        assert_eq!(s.treasury, t.entries() as u64 * (E8S / 40));
+        assert_eq!(t.paid, t.prize_pool);
+    }
+
+    #[test]
+    fn player_notes_are_private() {
+        let mut s = setup();
+        s.set_note(p(1), p(2), "calls everything".into(), Some(NoteColor::Red), 5).unwrap();
+        assert!(s.set_note(p(1), p(1), "me".into(), None, 5).is_err());
+        assert!(s.set_note(p(1), p(9), "ghost".into(), None, 5).is_err());
+        assert!(s.set_note(p(1), p(3), "x".repeat(501), None, 5).is_err());
+        let notes = s.notes(p(1));
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].username, "player2");
+        assert!(s.notes(p(2)).is_empty());
+
+        s.join_table(p(2), 1, 0, 1_000, None, 0).unwrap();
+        let mine = s.table_view(1, Some(p(1)), 0).unwrap();
+        let seat = mine.seats[0].as_ref().unwrap();
+        assert_eq!(seat.note.as_ref().unwrap().color, Some(NoteColor::Red));
+        let theirs = s.table_view(1, Some(p(3)), 0).unwrap();
+        assert!(theirs.seats[0].as_ref().unwrap().note.is_none(), "other viewers don't see it");
+
+        // Editing replaces; clearing text and color deletes.
+        s.set_note(p(1), p(2), "".into(), Some(NoteColor::Green), 9).unwrap();
+        assert_eq!(s.notes(p(1))[0].text, "");
+        s.set_note(p(1), p(2), "  ".into(), None, 10).unwrap();
+        assert!(s.notes(p(1)).is_empty());
     }
 
     #[test]

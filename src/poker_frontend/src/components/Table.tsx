@@ -5,6 +5,7 @@ import { unwrap, type PublicProfile, type SeatView, type StoreItem, type TableVi
 import { amount, amountWithUnit, bytes, cardRank, cardSuit, CHIPS, countdown, ICP, icp, isChips, suitClass, type CurrencyV } from '../format';
 import { sounds } from '../sound';
 import { Chat } from './Chat';
+import { NoteEditor } from './Notes';
 
 export function Card({ c, back, small }: { c?: number; back?: string; small?: boolean }) {
   const { profile } = useApp();
@@ -229,6 +230,20 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
             <span className="muted">
               {tourney.players_left}/{tourney.entrants} players left
             </span>
+            {tourney.can_rebuy && (
+              <button
+                className={`btn small ${tourney.rebuy_deadline > 0n ? 'elsewhere' : 'chips-btn'}`}
+                onClick={async () => {
+                  const r = await run(async () => unwrap(await backend.rebuy_tournament(tourney.id)), 'Rebuy complete. Good luck!');
+                  if (r !== undefined) await Promise.all([refreshProfile(), load()]);
+                }}
+              >
+                {tourney.rebuy_deadline > 0n
+                  ? `Busted! Rebuy (${Math.max(0, Math.ceil((Number(tourney.rebuy_deadline / 1_000_000n) + clockOffset - Date.now()) / 1000))}s)`
+                  : 'Rebuy'}{' '}
+                · {amountWithUnit(tourney.rebuy_cost, tourney.currency)} · {tourney.rebuys_left} left
+              </button>
+            )}
             {tourney.my_place[0] !== undefined && (
               <span className="tag live">
                 You finished #{tourney.my_place[0]}
@@ -287,6 +302,8 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
             }
             const acting = view.to_act[0] === i;
             const cards = bytes(s.cards);
+            const note = s.note[0];
+            const noteColor = note?.color[0] ? Object.keys(note.color[0])[0].toLowerCase() : note ? 'plain' : '';
             return (
               <div
                 key={i}
@@ -301,9 +318,10 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
                       ? [0, 1].map((k) => <Card key={k} back={s.card_back} small />)
                       : null}
                 </div>
-                <div className="avatar">
+                <div className={`avatar ${noteColor ? `note-${noteColor}` : ''}`} title={note ? note.text || 'Has a note' : undefined}>
                   {s.avatar}
                   {s.gift[0] && <span className="gift">{s.gift[0]}</span>}
+                  {note && <span className="note-mark">📝</span>}
                 </div>
                 <div className="nameplate">
                   <div className="name">
@@ -490,6 +508,7 @@ function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number;
 
 function PlayerCard({ seat, view, canThrow, onClose }: { seat: SeatView; view: TableView; canThrow: boolean; onClose: () => void }) {
   const { backend, items, medals, profile, run, refreshProfile } = useApp();
+  const { refresh: load } = useTables();
   const [pub, setPub] = useState<PublicProfile | null>(null);
   useEffect(() => {
     backend.get_profile(seat.player).then((p) => setPub(p[0] ?? null));
@@ -545,6 +564,7 @@ function PlayerCard({ seat, view, canThrow, onClose }: { seat: SeatView; view: T
             )}
           </div>
         </div>
+        {profile && <NoteEditor player={seat.player} note={seat.note[0]} onSaved={load} />}
         {pub && pub.medals.length > 0 && (
           <div className="medal-strip">
             {pub.medals.map((m) => (

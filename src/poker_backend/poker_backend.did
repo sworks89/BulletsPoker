@@ -114,7 +114,23 @@ type MedalDef = record {
   description : text;
 };
 type MessageKind = variant { System; Gift; Text; Throw };
+// Color label for a player note (a quick read on a player's style).
+type NoteColor = variant { Red; Yellow; Blue; Green; Orange; Purple };
+type NoteView = record {
+  updated_at : nat64;
+  username : text;
+  player : principal;
+  color : opt NoteColor;
+  "text" : text;
+  avatar : text;
+};
 type Phase = variant { Flop; Turn; River; HandOver; Waiting; PreFlop };
+// A private note one player keeps about another. Only its author can see it.
+type PlayerNote = record {
+  updated_at : nat64;
+  color : opt NoteColor;
+  "text" : text;
+};
 type PlayerResult = record {
   won : nat64;
   player : principal;
@@ -175,6 +191,8 @@ type SeatView = record {
   all_in : bool;
   cards : blob;
   gift : opt text;
+  // The viewer's own note about this player, if any.
+  note : opt PlayerNote;
   has_cards : bool;
   seat : nat8;
   last_action : opt text;
@@ -296,15 +314,22 @@ type ThrowEvent = record {
 };
 type TournamentBadge = record {
   id : nat64;
+  // The viewer may rebuy right now.
+  can_rebuy : bool;
   small_blind : nat64;
+  rebuy_cost : nat64;
   name : text;
   level : nat32;
   finished : bool;
+  currency : Currency;
   big_blind : nat64;
   entrants : nat32;
   players_left : nat32;
+  rebuys_left : nat32;
   my_place : opt nat32;
   my_prize : nat64;
+  // Busted viewer's deadline to rebuy (0 if not waiting).
+  rebuy_deadline : nat64;
   next_level_at : nat64;
 };
 type TournamentDetail = record {
@@ -328,26 +353,37 @@ type TournamentSummary = record {
   id : nat64;
   fee : nat64;
   status : TournamentStatus;
+  max_rebuys : nat32;
   // The table the viewer is playing at, if any.
   my_table : opt nat64;
   min_players : nat32;
+  rebuy_levels : nat32;
   start_at : nat64;
   kind : TournamentKind;
   name : text;
   level_secs : nat64;
   max_players : nat32;
+  level : nat32;
+  // Total buy-ins: registrations plus rebuys.
+  entries : nat32;
   currency : Currency;
   prize_pool : nat64;
   players_left : nat32;
   registered_me : bool;
   starting_stack : nat64;
   buy_in : nat64;
+  late_reg_levels : nat32;
   registered : nat32;
+  // Registration is open right now (before the start, or during late registration).
+  can_register : bool;
 };
 type TournamentTemplate = record {
   // Goes to the house (ICP) or leaves circulation (chips).
   fee : nat64;
+  max_rebuys : nat32;
   min_players : nat32;
+  // Rebuys are allowed while the level (0-based) is below this. 0 = freezeout.
+  rebuy_levels : nat32;
   kind : TournamentKind;
   name : text;
   level_secs : nat64;
@@ -361,6 +397,8 @@ type TournamentTemplate = record {
   // Goes into the prize pool.
   buy_in : nat64;
   table_size : nat8;
+  // Registration stays open while the level (0-based) is below this. 0 = no late registration.
+  late_reg_levels : nat32;
 };
 type Winner = record {
   player : principal;
@@ -402,6 +440,8 @@ service : (opt InitArgs) -> {
   get_hand_history : (nat32) -> (vec HandSummary) query;
   get_leaderboard : () -> (vec LeaderboardEntry) query;
   get_my_profile : () -> (opt Profile) query;
+  // All your notes, most recently updated first.
+  get_notes : () -> (vec NoteView) query;
   get_profile : (principal) -> (opt PublicProfile) query;
   get_table : (nat64) -> (opt TableView) query;
   // `password` is only needed for password-protected player rooms.
@@ -416,6 +456,8 @@ service : (opt InitArgs) -> {
   list_tables : () -> (vec TableSummary) query;
   list_tournaments : () -> (vec TournamentSummary) query;
   ping : () -> ();
+  // Buys a fresh starting stack during a tournament's rebuy period.
+  rebuy_tournament : (nat64) -> (Result);
   register : (text) -> (Result_4);
   register_tournament : (nat64) -> (Result);
   remove_friend : (principal) -> (Result);
@@ -424,6 +466,8 @@ service : (opt InitArgs) -> {
   send_dm : (principal, text) -> (Result);
   send_friend_request : (principal) -> (Result);
   send_gift : (nat64, principal, nat32, Currency) -> (Result);
+  // Saves a private note about a player. Empty text and no color deletes it.
+  set_note : (principal, text, opt NoteColor) -> (Result);
   set_status : (text) -> (Result);
   sit_out : (nat64, bool) -> (Result);
   throw_item : (nat64, principal, nat32, Currency) -> (Result);

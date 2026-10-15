@@ -16,6 +16,14 @@ function entryLabel(t: TournamentSummary): string {
   return `${amountWithUnit(t.buy_in, t.currency)}${fee}`;
 }
 
+/** Late registration / rebuy rules, e.g. "Late reg to L4 · Rebuys ×3 to L4". */
+export function formatLabel(t: TournamentSummary): string {
+  const parts: string[] = [];
+  if (t.late_reg_levels > 0) parts.push(`Late reg to level ${t.late_reg_levels}`);
+  if (t.rebuy_levels > 0) parts.push(`Rebuys ×${t.max_rebuys} to level ${t.rebuy_levels}`);
+  return parts.join(' · ');
+}
+
 function startLabel(t: TournamentSummary): string {
   const status = Object.keys(t.status)[0];
   if (status === 'Running') return `${t.players_left}/${t.registered} left`;
@@ -85,6 +93,12 @@ export function Tournaments({ initial }: { initial?: bigint }) {
                 <div className="muted small">
                   {entryLabel(t)} · Prize pool {amountWithUnit(t.prize_pool, t.currency)} · {startLabel(t)}
                 </div>
+                {formatLabel(t) && (
+                  <div className="small format-line">
+                    {formatLabel(t)}
+                    {status === 'Running' && t.can_register && <span className="tag live">Late reg open</span>}
+                  </div>
+                )}
                 {status === 'Registering' && (
                   <div className="seatbar wide">
                     {Array.from({ length: Math.min(t.max_players, 20) }, (_, i) => (
@@ -106,6 +120,17 @@ export function Tournaments({ initial }: { initial?: bigint }) {
                   }}
                 >
                   {t.registered_me ? 'Unregister' : 'Register'}
+                </button>
+              )}
+              {profile && status === 'Running' && t.can_register && !t.registered_me && (
+                <button
+                  className="btn small"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    register(t, true);
+                  }}
+                >
+                  Late register
                 </button>
               )}
               {t.my_table[0] !== undefined && (
@@ -162,6 +187,13 @@ function Detail({ d }: { d: TournamentDetail }) {
         </div>
       </div>
 
+      {(t.late_reg_levels > 0 || t.rebuy_levels > 0) && (
+        <p className="small">
+          {formatLabel(t)}. {t.entries} entries
+          {t.entries > t.registered ? ` (${t.entries - t.registered} rebuys)` : ''}.
+          {t.rebuy_levels > 0 && ' Rebuy when busted (30s to decide) or when at or below the starting stack.'}
+        </p>
+      )}
       <h4>Payouts</h4>
       <div className="payouts">
         {Array.from(d.payouts, (p, i) => (

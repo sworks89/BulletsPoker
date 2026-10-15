@@ -321,6 +321,17 @@ impl Table {
         Ok(())
     }
 
+    /// Adds chips to a seated player's stack with no buy-in cap (tournament
+    /// rebuys). Not allowed while the player is in a live hand.
+    pub fn add_chips(&mut self, player: &Principal, amount: u64) -> Result<(), String> {
+        let i = self.seat_of(player).ok_or("You are not seated")?;
+        if self.phase.is_betting() && self.seat(i).live() {
+            return Err("You can rebuy once this hand is over".into());
+        }
+        self.seat_mut(i).stack += amount;
+        Ok(())
+    }
+
     pub fn free_seats(&self) -> Vec<usize> {
         (0..self.n()).filter(|&i| self.seats[i].is_none()).collect()
     }

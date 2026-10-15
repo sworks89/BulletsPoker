@@ -152,12 +152,37 @@ export type MessageKind = { 'System' : null } |
   { 'Gift' : null } |
   { 'Text' : null } |
   { 'Throw' : null };
+/**
+ * Color label for a player note (a quick read on a player's style).
+ */
+export type NoteColor = { 'Red' : null } |
+  { 'Yellow' : null } |
+  { 'Blue' : null } |
+  { 'Green' : null } |
+  { 'Orange' : null } |
+  { 'Purple' : null };
+export interface NoteView {
+  'updated_at' : bigint,
+  'username' : string,
+  'player' : Principal,
+  'color' : [] | [NoteColor],
+  'text' : string,
+  'avatar' : string,
+}
 export type Phase = { 'Flop' : null } |
   { 'Turn' : null } |
   { 'River' : null } |
   { 'HandOver' : null } |
   { 'Waiting' : null } |
   { 'PreFlop' : null };
+/**
+ * A private note one player keeps about another. Only its author can see it.
+ */
+export interface PlayerNote {
+  'updated_at' : bigint,
+  'color' : [] | [NoteColor],
+  'text' : string,
+}
 export interface PlayerResult {
   'won' : bigint,
   'player' : Principal,
@@ -227,6 +252,10 @@ export interface SeatView {
   'all_in' : boolean,
   'cards' : Uint8Array | number[],
   'gift' : [] | [string],
+  /**
+   * The viewer's own note about this player, if any.
+   */
+  'note' : [] | [PlayerNote],
   'has_cards' : boolean,
   'seat' : number,
   'last_action' : [] | [string],
@@ -374,15 +403,26 @@ export interface ThrowEvent {
 }
 export interface TournamentBadge {
   'id' : bigint,
+  /**
+   * The viewer may rebuy right now.
+   */
+  'can_rebuy' : boolean,
   'small_blind' : bigint,
+  'rebuy_cost' : bigint,
   'name' : string,
   'level' : number,
   'finished' : boolean,
+  'currency' : Currency,
   'big_blind' : bigint,
   'entrants' : number,
   'players_left' : number,
+  'rebuys_left' : number,
   'my_place' : [] | [number],
   'my_prize' : bigint,
+  /**
+   * Busted viewer's deadline to rebuy (0 if not waiting).
+   */
+  'rebuy_deadline' : bigint,
   'next_level_at' : bigint,
 }
 export interface TournamentDetail {
@@ -415,30 +455,47 @@ export interface TournamentSummary {
   'id' : bigint,
   'fee' : bigint,
   'status' : TournamentStatus,
+  'max_rebuys' : number,
   /**
    * The table the viewer is playing at, if any.
    */
   'my_table' : [] | [bigint],
   'min_players' : number,
+  'rebuy_levels' : number,
   'start_at' : bigint,
   'kind' : TournamentKind,
   'name' : string,
   'level_secs' : bigint,
   'max_players' : number,
+  'level' : number,
+  /**
+   * Total buy-ins: registrations plus rebuys.
+   */
+  'entries' : number,
   'currency' : Currency,
   'prize_pool' : bigint,
   'players_left' : number,
   'registered_me' : boolean,
   'starting_stack' : bigint,
   'buy_in' : bigint,
+  'late_reg_levels' : number,
   'registered' : number,
+  /**
+   * Registration is open right now (before the start, or during late registration).
+   */
+  'can_register' : boolean,
 }
 export interface TournamentTemplate {
   /**
    * Goes to the house (ICP) or leaves circulation (chips).
    */
   'fee' : bigint,
+  'max_rebuys' : number,
   'min_players' : number,
+  /**
+   * Rebuys are allowed while the level (0-based) is below this. 0 = freezeout.
+   */
+  'rebuy_levels' : number,
   'kind' : TournamentKind,
   'name' : string,
   'level_secs' : bigint,
@@ -458,6 +515,10 @@ export interface TournamentTemplate {
    */
   'buy_in' : bigint,
   'table_size' : number,
+  /**
+   * Registration stays open while the level (0-based) is below this. 0 = no late registration.
+   */
+  'late_reg_levels' : number,
 }
 export interface Winner {
   'player' : Principal,
@@ -515,6 +576,10 @@ export interface _SERVICE {
   'get_hand_history' : ActorMethod<[number], Array<HandSummary>>,
   'get_leaderboard' : ActorMethod<[], Array<LeaderboardEntry>>,
   'get_my_profile' : ActorMethod<[], [] | [Profile]>,
+  /**
+   * All your notes, most recently updated first.
+   */
+  'get_notes' : ActorMethod<[], Array<NoteView>>,
   'get_profile' : ActorMethod<[Principal], [] | [PublicProfile]>,
   'get_table' : ActorMethod<[bigint], [] | [TableView]>,
   /**
@@ -533,6 +598,10 @@ export interface _SERVICE {
   'list_tables' : ActorMethod<[], Array<TableSummary>>,
   'list_tournaments' : ActorMethod<[], Array<TournamentSummary>>,
   'ping' : ActorMethod<[], undefined>,
+  /**
+   * Buys a fresh starting stack during a tournament's rebuy period.
+   */
+  'rebuy_tournament' : ActorMethod<[bigint], Result>,
   'register' : ActorMethod<[string], Result_4>,
   'register_tournament' : ActorMethod<[bigint], Result>,
   'remove_friend' : ActorMethod<[Principal], Result>,
@@ -541,6 +610,10 @@ export interface _SERVICE {
   'send_dm' : ActorMethod<[Principal, string], Result>,
   'send_friend_request' : ActorMethod<[Principal], Result>,
   'send_gift' : ActorMethod<[bigint, Principal, number, Currency], Result>,
+  /**
+   * Saves a private note about a player. Empty text and no color deletes it.
+   */
+  'set_note' : ActorMethod<[Principal, string, [] | [NoteColor]], Result>,
   'set_status' : ActorMethod<[string], Result>,
   'sit_out' : ActorMethod<[bigint, boolean], Result>,
   'throw_item' : ActorMethod<[bigint, Principal, number, Currency], Result>,

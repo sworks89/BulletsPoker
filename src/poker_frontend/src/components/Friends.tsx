@@ -3,6 +3,7 @@ import { useApp, usePoll } from '../context';
 import { unwrap, type ChatMessage, type FriendInfo, type PublicProfile } from '../ic';
 import type { Principal } from '@icp-sdk/core/principal';
 import { mergeMessages } from './Chat';
+import { NotesPanel } from './Notes';
 
 export function Friends() {
   const { backend, profile, run, refreshProfile, go } = useApp();
@@ -107,6 +108,8 @@ export function Friends() {
       </div>
 
       {chatWith && <DirectMessages friend={chatWith} onClose={() => setChatWith(null)} />}
+
+      <NotesPanel />
     </div>
   );
 }

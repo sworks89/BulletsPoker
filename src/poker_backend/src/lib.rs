@@ -407,6 +407,29 @@ fn unregister_tournament(id: u64) -> R<()> {
     with_mut(|s| s.unregister_tournament(p, id))
 }
 
+/// Buys a fresh starting stack during a tournament's rebuy period.
+#[update]
+fn rebuy_tournament(id: u64) -> R<()> {
+    let p = caller()?;
+    with_mut(|s| s.rebuy(p, id, now()))
+}
+
+// ------------------------------------------------------------- player notes
+
+/// Saves a private note about a player. Empty text and no color deletes it.
+#[update]
+fn set_note(player: Principal, text: String, color: Option<NoteColor>) -> R<()> {
+    let p = caller()?;
+    with_mut(|s| s.set_note(p, player, text, color, now()))
+}
+
+/// All your notes, most recently updated first.
+#[query]
+fn get_notes() -> Vec<NoteView> {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.notes(p))
+}
+
 #[query]
 fn list_medals() -> Vec<MedalDef> {
     medals::medal_defs()

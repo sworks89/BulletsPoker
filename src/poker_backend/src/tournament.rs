@@ -12,6 +12,8 @@ use sha2::{Digest, Sha256};
 const NANOS: u64 = 1_000_000_000;
 /// Finished tournament tables stay viewable this long before being removed.
 const CLOSE_AFTER_NS: u64 = 60 * NANOS;
+/// How long a busted player has to rebuy before being knocked out.
+pub const REBUY_WINDOW_NS: u64 = 30 * NANOS;
 
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub enum TournamentKind {
@@ -47,6 +49,11 @@ pub struct TournamentTemplate {
     pub level_secs: u64,
     /// Scheduled events: time between runs.
     pub interval_secs: u64,
+    /// Registration stays open while the level (0-based) is below this. 0 = no late registration.
+    pub late_reg_levels: u32,
+    /// Rebuys are allowed while the level (0-based) is below this. 0 = freezeout.
+    pub rebuy_levels: u32,
+    pub max_rebuys: u32,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -54,6 +61,9 @@ pub struct Entrant {
     pub player: Principal,
     pub place: Option<u32>,
     pub prize: u64,
+    pub rebuys: u32,
+    /// Busted during the rebuy period: knocked out at this time unless they rebuy.
+    pub rebuy_deadline: u64,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -70,7 +80,10 @@ pub struct Tournament {
     pub level_started_at: u64,
     pub entrants: Vec<Entrant>,
     pub tables: Vec<u64>,
+    /// Prize pool: entries collected, or the guarantee if larger (play-chip events).
     pub prize_pool: u64,
+    /// Buy-ins collected from registrations, late registrations and rebuys.
+    pub collected: u64,
     /// Prize for each finishing place, 1st first.
     pub payouts: Vec<u64>,
     pub paid: u64,
@@ -98,6 +111,14 @@ pub struct TournamentSummary {
     pub registered_me: bool,
     /// The table the viewer is playing at, if any.
     pub my_table: Option<u64>,
+    /// Registration is open right now (before the start, or during late registration).
+    pub can_register: bool,
+    pub late_reg_levels: u32,
+    pub rebuy_levels: u32,
+    pub max_rebuys: u32,
+    /// Total buy-ins: registrations plus rebuys.
+    pub entries: u32,
+    pub level: u32,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -136,6 +157,13 @@ pub struct TournamentBadge {
     pub my_place: Option<u32>,
     pub my_prize: u64,
     pub finished: bool,
+    /// The viewer may rebuy right now.
+    pub can_rebuy: bool,
+    /// Busted viewer's deadline to rebuy (0 if not waiting).
+    pub rebuy_deadline: u64,
+    pub rebuy_cost: u64,
+    pub rebuys_left: u32,
+    pub currency: Currency,
 }
 
 // ----------------------------------------------------------------- structure
@@ -184,6 +212,9 @@ pub fn default_templates() -> Vec<TournamentTemplate> {
     use Currency::*;
     use TournamentKind::*;
     let sng = |name: &str, currency, buy_in, fee, players, table_size| TournamentTemplate {
+        late_reg_levels: 0,
+        rebuy_levels: 0,
+        max_rebuys: 0,
         name: name.into(),
         kind: SitAndGo,
         currency,
@@ -216,6 +247,26 @@ pub fn default_templates() -> Vec<TournamentTemplate> {
             table_size: 9,
             level_secs: 300,
             interval_secs: 3_600,
+            late_reg_levels: 3,
+            rebuy_levels: 0,
+            max_rebuys: 0,
+        },
+        TournamentTemplate {
+            name: "Chip Rebuy Madness".into(),
+            kind: Scheduled,
+            currency: Chips,
+            buy_in: 2_000,
+            fee: 0,
+            guarantee: 25_000,
+            starting_stack: 3_000,
+            min_players: 2,
+            max_players: 180,
+            table_size: 9,
+            level_secs: 300,
+            interval_secs: 7_200,
+            late_reg_levels: 4,
+            rebuy_levels: 4,
+            max_rebuys: 3,
         },
         TournamentTemplate {
             name: "ICP Nightly".into(),
@@ -230,6 +281,9 @@ pub fn default_templates() -> Vec<TournamentTemplate> {
             table_size: 9,
             level_secs: 480,
             interval_secs: 86_400,
+            late_reg_levels: 4,
+            rebuy_levels: 3,
+            max_rebuys: 2,
         },
     ]
 }
@@ -250,6 +304,12 @@ pub fn validate_template(t: &TournamentTemplate) -> R<()> {
     if t.currency == Currency::Icp && t.guarantee > 0 {
         return Err("Guarantees are only available for play-chip events".into());
     }
+    if t.kind == TournamentKind::SitAndGo && (t.late_reg_levels > 0 || t.rebuy_levels > 0) {
+        return Err("Sit-and-go's have no late registration or rebuys".into());
+    }
+    if t.late_reg_levels > 20 || t.rebuy_levels > 20 || t.max_rebuys > 10 || (t.rebuy_levels > 0) != (t.max_rebuys > 0) {
+        return Err("Invalid late registration or rebuy settings".into());
+    }
     if t.starting_stack < 150 || !(30..=3_600).contains(&t.level_secs) {
         return Err("Invalid structure".into());
     }
@@ -267,6 +327,28 @@ impl Tournament {
 
     fn next_level_at(&self) -> u64 {
         self.level_started_at + self.template.level_secs * NANOS
+    }
+
+    fn late_reg_open(&self) -> bool {
+        self.status == TournamentStatus::Running && self.level < self.template.late_reg_levels
+    }
+
+    fn rebuys_open(&self) -> bool {
+        self.status == TournamentStatus::Running && self.level < self.template.rebuy_levels
+    }
+
+    pub fn entries(&self) -> u32 {
+        self.entrants.iter().map(|e| 1 + e.rebuys).sum()
+    }
+
+    /// Pool and payouts follow the entries; chip events never pay less than the guarantee.
+    fn recompute_payouts(&mut self) {
+        self.prize_pool = if self.template.currency == Currency::Chips {
+            self.collected.max(self.template.guarantee)
+        } else {
+            self.collected
+        };
+        self.payouts = payouts_for(self.prize_pool, self.entrants.len());
     }
 }
 
@@ -304,6 +386,7 @@ impl State {
                     id,
                     template_index: idx as u32,
                     prize_pool: 0,
+                    collected: 0,
                     template: tpl,
                     status: TournamentStatus::Registering,
                     start_at,
@@ -335,7 +418,8 @@ impl State {
     pub fn register_tournament(&mut self, caller: Principal, id: u64, now: u64) -> R<()> {
         self.user(&caller)?;
         let t = self.tournaments.get(&id).ok_or("No such tournament")?;
-        if t.status != TournamentStatus::Registering {
+        let late = t.late_reg_open();
+        if t.status != TournamentStatus::Registering && !late {
             return Err("Registration is closed".into());
         }
         if t.entrants.iter().any(|e| e.player == caller) {
@@ -350,12 +434,24 @@ impl State {
             self.treasury += fee;
         }
         let t = self.tournament_mut(id)?;
-        t.prize_pool += buy_in;
+        t.collected += buy_in;
+        t.prize_pool = t.collected;
         t.entrants.push(Entrant {
             player: caller,
             place: None,
             prize: 0,
+            rebuys: 0,
+            rebuy_deadline: 0,
         });
+        if late {
+            t.recompute_payouts();
+            let stack = t.template.starting_stack;
+            let tid = self.seat_entrant(id, caller, stack);
+            let name = self.users.get(&caller).map(|u| u.username.clone()).unwrap_or_default();
+            self.post(Channel::Table(tid), None, String::new(), format!("{name} joins late"), MessageKind::System, now);
+            return Ok(());
+        }
+        let t = self.tournament_mut(id)?;
         if t.template.kind == TournamentKind::SitAndGo && t.entrants.len() as u32 == t.template.max_players {
             self.start_tournament(id, now);
         }
@@ -369,7 +465,8 @@ impl State {
         }
         let pos = t.entrants.iter().position(|e| e.player == caller).ok_or("You are not registered")?;
         t.entrants.remove(pos);
-        t.prize_pool -= t.template.buy_in;
+        t.collected -= t.template.buy_in;
+        t.prize_pool = t.collected;
         let (currency, buy_in, fee) = (t.template.currency, t.template.buy_in, t.template.fee);
         self.refund_entry(&caller, currency, buy_in, fee);
         Ok(())
@@ -391,15 +488,11 @@ impl State {
             let t = self.tournaments.get_mut(&id).unwrap();
             t.status = TournamentStatus::Cancelled;
             t.prize_pool = 0;
+            t.collected = 0;
             t.finished_at = now;
             return;
         }
         let tpl = &t.template;
-        let pool = if tpl.currency == Currency::Chips {
-            t.prize_pool.max(tpl.guarantee)
-        } else {
-            t.prize_pool
-        };
         let n = t.entrants.len();
 
         // Random-looking but reproducible seating order.
@@ -414,29 +507,8 @@ impl State {
 
         let size = tpl.table_size as usize;
         let n_tables = n.div_ceil(size);
-        let (sb, bb) = blinds_at(0, tpl.starting_stack);
-        let mut table_ids = vec![];
-        for k in 0..n_tables {
-            let tid = self.next_table_id;
-            self.next_table_id += 1;
-            let cfg = TableConfig {
-                name: if n_tables == 1 { tpl.name.clone() } else { format!("{} · Table {}", tpl.name, k + 1) },
-                currency: Currency::Chips,
-                small_blind: sb,
-                big_blind: bb,
-                min_buy_in: tpl.starting_stack,
-                max_buy_in: tpl.starting_stack,
-                max_seats: tpl.table_size,
-                rake_bps: 0,
-                rake_cap: 0,
-                action_timeout_secs: 20,
-            };
-            let mut table = Table::new(tid, cfg);
-            table.tournament_mode = true;
-            self.tables.insert(tid, table);
-            self.table_tournament.insert(tid, id);
-            table_ids.push(tid);
-        }
+        let named = n_tables > 1 || tpl.late_reg_levels > 0;
+        let table_ids: Vec<u64> = (0..n_tables).map(|k| self.new_tournament_table(id, &t.template, 0, named.then_some(k + 1))).collect();
         // Deal players round-robin so tables are balanced, spread around each table.
         for (k, tid) in table_ids.iter().enumerate() {
             let group: Vec<&Principal> = order.iter().skip(k).step_by(n_tables).collect();
@@ -454,10 +526,156 @@ impl State {
         t.level = 0;
         t.level_started_at = now;
         t.tables = table_ids;
-        t.prize_pool = pool;
-        t.payouts = payouts_for(pool, n);
+        t.recompute_payouts();
         let name = t.template.name.clone();
         self.post(Channel::Lobby, None, String::new(), format!("🏁 {name} is under way with {n} players"), MessageKind::System, now);
+    }
+
+    fn new_tournament_table(&mut self, id: u64, tpl: &TournamentTemplate, level: u32, number: Option<usize>) -> u64 {
+        let tid = self.next_table_id;
+        self.next_table_id += 1;
+        let (sb, bb) = blinds_at(level, tpl.starting_stack);
+        let cfg = TableConfig {
+            name: match number {
+                Some(k) => format!("{} · Table {}", tpl.name, k),
+                None => tpl.name.clone(),
+            },
+            currency: Currency::Chips,
+            small_blind: sb,
+            big_blind: bb,
+            min_buy_in: tpl.starting_stack,
+            max_buy_in: tpl.starting_stack,
+            max_seats: tpl.table_size,
+            rake_bps: 0,
+            rake_cap: 0,
+            action_timeout_secs: 20,
+        };
+        let mut table = Table::new(tid, cfg);
+        table.tournament_mode = true;
+        self.tables.insert(tid, table);
+        self.table_tournament.insert(tid, id);
+        tid
+    }
+
+    /// Seats a (late or re-entering) player at the emptiest table with room,
+    /// opening a new table when all are full. Returns the table id.
+    fn seat_entrant(&mut self, id: u64, p: Principal, stack: u64) -> u64 {
+        let t = &self.tournaments[&id];
+        let dest = t
+            .tables
+            .iter()
+            .filter_map(|tid| self.tables.get(tid).map(|tb| (*tid, tb)))
+            .filter(|(_, tb)| !tb.free_seats().is_empty())
+            .min_by_key(|(_, tb)| tb.seats.iter().flatten().filter(|s| s.stack > 0).count())
+            .map(|(tid, _)| tid);
+        let tid = match dest {
+            Some(tid) => tid,
+            None => {
+                let (tpl, level, k) = (t.template.clone(), t.level, t.tables.len() + 1);
+                let tid = self.new_tournament_table(id, &tpl, level, Some(k));
+                self.tournaments.get_mut(&id).unwrap().tables.push(tid);
+                tid
+            }
+        };
+        let table = self.tables.get_mut(&tid).unwrap();
+        let seat = table.free_seats()[0];
+        table.seat_player(p, seat, stack).unwrap();
+        tid
+    }
+
+    /// Buys a fresh starting stack during the rebuy period: when busted (within
+    /// the rebuy window) or when at or below the starting stack between hands.
+    pub fn rebuy(&mut self, caller: Principal, id: u64, now: u64) -> R<()> {
+        let t = self.tournaments.get(&id).ok_or("No such tournament")?;
+        if !t.rebuys_open() {
+            return Err("The rebuy period is over".into());
+        }
+        let e = t.entrants.iter().find(|e| e.player == caller).ok_or("You are not in this tournament")?;
+        if e.place.is_some() {
+            return Err("You are out of this tournament".into());
+        }
+        if e.rebuys >= t.template.max_rebuys {
+            return Err("You have used all your rebuys".into());
+        }
+        let stack = t.template.starting_stack;
+        let table = self.seat_table_of(t, &caller);
+        let chips = table
+            .and_then(|tid| self.tables[&tid].seat_of(&caller).and_then(|i| self.tables[&tid].seats[i].as_ref()).map(|s| s.stack))
+            .unwrap_or(0);
+        if e.rebuy_deadline == 0 && chips > stack {
+            return Err("You can rebuy when you're at or below the starting stack".into());
+        }
+        let (currency, buy_in, fee) = (t.template.currency, t.template.buy_in, t.template.fee);
+        // Add the chips first so nothing is charged if the player is mid-hand.
+        if let Some(tid) = table {
+            self.tables.get_mut(&tid).unwrap().add_chips(&caller, stack)?;
+        }
+        if let Err(e) = self.debit_in(&caller, currency, buy_in + fee) {
+            if let Some(tid) = table {
+                let s = self.tables.get_mut(&tid).unwrap();
+                let i = s.seat_of(&caller).unwrap();
+                s.seats[i].as_mut().unwrap().stack -= stack;
+            }
+            return Err(e);
+        }
+        if currency == Currency::Icp {
+            self.treasury += fee;
+        }
+        let t = self.tournaments.get_mut(&id).unwrap();
+        t.collected += buy_in;
+        let e = t.entrants.iter_mut().find(|e| e.player == caller).unwrap();
+        e.rebuys += 1;
+        e.rebuy_deadline = 0;
+        t.recompute_payouts();
+        let tid = match table {
+            Some(tid) => tid,
+            None => self.seat_entrant(id, caller, stack),
+        };
+        let name = self.users.get(&caller).map(|u| u.username.clone()).unwrap_or_default();
+        self.post(Channel::Table(tid), None, String::new(), format!("{name} rebuys"), MessageKind::System, now);
+        Ok(())
+    }
+
+    /// Ends the tournament when one player is left standing.
+    fn check_finished(&mut self, id: u64, table_id: u64, now: u64) -> bool {
+        let t = &self.tournaments[&id];
+        if t.status != TournamentStatus::Running || t.players_left() != 1 {
+            return false;
+        }
+        let winner = t.entrants.iter().find(|e| e.place.is_none()).unwrap().player;
+        self.finish_player(id, &winner, 1, Some(table_id), now);
+        let t = self.tournaments.get_mut(&id).unwrap();
+        t.status = TournamentStatus::Finished;
+        t.finished_at = now;
+        let kind = t.template.kind;
+        let name = t.template.name.clone();
+        let winner_name = self.users.get(&winner).map(|u| u.username.clone()).unwrap_or_default();
+        self.post(Channel::Lobby, None, String::new(), format!("🏆 {winner_name} won the {name}!"), MessageKind::System, now);
+        let medal = if kind == TournamentKind::SitAndGo { "sng_champ" } else { "champion" };
+        self.award(&winner, medal, Some(Channel::Table(table_id)), now);
+        true
+    }
+
+    /// Knocks out busted players whose rebuy window has run out.
+    fn expire_rebuy_windows(&mut self, id: u64, now: u64) {
+        let expired: Vec<Principal> = self.tournaments[&id]
+            .entrants
+            .iter()
+            .filter(|e| e.place.is_none() && e.rebuy_deadline != 0 && e.rebuy_deadline <= now)
+            .map(|e| e.player)
+            .collect();
+        for p in expired {
+            let t = &self.tournaments[&id];
+            let left = t.players_left();
+            let table = self.seat_table_of(t, &p).or(t.tables.first().copied());
+            self.tournaments.get_mut(&id).unwrap().entrants.iter_mut().find(|e| e.player == p).unwrap().rebuy_deadline = 0;
+            self.finish_player(id, &p, left, table, now);
+            if let Some(tid) = table {
+                if self.check_finished(id, tid, now) {
+                    return;
+                }
+            }
+        }
     }
 
     /// Runs every tick: opens new events, starts scheduled ones, raises blinds,
@@ -473,9 +691,12 @@ impl State {
                 }
                 TournamentStatus::Running => {
                     if now >= t.next_level_at() {
+                        // Catch up on every level that has elapsed (levels stay on schedule).
                         let t = self.tournaments.get_mut(&id).unwrap();
-                        t.level += 1;
-                        t.level_started_at = now;
+                        while now >= t.next_level_at() {
+                            t.level += 1;
+                            t.level_started_at += t.template.level_secs * NANOS;
+                        }
                         let (sb, bb) = t.blinds();
                         let tables = t.tables.clone();
                         for tid in tables {
@@ -486,7 +707,10 @@ impl State {
                             }
                         }
                     }
-                    self.balance_tables(id);
+                    self.expire_rebuy_windows(id, now);
+                    if self.tournaments[&id].status == TournamentStatus::Running {
+                        self.balance_tables(id);
+                    }
                 }
                 TournamentStatus::Finished if t.finished_at + CLOSE_AFTER_NS <= now && !t.tables.is_empty() => {
                     let tables = std::mem::take(&mut self.tournaments.get_mut(&id).unwrap().tables);
@@ -523,32 +747,39 @@ impl State {
             .map(|s| (result.players.iter().find(|r| r.player == s.player).map_or(0, |r| r.committed), s.player))
             .collect();
         busted.sort();
-        let mut left = t.players_left();
+        let rebuys_open = t.rebuys_open();
+        let max_rebuys = t.template.max_rebuys;
         for (_, p) in busted {
-            self.finish_player(id, &p, left, Some(table_id), now);
-            left -= 1;
-        }
-        if left == 1 {
-            let winner = self.tournaments[&id].entrants.iter().find(|e| e.place.is_none()).unwrap().player;
-            self.finish_player(id, &winner, 1, Some(table_id), now);
             let t = self.tournaments.get_mut(&id).unwrap();
-            t.status = TournamentStatus::Finished;
-            t.finished_at = now;
-            let kind = t.template.kind;
-            let name = t.template.name.clone();
-            let winner_name = self.users.get(&winner).map(|u| u.username.clone()).unwrap_or_default();
-            self.post(Channel::Lobby, None, String::new(), format!("🏆 {winner_name} won the {name}!"), MessageKind::System, now);
-            let medal = if kind == TournamentKind::SitAndGo { "sng_champ" } else { "champion" };
-            self.award(&winner, medal, Some(Channel::Table(table_id)), now);
-            // Leave the final table seated so everyone sees the result; it closes shortly.
-            return;
+            let e = t.entrants.iter_mut().find(|e| e.player == p).unwrap();
+            if e.rebuy_deadline != 0 {
+                continue;
+            }
+            if rebuys_open && e.rebuys < max_rebuys {
+                // Give them a moment to rebuy before knocking them out.
+                e.rebuy_deadline = now + REBUY_WINDOW_NS;
+                let name = self.users.get(&p).map(|u| u.username.clone()).unwrap_or_default();
+                self.post(Channel::Table(table_id), None, String::new(), format!("{name} is busted and has 30 seconds to rebuy"), MessageKind::System, now);
+                continue;
+            }
+            let left = self.tournaments[&id].players_left();
+            self.finish_player(id, &p, left, Some(table_id), now);
         }
-        self.balance_tables(id);
+        // Leave the final table seated so everyone sees the result; it closes shortly.
+        if !self.check_finished(id, table_id, now) {
+            self.balance_tables(id);
+        }
     }
 
     fn finish_player(&mut self, id: u64, p: &Principal, place: u32, table: Option<u64>, now: u64) {
         let t = self.tournaments.get_mut(&id).unwrap();
-        let prize = t.payouts.get(place as usize - 1).copied().unwrap_or(0);
+        // The winner takes whatever is left, so the pool always pays out exactly
+        // even if late entries changed the structure after someone cashed.
+        let prize = if place == 1 {
+            t.prize_pool - t.paid
+        } else {
+            t.payouts.get(place as usize - 1).copied().unwrap_or(0).min(t.prize_pool - t.paid)
+        };
         let currency = t.template.currency;
         if let Some(e) = t.entrants.iter_mut().find(|e| e.player == *p) {
             e.place = Some(place);
@@ -671,7 +902,24 @@ impl State {
             level_secs: t.template.level_secs,
             registered_me: viewer.is_some_and(|v| t.entrants.iter().any(|e| e.player == v)),
             my_table: viewer.and_then(|v| self.seat_table_of(t, &v)),
+            can_register: (t.status == TournamentStatus::Registering || t.late_reg_open())
+                && (t.entrants.len() as u32) < t.template.max_players,
+            late_reg_levels: t.template.late_reg_levels,
+            rebuy_levels: t.template.rebuy_levels,
+            max_rebuys: t.template.max_rebuys,
+            entries: t.entries(),
+            level: t.level + 1,
         }
+    }
+
+    /// Chips a player has in a tournament right now (stack plus anything in the pot).
+    fn tournament_chips(&self, t: &Tournament, p: &Principal) -> u64 {
+        self.seat_table_of(t, p)
+            .and_then(|tid| {
+                let tb = &self.tables[&tid];
+                tb.seat_of(p).and_then(|i| tb.seats[i].as_ref()).map(|s| s.stack + s.committed * tb.phase.is_betting() as u64)
+            })
+            .unwrap_or(0)
     }
 
     pub fn list_tournaments(&self, viewer: Option<Principal>) -> Vec<TournamentSummary> {
@@ -747,6 +995,16 @@ impl State {
             my_place: me.and_then(|e| e.place),
             my_prize: me.map_or(0, |e| e.prize),
             finished: t.status == TournamentStatus::Finished,
+            can_rebuy: me.is_some_and(|e| {
+                t.rebuys_open()
+                    && e.place.is_none()
+                    && e.rebuys < t.template.max_rebuys
+                    && (e.rebuy_deadline != 0 || self.tournament_chips(t, &e.player) <= t.template.starting_stack)
+            }),
+            rebuy_deadline: me.map_or(0, |e| e.rebuy_deadline),
+            rebuy_cost: t.template.buy_in + t.template.fee,
+            rebuys_left: me.map_or(0, |e| t.template.max_rebuys.saturating_sub(e.rebuys)),
+            currency: t.template.currency,
         })
     }
 

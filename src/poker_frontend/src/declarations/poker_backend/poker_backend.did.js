@@ -35,7 +35,9 @@ export const idlFactory = ({ IDL }) => {
   const Currency = IDL.Variant({ 'Icp' : IDL.Null, 'Chips' : IDL.Null });
   const TournamentTemplate = IDL.Record({
     'fee' : IDL.Nat64,
+    'max_rebuys' : IDL.Nat32,
     'min_players' : IDL.Nat32,
+    'rebuy_levels' : IDL.Nat32,
     'kind' : TournamentKind,
     'name' : IDL.Text,
     'level_secs' : IDL.Nat64,
@@ -46,6 +48,7 @@ export const idlFactory = ({ IDL }) => {
     'starting_stack' : IDL.Nat64,
     'buy_in' : IDL.Nat64,
     'table_size' : IDL.Nat8,
+    'late_reg_levels' : IDL.Nat32,
   });
   const TableConfig = IDL.Record({
     'small_blind' : IDL.Nat64,
@@ -211,6 +214,22 @@ export const idlFactory = ({ IDL }) => {
     'avatar' : IDL.Nat32,
     'medals' : IDL.Vec(EarnedMedal),
   });
+  const NoteColor = IDL.Variant({
+    'Red' : IDL.Null,
+    'Yellow' : IDL.Null,
+    'Blue' : IDL.Null,
+    'Green' : IDL.Null,
+    'Orange' : IDL.Null,
+    'Purple' : IDL.Null,
+  });
+  const NoteView = IDL.Record({
+    'updated_at' : IDL.Nat64,
+    'username' : IDL.Text,
+    'player' : IDL.Principal,
+    'color' : IDL.Opt(NoteColor),
+    'text' : IDL.Text,
+    'avatar' : IDL.Text,
+  });
   const ShownHand = IDL.Record({
     'player' : IDL.Principal,
     'cards' : IDL.Vec(IDL.Nat8),
@@ -239,16 +258,26 @@ export const idlFactory = ({ IDL }) => {
   });
   const TournamentBadge = IDL.Record({
     'id' : IDL.Nat64,
+    'can_rebuy' : IDL.Bool,
     'small_blind' : IDL.Nat64,
+    'rebuy_cost' : IDL.Nat64,
     'name' : IDL.Text,
     'level' : IDL.Nat32,
     'finished' : IDL.Bool,
+    'currency' : Currency,
     'big_blind' : IDL.Nat64,
     'entrants' : IDL.Nat32,
     'players_left' : IDL.Nat32,
+    'rebuys_left' : IDL.Nat32,
     'my_place' : IDL.Opt(IDL.Nat32),
     'my_prize' : IDL.Nat64,
+    'rebuy_deadline' : IDL.Nat64,
     'next_level_at' : IDL.Nat64,
+  });
+  const PlayerNote = IDL.Record({
+    'updated_at' : IDL.Nat64,
+    'color' : IDL.Opt(NoteColor),
+    'text' : IDL.Text,
   });
   const SeatView = IDL.Record({
     'bet' : IDL.Nat64,
@@ -258,6 +287,7 @@ export const idlFactory = ({ IDL }) => {
     'all_in' : IDL.Bool,
     'cards' : IDL.Vec(IDL.Nat8),
     'gift' : IDL.Opt(IDL.Text),
+    'note' : IDL.Opt(PlayerNote),
     'has_cards' : IDL.Bool,
     'seat' : IDL.Nat8,
     'last_action' : IDL.Opt(IDL.Text),
@@ -317,20 +347,26 @@ export const idlFactory = ({ IDL }) => {
     'id' : IDL.Nat64,
     'fee' : IDL.Nat64,
     'status' : TournamentStatus,
+    'max_rebuys' : IDL.Nat32,
     'my_table' : IDL.Opt(IDL.Nat64),
     'min_players' : IDL.Nat32,
+    'rebuy_levels' : IDL.Nat32,
     'start_at' : IDL.Nat64,
     'kind' : TournamentKind,
     'name' : IDL.Text,
     'level_secs' : IDL.Nat64,
     'max_players' : IDL.Nat32,
+    'level' : IDL.Nat32,
+    'entries' : IDL.Nat32,
     'currency' : Currency,
     'prize_pool' : IDL.Nat64,
     'players_left' : IDL.Nat32,
     'registered_me' : IDL.Bool,
     'starting_stack' : IDL.Nat64,
     'buy_in' : IDL.Nat64,
+    'late_reg_levels' : IDL.Nat32,
     'registered' : IDL.Nat32,
+    'can_register' : IDL.Bool,
   });
   const TournamentDetail = IDL.Record({
     'small_blind' : IDL.Nat64,
@@ -400,6 +436,7 @@ export const idlFactory = ({ IDL }) => {
       ),
     'get_leaderboard' : IDL.Func([], [IDL.Vec(LeaderboardEntry)], ['query']),
     'get_my_profile' : IDL.Func([], [IDL.Opt(Profile)], ['query']),
+    'get_notes' : IDL.Func([], [IDL.Vec(NoteView)], ['query']),
     'get_profile' : IDL.Func(
         [IDL.Principal],
         [IDL.Opt(PublicProfile)],
@@ -427,6 +464,7 @@ export const idlFactory = ({ IDL }) => {
     'list_tables' : IDL.Func([], [IDL.Vec(TableSummary)], ['query']),
     'list_tournaments' : IDL.Func([], [IDL.Vec(TournamentSummary)], ['query']),
     'ping' : IDL.Func([], [], []),
+    'rebuy_tournament' : IDL.Func([IDL.Nat64], [Result], []),
     'register' : IDL.Func([IDL.Text], [Result_4], []),
     'register_tournament' : IDL.Func([IDL.Nat64], [Result], []),
     'remove_friend' : IDL.Func([IDL.Principal], [Result], []),
@@ -440,6 +478,11 @@ export const idlFactory = ({ IDL }) => {
     'send_friend_request' : IDL.Func([IDL.Principal], [Result], []),
     'send_gift' : IDL.Func(
         [IDL.Nat64, IDL.Principal, IDL.Nat32, Currency],
+        [Result],
+        [],
+      ),
+    'set_note' : IDL.Func(
+        [IDL.Principal, IDL.Text, IDL.Opt(NoteColor)],
         [Result],
         [],
       ),
