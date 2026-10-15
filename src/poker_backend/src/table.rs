@@ -108,6 +108,14 @@ pub struct Seat {
     /// Extra thinking time (ns), used automatically once the action clock runs
     /// out. Refills a little with every hand dealt.
     pub time_bank: u64,
+    /// The bet level this player faced when they last acted on this street.
+    /// They may raise again only once it has gone up by a full raise since
+    /// (a short all-in alone doesn't reopen the betting).
+    pub last_faced: Option<u64>,
+    /// Missed hands while sitting out, or sat down at a running game: posts a
+    /// big blind the next time they're dealt in (unless in the blinds anyway),
+    /// so sitting out through the blinds or seat-hopping saves nothing.
+    pub owes_bb: bool,
 }
 
 impl Seat {
@@ -127,6 +135,8 @@ impl Seat {
             left: false,
             last_action: None,
             time_bank: TIME_BANK_START,
+            last_faced: None,
+            owes_bb: false,
         }
     }
 
@@ -322,6 +332,13 @@ impl Table {
     // ---------------------------------------------------------------- seating
 
     pub fn sit(&mut self, player: Principal, seat: u8, buy_in: u64) -> Result<(), String> {
+        self.sit_with_minimum(player, seat, buy_in, 0)
+    }
+
+    /// Like `sit`, but the buy-in must be at least `required` (a player coming
+    /// back soon after leaving brings back what they left with, even above the
+    /// usual maximum).
+    pub fn sit_with_minimum(&mut self, player: Principal, seat: u8, buy_in: u64, required: u64) -> Result<(), String> {
         let i = seat as usize;
         if i >= self.n() {
             return Err("No such seat".into());
@@ -333,10 +350,15 @@ impl Table {
         if self.seats[i].is_some() {
             return Err("Seat is taken".into());
         }
-        if buy_in < self.config.min_buy_in || buy_in > self.config.max_buy_in {
+        let (min, max) = (self.config.min_buy_in.max(required), self.config.max_buy_in.max(required));
+        if buy_in < min || buy_in > max {
             return Err("Buy-in outside the table limits".into());
         }
-        self.seats[i] = Some(Seat::new(player, buy_in));
+        // Joining a game already in progress: post a big blind to play.
+        let playing = self.seats.iter().flatten().filter(|s| s.stack > 0 && !s.sitting_out && !s.left).count();
+        let mut seat = Seat::new(player, buy_in);
+        seat.owes_bb = !self.tournament_mode && self.hand_no > 0 && playing >= 2;
+        self.seats[i] = Some(seat);
         Ok(())
     }
 
@@ -498,9 +520,13 @@ impl Table {
             s.all_in = false;
             s.acted = false;
             s.last_action = None;
+            s.last_faced = None;
             s.in_hand = s.stack > 0 && (!s.sitting_out || tournament_mode) && !s.left;
             if s.in_hand && !s.sitting_out {
                 s.time_bank = (s.time_bank + TIME_BANK_REFILL).min(TIME_BANK_MAX);
+            }
+            if !tournament_mode && s.sitting_out && !s.left && s.stack > 0 {
+                s.owes_bb = true;
             }
         }
         self.hand_no += 1;
@@ -530,6 +556,24 @@ impl Table {
         self.log(Some(bb), "Big blind", bb_posted);
         self.current_bet = bb_amt;
         self.min_raise = bb_amt;
+        // Players who owe a big blind post it now, live (it counts toward
+        // their call). The big blind is already paying it.
+        for i in 0..self.n() {
+            let Some(s) = self.seats[i].as_mut() else { continue };
+            if !s.owes_bb || !s.in_hand {
+                continue;
+            }
+            s.owes_bb = false;
+            if i == bb || heads_up {
+                continue;
+            }
+            // In the small blind they top it up to a full big blind.
+            let add = bb_amt.saturating_sub(s.bet).min(s.stack);
+            s.put(add);
+            s.last_action = Some("Posts big blind".into());
+            let posted = s.bet;
+            self.log(Some(i), "Posts big blind", posted);
+        }
 
         // Deal two cards to each player, one at a time, starting left of the button.
         for _ in 0..2 {
@@ -623,6 +667,7 @@ impl Table {
         for s in self.seats.iter_mut().flatten() {
             s.bet = 0;
             s.acted = false;
+            s.last_faced = None;
             if s.can_act() {
                 s.last_action = None;
             }
@@ -785,12 +830,26 @@ impl Table {
             last.0 += total - assigned;
         }
 
+        // Rake and jackpot drop come out of every pot in proportion to its
+        // size, so a short all-in doesn't pay for chips they can't win.
         let (rake_total, jackpot_drop) = self.take_rake(total);
-        let mut rake = rake_total + jackpot_drop;
-        for pot in pots.iter_mut() {
-            let r = rake.min(pot.0);
-            pot.0 -= r;
-            rake -= r;
+        let take = rake_total + jackpot_drop;
+        let pot_sum: u64 = pots.iter().map(|p| p.0).sum();
+        let mut left = take;
+        if pot_sum > 0 {
+            for pot in pots.iter_mut() {
+                let r = ((take as u128 * pot.0 as u128) / pot_sum as u128) as u64;
+                pot.0 -= r;
+                left -= r;
+            }
+        }
+        // Rounding leftovers: from the largest pots first.
+        let mut order: Vec<usize> = (0..pots.len()).collect();
+        order.sort_by_key(|&k| std::cmp::Reverse(pots[k].0));
+        for k in order {
+            let r = left.min(pots[k].0);
+            pots[k].0 -= r;
+            left -= r;
         }
 
         let scores: Vec<Option<(HandScore, String)>> = (0..n)
@@ -887,6 +946,7 @@ impl Table {
         }
         let current_bet = self.current_bet;
         let min_raise = self.min_raise;
+        let may_raise = self.may_raise(i);
         let (bank_active, bank_start) = (self.time_bank_active, self.bank_started_at);
         let s = self.seat_mut(i);
         let to_call = current_bet - s.bet;
@@ -919,6 +979,9 @@ impl Table {
             }
             Action::AllIn => {
                 let stack = s.stack;
+                if stack > to_call && !may_raise {
+                    return Err("The betting wasn't reopened: you can only call or fold".into());
+                }
                 s.put(stack);
                 s.last_action = Some("All-in".into());
                 Some(s.bet)
@@ -927,6 +990,9 @@ impl Table {
                 let max_to = s.bet + s.stack;
                 if to <= current_bet {
                     return Err("Raise must exceed the current bet".into());
+                }
+                if !may_raise {
+                    return Err("The betting wasn't reopened: you can only call or fold".into());
                 }
                 if to > max_to {
                     return Err("Not enough chips".into());
@@ -947,6 +1013,7 @@ impl Table {
             }
         };
         s.acted = true;
+        s.last_faced = Some(current_bet.max(s.bet));
         let (text, amount) = (s.last_action.clone().unwrap_or_default(), s.bet);
         let amount = if matches!(action, Action::Fold | Action::Check) { 0 } else { amount };
         self.log(Some(i), text, amount);
@@ -1016,9 +1083,21 @@ impl Table {
     pub fn betting_options(&self, i: usize) -> (u64, u64, u64) {
         let s = self.seat(i);
         let to_call = (self.current_bet - s.bet).min(s.stack);
+        if !self.may_raise(i) {
+            return (to_call, 0, 0);
+        }
         let max_to = s.bet + s.stack;
         let min_to = (self.current_bet + self.min_raise).min(max_to);
         (to_call, min_to, max_to)
+    }
+
+    /// Whether the player at `i` may (re-)raise: they haven't acted on this
+    /// street yet, or the bet has risen by at least a full raise since they did.
+    pub fn may_raise(&self, i: usize) -> bool {
+        match self.seat(i).last_faced {
+            None => true,
+            Some(faced) => self.current_bet >= faced + self.min_raise,
+        }
     }
 
     /// Hole cards visible to `viewer` at seat `i`.
@@ -1212,6 +1291,108 @@ mod tests {
         assert!(short_won <= 300);
         let won: u64 = r.players.iter().map(|x| x.won).sum();
         assert_eq!(won, r.pot);
+    }
+
+    /// Button seat 0 (p3), then p1, p2, p4. Everyone limps to the flop, then
+    /// p1 bets 100 and p2 calls.
+    fn short_all_in_table(p3_buy: u64, p4_buy: u64) -> Table {
+        let mut t = Table::new(1, config());
+        t.sit(p(3), 0, p3_buy).unwrap();
+        t.sit(p(1), 1, 1000).unwrap();
+        t.sit(p(2), 2, 1000).unwrap();
+        t.sit(p(4), 3, p4_buy).unwrap();
+        t.start_hand([9; 32], 0).unwrap();
+        while t.phase == Phase::PreFlop {
+            let pl = to_act_player(&t);
+            if t.act(&pl, Action::Check, 1).is_err() {
+                t.act(&pl, Action::Call, 1).unwrap();
+            }
+        }
+        assert_eq!(to_act_player(&t), p(1));
+        t.act(&p(1), Action::Raise(100), 1).unwrap();
+        t.act(&p(2), Action::Call, 1).unwrap();
+        t
+    }
+
+    #[test]
+    fn joining_a_running_game_posts_a_big_blind() {
+        let mut t = Table::new(1, config());
+        t.sit(p(1), 0, 500).unwrap();
+        t.sit(p(2), 1, 500).unwrap();
+        assert!(!t.seat(0).owes_bb, "first players of a new game don't owe");
+        t.start_hand([1; 32], 0).unwrap();
+        t.sit(p(3), 2, 500).unwrap();
+        assert!(t.seat(2).owes_bb);
+        while t.phase.is_betting() {
+            let pl = to_act_player(&t);
+            t.act(&pl, Action::Fold, 1).unwrap();
+        }
+        t.start_hand([2; 32], 10 * NANOS).unwrap();
+        assert!(!t.seat(2).owes_bb);
+        assert_eq!(t.seat(2).committed, 10, "a full big blind, whatever the position");
+    }
+
+    #[test]
+    fn a_short_all_in_does_not_reopen_the_betting() {
+        let mut t = short_all_in_table(220, 160);
+        t.act(&p(4), Action::AllIn, 1).unwrap(); // 150: a 50 raise, short of the 100 minimum
+        assert_eq!(t.current_bet, 150);
+        t.act(&p(3), Action::Call, 1).unwrap();
+        // Back to the bettor: they may only call or fold.
+        assert_eq!(to_act_player(&t), p(1));
+        assert_eq!(t.betting_options(1), (50, 0, 0));
+        assert!(t.act(&p(1), Action::Raise(400), 1).is_err());
+        assert!(t.act(&p(1), Action::AllIn, 1).is_err());
+        t.act(&p(1), Action::Call, 1).unwrap();
+        assert!(t.act(&p(2), Action::Raise(400), 1).is_err());
+        t.act(&p(2), Action::Call, 1).unwrap();
+        assert_eq!(t.phase, Phase::Turn);
+        // A new street opens the betting again.
+        assert!(t.may_raise(1));
+    }
+
+    #[test]
+    fn short_all_ins_that_add_up_to_a_full_raise_reopen_it() {
+        let mut t = short_all_in_table(220, 160);
+        t.act(&p(4), Action::AllIn, 1).unwrap(); // to 150 (+50)
+        assert!(!t.may_raise(1));
+        t.act(&p(3), Action::AllIn, 1).unwrap(); // to 210 (+60): 110 over p1's bet
+        assert!(t.may_raise(1));
+        t.act(&p(1), Action::Raise(400), 1).unwrap();
+        // p3 raised (short) after p1's bet; p1's full re-raise reopens it for p2.
+        assert!(t.may_raise(2));
+    }
+
+    #[test]
+    fn rake_is_shared_by_main_and_side_pots() {
+        let card = |r: u8, su: u8| r * 4 + su;
+        let mut cfg = config();
+        cfg.rake_bps = 1000; // 10%
+        cfg.rake_cap = 1_000;
+        let mut t = Table::new(1, cfg);
+        t.sit(p(1), 0, 100).unwrap();
+        t.sit(p(2), 1, 1000).unwrap();
+        t.sit(p(3), 2, 1000).unwrap();
+        t.start_hand([3; 32], 0).unwrap();
+        // p1 aces, p2 kings, p3 queens; a dry board (deck pops from the end).
+        t.seats[0].as_mut().unwrap().hole = vec![card(12, 3), card(12, 2)];
+        t.seats[1].as_mut().unwrap().hole = vec![card(11, 0), card(11, 1)];
+        t.seats[2].as_mut().unwrap().hole = vec![card(10, 0), card(10, 1)];
+        t.deck = vec![card(2, 0), card(6, 0), card(9, 3), card(4, 0), card(7, 2), card(5, 1), card(0, 0), card(3, 0)];
+        t.act(&p(1), Action::AllIn, 1).unwrap(); // 100
+        t.act(&p(2), Action::Call, 1).unwrap();
+        t.act(&p(3), Action::Call, 1).unwrap();
+        t.act(&p(2), Action::Raise(200), 1).unwrap();
+        t.act(&p(3), Action::Call, 1).unwrap();
+        while t.phase.is_betting() {
+            let pl = to_act_player(&t);
+            t.act(&pl, Action::Check, 1).unwrap();
+        }
+        // Main pot 300, side pot 400, rake 70 split 30/40.
+        assert_eq!(t.rake_accrued, 70);
+        assert_eq!(t.seat(0).stack, 270, "the short stack pays rake only on the pot they can win");
+        assert_eq!(t.seat(1).stack, 1000 - 300 + 360);
+        assert_eq!(t.seat(2).stack, 700);
     }
 
     #[test]

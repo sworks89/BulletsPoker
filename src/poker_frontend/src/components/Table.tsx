@@ -202,7 +202,11 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
           <div className="row gap">
             {me && (
               <>
-                <button className="btn ghost" onClick={() => run(async () => unwrap(await backend.sit_out(id, !me.sitting_out)))}>
+                <button
+                  className="btn ghost"
+                  title={tourney ? undefined : me.sitting_out ? "You'll post a big blind to come back in" : 'Missed hands mean posting a big blind when you come back'}
+                  onClick={() => run(async () => unwrap(await backend.sit_out(id, !me.sitting_out)))}
+                >
                   {me.sitting_out ? "I'm back" : 'Sit out'}
                 </button>
                 {!tourney && (
@@ -492,11 +496,16 @@ function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number;
   const currency = view.config.currency;
   const chips = isChips(currency);
   const balance = (chips ? profile?.chips : profile?.balance) ?? 0n;
-  const max = balance < view.config.max_buy_in ? balance : view.config.max_buy_in;
+  // Coming back soon after leaving: at least the stack you left with, even above the table max.
+  const returning = view.my_min_buy_in > 0n;
+  const minBuyIn = view.my_min_buy_in > view.config.min_buy_in ? view.my_min_buy_in : view.config.min_buy_in;
+  const tableMax = view.my_min_buy_in > view.config.max_buy_in ? view.my_min_buy_in : view.config.max_buy_in;
+  const max = balance < tableMax ? balance : tableMax;
   const [value, setValue] = useState<bigint>(max);
   const [password, setPassword] = useState('');
-  const needsPassword = view.locked && view.room_owner[0]?.toText() !== profile?.id.toText();
-  const short = balance < view.config.min_buy_in;
+  // Hosts, seated players and anyone who already entered the password aren't asked again.
+  const needsPassword = view.restricted;
+  const short = balance < minBuyIn;
 
   return (
     <div className="modal-bg" onClick={onClose}>
@@ -507,7 +516,7 @@ function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number;
         </p>
         {short ? (
           <>
-            <p>You need at least {amountWithUnit(view.config.min_buy_in, currency)} to sit here.</p>
+            <p>You need at least {amountWithUnit(minBuyIn, currency)} to sit here{returning ? ' (you left recently with that much)' : ''}.</p>
             {chips ? (
               <p className="muted small">Claim your daily chip bonus from the top bar, or try a smaller table.</p>
             ) : (
@@ -518,9 +527,12 @@ function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number;
           </>
         ) : (
           <>
+            {returning && (
+              <p className="muted small">You left this table less than 30 minutes ago, so you buy back in with at least the {amountWithUnit(view.my_min_buy_in, currency)} you left with.</p>
+            )}
             <input
               type="range"
-              min={Number(view.config.min_buy_in)}
+              min={Number(minBuyIn)}
               max={Number(max)}
               step={Number(view.config.big_blind)}
               value={Number(value)}

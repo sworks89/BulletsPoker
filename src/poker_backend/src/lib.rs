@@ -36,6 +36,7 @@ const ICP_FEE: u64 = 10_000;
 /// Most tables one client can fetch in a single `get_tables` call.
 const MAX_OPEN_TABLES: usize = 8;
 const SOLVENCY_EVERY_SECS: u64 = 600;
+const ENTROPY_EVERY_SECS: u64 = 300;
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
@@ -208,6 +209,15 @@ fn start_timers() {
     ic_cdk_timers::set_timer_interval(Duration::from_secs(SOLVENCY_EVERY_SECS), || async {
         let _ = check_solvency().await;
     });
+    // Keep the secret entropy fresh even when no hands are being dealt.
+    ic_cdk_timers::set_timer(Duration::ZERO, refresh_entropy());
+    ic_cdk_timers::set_timer_interval(Duration::from_secs(ENTROPY_EVERY_SECS), || async { refresh_entropy().await });
+}
+
+async fn refresh_entropy() {
+    if let Ok(rand) = ledger::raw_rand().await {
+        with_mut(|s| s.mix_entropy(&rand));
+    }
 }
 
 /// Re-sends ledger ops whose outcome is unknown. The ledger either executes
@@ -271,6 +281,7 @@ async fn tick() {
     let rand = ledger::raw_rand().await;
     DEALING.set(false);
     let Ok(rand) = rand else { return };
+    with_mut(|s| s.mix_entropy(&rand));
     for id in ready {
         // Fresh, unpredictable deck per table and hand.
         let hand_no = with(|s| s.tables.get(&id).map_or(0, |t| t.hand_no));

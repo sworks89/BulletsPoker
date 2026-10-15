@@ -553,10 +553,13 @@ impl State {
         let tpl = &t.template;
         let n = t.entrants.len();
 
-        // Random-looking but reproducible seating order.
+        // Random seating, from secret on-chain randomness (not just the start
+        // time), so nobody can work out or steer where they'll sit.
+        let entropy = self.entropy().to_vec();
         let mut order: Vec<Principal> = t.entrants.iter().map(|e| e.player).collect();
         order.sort_by_key(|p| {
             let mut h = Sha256::new();
+            h.update(&entropy);
             h.update(now.to_le_bytes());
             h.update(id.to_le_bytes());
             h.update(p.as_slice());

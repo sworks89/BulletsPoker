@@ -482,6 +482,7 @@ export const idlFactory = ({ IDL }) => {
     'config' : TableConfig,
     'room_owner' : IDL.Opt(IDL.Principal),
     'button' : IDL.Nat8,
+    'my_min_buy_in' : IDL.Nat64,
     'max_raise_to' : IDL.Nat64,
   });
   const Standing = IDL.Record({

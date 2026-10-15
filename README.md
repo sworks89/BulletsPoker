@@ -10,7 +10,10 @@ A social Texas Hold'em poker room that runs entirely on the [Internet Computer](
 - A "reconnecting" banner when your connection drops, and an instant catch-up when it returns
 - Hole cards stay private: the backend only returns your own cards, plus hands shown at showdown
 - A fresh deck every hand, shuffled with on-chain randomness (`raw_rand`)
-- Configurable rake (default 2.5%, capped at 3 big blinds, and none if there's no flop)
+- Configurable rake (default 2.5%, capped at 3 big blinds, and none if there's no flop), taken from the main and side pots in proportion, so a short all-in only pays on what they can win
+- Standard betting rules: a short all-in doesn't reopen the betting for players who already acted (unless short all-ins add up to a full raise)
+- No blind dodging: players who miss hands while sitting out, or sit down in a game already running, post a big blind to play
+- No ratholing: leave a cash table and come back within 30 minutes, and you buy back in with at least the stack you left with
 
 **Play chips (free-to-play)**
 - A second currency for free tables: 20,000 chips on signup, plus a daily bonus that grows with a 7-day streak
@@ -23,6 +26,7 @@ A social Texas Hold'em poker room that runs entirely on the [Internet Computer](
 - All open tables are refreshed with a single `get_tables` query per second; open tables and layout are remembered per browser
 
 **Tournaments**
+- Seating is shuffled with on-chain randomness
 - Sit-and-go's that start as soon as they fill (chips and ICP, heads-up to 9-max), re-opening automatically
 - Scheduled multi-table tournaments (an hourly play-chip freeroll with a guaranteed prize pool, plus a nightly ICP event) with rising blinds, table balancing and merging down to a final table, and payouts that scale with the field
 - Late registration for the first levels of scheduled events (late players are seated at the emptiest table, or a new one opens). Players knocked out while it's open get their finishing place, and any prize, when it closes, so late entries can't scramble the places

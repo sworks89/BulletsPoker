@@ -729,6 +729,11 @@ export interface TableView {
    */
   'room_owner' : [] | [Principal],
   'button' : number,
+  /**
+   * Smallest buy-in the viewer may sit down with (they left recently with
+   * this many chips); 0 means the table's normal minimum.
+   */
+  'my_min_buy_in' : bigint,
   'max_raise_to' : bigint,
 }
 export interface ThrowEvent {

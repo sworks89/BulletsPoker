@@ -554,6 +554,9 @@ type TableView = record {
   // The player who created this room, if it is a player-created table.
   room_owner : opt principal;
   button : nat8;
+  // Smallest buy-in the viewer may sit down with (they left recently with
+  // this many chips); 0 means the table's normal minimum.
+  my_min_buy_in : nat64;
   max_raise_to : nat64;
 };
 type ThrowEvent = record {

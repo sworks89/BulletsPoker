@@ -37,6 +37,9 @@ const MAX_ROOMS_PER_USER: usize = 2;
 const MAX_NOTE_LEN: usize = 500;
 const LEADERS: usize = 100;
 /// Cash-table seats one player may hold at once.
+/// Leaving a cash table and coming back within this time requires buying back
+/// in for at least the stack you left with (no "ratholing" winnings).
+pub const RETURN_WINDOW_NS: u64 = 30 * 60 * 1_000_000_000;
 pub const MAX_CASH_SEATS: usize = 4;
 /// Players sitting out this long at a cash table are stood up.
 pub const IDLE_STAND_NS: u64 = 10 * 60 * 1_000_000_000;
@@ -346,6 +349,12 @@ heap_state! {
     signups_per_hour: u32,
     /// Base proof-of-work difficulty (leading zero bits) for a new account.
     signup_pow_bits: u8,
+    /// (table, player) -> (chips taken, when) for recent cash-game departures:
+    /// coming back within `RETURN_WINDOW_NS` needs at least that many chips.
+    cashouts: BTreeMap<(u64, Principal), (u64, u64)>,
+    /// Secret randomness from `raw_rand`, refreshed regularly and on every
+    /// deal, for decisions made outside a deal (tournament seating).
+    entropy: Vec<u8>,
 }
 
 /// Monotonic counters exported as metrics.
@@ -486,6 +495,9 @@ pub struct TableView {
     pub locked: bool,
     /// A private room the viewer hasn't unlocked: game details are hidden.
     pub restricted: bool,
+    /// Smallest buy-in the viewer may sit down with (they left recently with
+    /// this many chips); 0 means the table's normal minimum.
+    pub my_min_buy_in: u64,
     /// Bad-beat jackpot for this table's currency (0 at tournament tables).
     pub jackpot: u64,
     /// A jackpot hit in the hand on screen, for the celebration.
@@ -699,6 +711,8 @@ impl State {
             signup_count: 0,
             signups_per_hour: DEFAULT_SIGNUPS_PER_HOUR,
             signup_pow_bits: crate::signup::DEFAULT_POW_BITS,
+            cashouts: BTreeMap::new(),
+            entropy: vec![],
         };
         let mut s = State::from_snapshot(users, stores, snap);
         for (kind, name, price, chip_price, icon, description) in default_items() {
@@ -1553,7 +1567,15 @@ impl State {
         }
         // Check funds before seating so a failed debit can't leave chips on the table.
         self.debit_in(&caller, currency, buy_in)?;
-        if let Err(e) = self.table_mut(id)?.sit(caller, seat, buy_in) {
+        let required = self.min_return_buy_in(id, &caller, now);
+        if buy_in < required {
+            let currency = self.table_currency(id)?;
+            return Err(format!(
+                "You left this table less than 30 minutes ago with {}: buy back in for at least that much",
+                fmt_amount(currency, required)
+            ));
+        }
+        if let Err(e) = self.table_mut(id)?.sit_with_minimum(caller, seat, buy_in, required) {
             self.credit_in(&caller, currency, buy_in)?;
             return Err(e);
         }
@@ -1565,6 +1587,9 @@ impl State {
         let currency = self.table_currency(id)?;
         let chips = self.table_mut(id)?.stand(&caller, now)?;
         self.credit_in(&caller, currency, chips)?;
+        if !self.table_tournament.contains_key(&id) {
+            self.cashouts.insert((id, caller), (chips, now));
+        }
         let name = self.user(&caller)?.username.clone();
         self.post(Channel::Table(id), None, String::new(), format!("{name} left the table"), MessageKind::System, now);
         self.after_table_change(id, now);
@@ -1579,6 +1604,24 @@ impl State {
             return Err(e);
         }
         Ok(())
+    }
+
+    /// Mixes fresh randomness (from `raw_rand`) into the state's secret entropy.
+    pub fn mix_entropy(&mut self, fresh: &[u8]) {
+        let mut h = Sha256::new();
+        h.update(&self.entropy);
+        h.update(fresh);
+        self.entropy = h.finalize().to_vec();
+    }
+
+    pub(crate) fn entropy(&self) -> &[u8] {
+        &self.entropy
+    }
+
+    /// The smallest buy-in `p` may sit down with at table `id` right now: what
+    /// they left with if they left within the last 30 minutes, else 0.
+    pub fn min_return_buy_in(&self, id: u64, p: &Principal, now: u64) -> u64 {
+        self.cashouts.get(&(id, *p)).filter(|(_, at)| now < at + RETURN_WINDOW_NS).map_or(0, |(chips, _)| *chips)
     }
 
     pub fn sit_out(&mut self, caller: Principal, id: u64, out: bool, now: u64) -> R<()> {
@@ -1833,6 +1876,7 @@ impl State {
         self.tournament_tick(now);
         self.close_idle_rooms(now);
         self.stand_up_idle(now);
+        self.cashouts.retain(|_, (_, at)| now < *at + RETURN_WINDOW_NS);
         let ids: Vec<u64> = self.tables.keys().copied().collect();
         let mut ready = vec![];
         for id in ids {
@@ -2015,6 +2059,7 @@ impl State {
             jackpot: if t.config.jackpot_bps > 0 { self.jackpot(t.config.currency) } else { 0 },
             jackpot_hit: self.current_hit(id),
             restricted: false,
+            my_min_buy_in: viewer.map_or(0, |v| self.min_return_buy_in(id, &v, now)),
         })
     }
 }
@@ -2551,6 +2596,52 @@ mod tests {
         assert!(s.create_room(p(1), args(None), now).is_err(), "room limit");
         s.close_room(p(1), id).unwrap();
         assert!(!s.tables.contains_key(&id));
+    }
+
+    #[test]
+    fn no_ratholing_or_blind_dodging() {
+        let mut s = setup();
+        let table = 1;
+        let (min, max) = (s.tables[&table].config.min_buy_in, s.tables[&table].config.max_buy_in);
+        s.join_table(p(1), table, 0, max, None, 0).unwrap();
+        s.join_table(p(2), table, 1, max, None, 0).unwrap();
+        // p1 wins big, then leaves.
+        let i = s.tables[&table].seat_of(&p(1)).unwrap();
+        s.tables.get_mut(&table).unwrap().seats[i].as_mut().unwrap().stack = max * 3;
+        assert_eq!(s.leave_table(p(1), table, SEC).unwrap(), max * 3);
+        // Coming back soon means bringing the stack back, even above the table max.
+        assert!(s.join_table(p(1), table, 0, min, None, 2 * SEC).unwrap_err().contains("buy back in"));
+        assert_eq!(s.table_view(table, Some(p(1)), 2 * SEC).unwrap().my_min_buy_in, max * 3);
+        s.join_table(p(1), table, 0, max * 3, None, 2 * SEC).unwrap();
+        s.leave_table(p(1), table, 3 * SEC).unwrap();
+        // After 30 minutes the normal limits apply again (and the record is pruned).
+        let later = 3 * SEC + RETURN_WINDOW_NS;
+        s.tick(later);
+        assert_eq!(s.min_return_buy_in(table, &p(1), later), 0);
+        s.join_table(p(1), table, 0, min, None, later).unwrap();
+
+        // Sitting out through hands means posting a big blind on return.
+        s.join_table(p(3), table, 2, max, None, later).unwrap();
+        let now = later + SEC;
+        let t = s.tables.get_mut(&table).unwrap();
+        t.start_hand([1; 32], now).unwrap();
+        while t.phase.is_betting() {
+            let pl = t.seats[t.to_act.unwrap()].as_ref().unwrap().player;
+            t.act(&pl, Action::Fold, now).unwrap();
+        }
+        t.set_sitting_out(&p(3), true, now).unwrap();
+        t.start_hand([2; 32], now + 10 * SEC).unwrap(); // p3 misses this one
+        while t.phase.is_betting() {
+            let pl = t.seats[t.to_act.unwrap()].as_ref().unwrap().player;
+            t.act(&pl, Action::Fold, now).unwrap();
+        }
+        t.set_sitting_out(&p(3), false, now).unwrap();
+        let i3 = t.seat_of(&p(3)).unwrap();
+        assert!(t.seats[i3].as_ref().unwrap().owes_bb);
+        t.start_hand([3; 32], now + 20 * SEC).unwrap();
+        let s3 = t.seats[i3].as_ref().unwrap();
+        assert!(!s3.owes_bb);
+        assert_eq!(s3.bet, t.config.big_blind, "posted a big blind to come back in");
     }
 
     #[test]
