@@ -344,6 +344,14 @@ fn ingress_filter_moderation_and_metrics() {
     r.unwrap();
     let r: R<()> = env.update(alice, "mod_mute", encode_args((bob, 1u32)).unwrap());
     r.unwrap();
+    let roles: poker_backend::Roles = env.query(alice, "get_my_roles", encode_args(()).unwrap());
+    assert!(roles.moderator && !roles.admin);
+    let roles: poker_backend::Roles = env.query(env.admin, "get_my_roles", encode_args(()).unwrap());
+    assert!(roles.admin && roles.moderator);
+    let view: R<poker_backend::moderation::ModPlayerView> = env.query(alice, "mod_get_player", encode_one(bob).unwrap());
+    assert!(view.unwrap().chat_muted_until > 0);
+    let denied: R<poker_backend::moderation::ModPlayerView> = env.query(bob, "mod_get_player", encode_one(alice).unwrap());
+    assert!(denied.is_err(), "queries check the role too");
     let r: R<()> = env.update(bob, "send_chat", encode_args((poker_backend::state::Channel::Lobby, "hi".to_string())).unwrap());
     assert!(r.unwrap_err().contains("muted"));
 

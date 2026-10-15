@@ -32,7 +32,7 @@ export function TableStrip() {
           >
             <span className="strip-name">{v?.tournament[0] ? '🏆 ' : ''}{v?.config.name ?? 'Table'}</span>
             <span className="strip-info">
-              {turn ? `Your turn · ${secs}s` : me ? amount(me.stack, v!.config.currency) : 'watching'}
+              {turn ? `Your turn · ${secs}s${v!.time_bank_active ? ' ⏳' : ''}` : me ? amount(me.stack, v!.config.currency) : 'watching'}
             </span>
             <button
               className="strip-close"

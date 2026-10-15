@@ -9,6 +9,9 @@ import { NoteEditor } from './Notes';
 import { SafetyActions } from './Safety';
 import { JackpotCelebration } from './Jackpot';
 
+/** Most a time bank can hold (matches the backend). */
+const TIME_BANK_MS = 30_000;
+
 export function Card({ c, back, small }: { c?: number; back?: string; small?: boolean }) {
   const { profile } = useApp();
   if (c === undefined) {
@@ -354,9 +357,16 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
                     {s.username} <span className="lvl">Lv{s.level}</span>
                   </div>
                   <div className="stack">{s.all_in ? 'ALL-IN' : amount(s.stack, currency)}</div>
-                  {acting && <div className="timer" style={{ width: `${(remaining / timeout) * 100}%` }} />}
+                  {acting && (
+                    <div
+                      className={`timer ${view.time_bank_active ? 'bank' : ''}`}
+                      style={{ width: `${Math.min(1, remaining / (view.time_bank_active ? TIME_BANK_MS : timeout)) * 100}%` }}
+                    />
+                  )}
                 </div>
-                {s.sitting_out && !s.in_hand ? (
+                {acting && view.time_bank_active ? (
+                  <div className="action-tag bank-tag">⏳ Time bank {Math.ceil(remaining / 1000)}s</div>
+                ) : s.sitting_out && !s.in_hand ? (
                   <div className="action-tag">Sitting out</div>
                 ) : (
                   s.last_action[0] && <div className="action-tag">{s.last_action[0]}</div>
@@ -381,6 +391,11 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
         <div className="action-bar">
           {myTurn ? (
             <>
+              {me && (
+                <span className={`bank-chip ${view.time_bank_active ? 'on' : ''}`} title="Extra time used automatically when your clock runs out. Refills 2s every hand.">
+                  ⏳ {view.time_bank_active ? `Time bank ${Math.ceil(remaining / 1000)}s` : `${me.time_bank_secs}s bank`}
+                </span>
+              )}
               <button className="btn fold" disabled={busy} onClick={() => act({ Fold: null })}>
                 Fold
               </button>

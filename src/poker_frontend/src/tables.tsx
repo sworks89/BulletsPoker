@@ -21,6 +21,8 @@ interface TablesState {
   setLayout: (l: Layout) => void;
   setAutoFocus: (on: boolean) => void;
   refresh: () => Promise<void>;
+  /** Table updates have been failing: the connection is probably down. */
+  reconnecting: boolean;
 }
 
 const Ctx = createContext<TablesState | null>(null);
@@ -95,16 +97,42 @@ export function TablesProvider({ children }: { children: ReactNode }) {
   );
 
   const requested = useRef<bigint[]>([]);
+  const failures = useRef(0);
+  const [reconnecting, setReconnecting] = useState(false);
   const refresh = useCallback(async () => {
     if (open.length === 0) return;
     const ids = [...open];
-    const vs = await backend.get_tables(ids);
+    let vs: TableView[];
+    try {
+      vs = await backend.get_tables(ids);
+    } catch (e) {
+      failures.current += 1;
+      if (failures.current >= 2) setReconnecting(true);
+      throw e;
+    }
+    failures.current = 0;
+    setReconnecting(false);
     requested.current = ids;
     if (vs.length) setClockOffset(Date.now() - Number(vs[0].now / 1_000_000n));
     setViews(new Map(vs.map((v) => [String(v.id), v])));
   }, [backend, open]);
 
   usePoll(refresh, 1000, [refresh]);
+
+  // React to the browser's own view of the network, and catch up at once on return.
+  useEffect(() => {
+    const online = () => refresh().catch(() => {});
+    const offline = () => setReconnecting(true);
+    const visible = () => document.visibilityState === 'visible' && online();
+    window.addEventListener('online', online);
+    window.addEventListener('offline', offline);
+    document.addEventListener('visibilitychange', visible);
+    return () => {
+      window.removeEventListener('online', online);
+      window.removeEventListener('offline', offline);
+      document.removeEventListener('visibilitychange', visible);
+    };
+  }, [refresh]);
 
   // Tables that no longer exist (closed rooms, finished tournaments) drop out.
   useEffect(() => {
@@ -153,8 +181,9 @@ export function TablesProvider({ children }: { children: ReactNode }) {
         save('bp.autoFocus', on);
       },
       refresh,
+      reconnecting: reconnecting && open.length > 0,
     }),
-    [open, active, views, clockOffset, layout, autoFocus, openTable, closeTable, go, refresh],
+    [open, active, views, clockOffset, layout, autoFocus, openTable, closeTable, go, refresh, reconnecting],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

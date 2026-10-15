@@ -76,6 +76,28 @@ pub struct AuditEntry {
     pub action: String,
 }
 
+/// What moderators see when they look a player up.
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct ModPlayerView {
+    pub id: Principal,
+    pub username: String,
+    pub status: String,
+    pub level: u32,
+    pub created_at: u64,
+    pub last_seen: u64,
+    pub balance: u64,
+    pub chips: u64,
+    pub hands_played: u64,
+    pub net_winnings: i64,
+    pub ban: Option<Ban>,
+    pub chat_muted_until: u64,
+    pub is_moderator: bool,
+    /// Tables they're seated at.
+    pub tables: Vec<u64>,
+    /// Reports against them, newest first (open and resolved, up to 20).
+    pub reports: Vec<Report>,
+}
+
 /// Masks banned words (whole words, case-insensitive) with asterisks.
 pub fn mask_words(text: &str, banned: &[String]) -> String {
     let mut out = String::with_capacity(text.len());
@@ -110,6 +132,14 @@ impl State {
     pub fn audit(&mut self, actor: Principal, action: impl Into<String>, now: u64) {
         self.audit_log.push_front(AuditEntry { time: now, actor, action: action.into() });
         self.audit_log.truncate(AUDIT_LOG_LEN);
+    }
+
+    /// "username (principal)" for audit entries.
+    pub fn who(&self, p: &Principal) -> String {
+        match self.users.get(p) {
+            Some(u) => format!("{} ({})", u.username, p.to_text()),
+            None => p.to_text(),
+        }
     }
 
     pub fn is_moderator(&self, p: &Principal) -> bool {
@@ -258,14 +288,14 @@ impl State {
         report.status = ReportStatus::Resolved { by: moderator, action: action.clone(), note: note.clone(), at: now };
         self.stores.reports.insert(id, report);
         self.open_reports.remove(&id);
-        self.audit(moderator, format!("Resolved report #{id} against {}: {action:?} ({note})", target.to_text()), now);
+        self.audit(moderator, format!("Resolved report #{id} against {}: {action:?} ({note})", self.who(&target)), now);
         Ok(())
     }
 
     /// Mutes a player in all chat for `hours` (0 lifts the mute).
     pub fn mute(&mut self, moderator: Principal, target: Principal, hours: u32, now: u64) -> R<()> {
         self.user_mut(&target)?.chat_muted_until = if hours == 0 { 0 } else { now + hours as u64 * HOUR_NS };
-        self.audit(moderator, format!("Chat mute {}h for {}", hours, target.to_text()), now);
+        self.audit(moderator, format!("Chat mute {}h for {}", hours, self.who(&target)), now);
         Ok(())
     }
 
@@ -287,14 +317,41 @@ impl State {
             }
         }
         self.counters.bans += 1;
-        self.audit(moderator, format!("Suspended {} for {} ({reason})", target.to_text(), if hours == 0 { "ever".into() } else { format!("{hours}h") }), now);
+        self.audit(moderator, format!("Suspended {} for {} ({reason})", self.who(&target), if hours == 0 { "ever".into() } else { format!("{hours}h") }), now);
         Ok(())
     }
 
     pub fn unban(&mut self, moderator: Principal, target: Principal, now: u64) -> R<()> {
         self.user_mut(&target)?.ban = None;
-        self.audit(moderator, format!("Lifted suspension for {}", target.to_text()), now);
+        self.audit(moderator, format!("Lifted suspension for {}", self.who(&target)), now);
         Ok(())
+    }
+
+    pub fn mod_player_view(&self, p: &Principal) -> Option<ModPlayerView> {
+        let u = self.users.get(p)?;
+        let reports = self.stores.reports.iter().rev().map(|e| e.value()).filter(|r| r.target == *p).take(20).collect();
+        Some(ModPlayerView {
+            id: *p,
+            username: u.username.clone(),
+            status: u.status.clone(),
+            level: crate::state::level_for_xp(u.xp),
+            created_at: u.created_at,
+            last_seen: u.last_seen,
+            balance: u.balance,
+            chips: u.chips,
+            hands_played: u.stats.hands_played,
+            net_winnings: u.stats.net_winnings,
+            ban: u.ban.clone(),
+            chat_muted_until: u.chat_muted_until,
+            is_moderator: self.is_moderator(p),
+            tables: self.tables.values().filter(|t| t.seat_of(p).is_some()).map(|t| t.id).collect(),
+            reports,
+        })
+    }
+
+    /// Most recent reports, open or resolved, newest first.
+    pub fn recent_reports(&self, limit: usize) -> Vec<Report> {
+        self.stores.reports.iter().rev().take(limit).map(|e| e.value()).collect()
     }
 
     pub fn filter_text(&self, text: &str) -> String {

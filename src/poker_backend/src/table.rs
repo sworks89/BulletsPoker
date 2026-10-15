@@ -105,6 +105,9 @@ pub struct Seat {
     /// Player stood up mid-hand; their stack was already paid out.
     pub left: bool,
     pub last_action: Option<String>,
+    /// Extra thinking time (ns), used automatically once the action clock runs
+    /// out. Refills a little with every hand dealt.
+    pub time_bank: u64,
 }
 
 impl Seat {
@@ -123,6 +126,7 @@ impl Seat {
             sitting_out_since: None,
             left: false,
             last_action: None,
+            time_bank: TIME_BANK_START,
         }
     }
 
@@ -219,9 +223,18 @@ pub struct Table {
     /// Tournament tables deal in players who are sitting out (they post blinds
     /// and are folded immediately), so absent players blind off and the event ends.
     pub tournament_mode: bool,
+    /// The player to act ran out of regular time and is on their time bank,
+    /// which they started drawing on at `bank_started_at`.
+    pub time_bank_active: bool,
+    pub bank_started_at: u64,
 }
 
 const NANOS: u64 = 1_000_000_000;
+/// Time bank on sitting down, and the most it can hold.
+pub const TIME_BANK_START: u64 = 30 * NANOS;
+pub const TIME_BANK_MAX: u64 = 30 * NANOS;
+/// Added to the time bank of everyone dealt into a hand.
+pub const TIME_BANK_REFILL: u64 = 2 * NANOS;
 
 impl Table {
     pub fn new(id: u64, config: TableConfig) -> Self {
@@ -245,6 +258,8 @@ impl Table {
             jackpot_accrued: 0,
             log: vec![],
             tournament_mode: false,
+            time_bank_active: false,
+            bank_started_at: 0,
         }
     }
 
@@ -483,6 +498,9 @@ impl Table {
             s.acted = false;
             s.last_action = None;
             s.in_hand = s.stack > 0 && (!s.sitting_out || tournament_mode) && !s.left;
+            if s.in_hand && !s.sitting_out {
+                s.time_bank = (s.time_bank + TIME_BANK_REFILL).min(TIME_BANK_MAX);
+            }
         }
         self.hand_no += 1;
         self.deck = shuffled_deck(seed);
@@ -588,6 +606,7 @@ impl Table {
     fn set_deadline(&mut self, now: u64) {
         let away = self.tournament_mode
             && self.to_act.is_some_and(|i| self.seats[i].as_ref().is_some_and(|s| s.sitting_out));
+        self.time_bank_active = false;
         self.action_deadline = if away { now } else { now + self.config.action_timeout_secs * NANOS };
     }
 
@@ -867,8 +886,13 @@ impl Table {
         }
         let current_bet = self.current_bet;
         let min_raise = self.min_raise;
+        let (bank_active, bank_start) = (self.time_bank_active, self.bank_started_at);
         let s = self.seat_mut(i);
         let to_call = current_bet - s.bet;
+        if bank_active {
+            // Only the time actually used comes off the bank.
+            s.time_bank = s.time_bank.saturating_sub(now.saturating_sub(bank_start));
+        }
 
         let new_bet = match action {
             Action::Fold => {
@@ -956,6 +980,15 @@ impl Table {
         let i = self.to_act?;
         let s = self.seat(i);
         let p = s.player;
+        // Out of regular time: draw on the time bank before auto-acting.
+        // Players already sitting out (absent tournament players) don't use it.
+        let (sitting_out, bank) = (s.sitting_out, s.time_bank);
+        if !self.time_bank_active && !sitting_out && bank >= NANOS {
+            self.time_bank_active = true;
+            self.bank_started_at = self.action_deadline;
+            self.action_deadline += bank;
+            return None;
+        }
         let action = if s.bet >= self.current_bet { Action::Check } else { Action::Fold };
         let s = self.seat_mut(i);
         s.sitting_out = true;
@@ -1274,12 +1307,46 @@ mod tests {
         t.start_hand([6; 32], 0).unwrap();
         assert!(t.handle_timeout(1).is_none());
         let late = to_act_player(&t);
-        let who = t.handle_timeout(21 * NANOS).unwrap();
+        // The clock runs out, then the time bank (30s) kicks in.
+        assert!(t.handle_timeout(20 * NANOS).is_none());
+        assert!(t.time_bank_active);
+        assert_eq!(t.action_deadline, 50 * NANOS);
+        assert!(t.handle_timeout(49 * NANOS).is_none());
+        let who = t.handle_timeout(50 * NANOS).unwrap();
         assert_eq!(who, late);
+        assert_eq!(t.seat(t.seat_of(&late).unwrap()).time_bank, 0, "bank used up");
         assert_eq!(t.phase, Phase::HandOver);
         let i = t.seat_of(&late).unwrap();
         assert!(t.seat(i).sitting_out);
         assert_eq!(t.eligible_count(), 1);
+    }
+
+    #[test]
+    fn time_bank_charges_only_what_was_used_and_refills() {
+        let mut t = Table::new(1, config());
+        t.sit(p(1), 0, 200).unwrap();
+        t.sit(p(2), 1, 200).unwrap();
+        t.start_hand([6; 32], 0).unwrap();
+        let first = to_act_player(&t);
+        let i = t.seat_of(&first).unwrap();
+        assert_eq!(t.seat(i).time_bank, TIME_BANK_MAX, "starts full (refill is capped)");
+        assert!(t.handle_timeout(20 * NANOS).is_none());
+        // Acts 12 seconds into the bank.
+        t.act(&first, Action::Call, 32 * NANOS).unwrap();
+        assert_eq!(t.seat(i).time_bank, TIME_BANK_MAX - 12 * NANOS);
+        assert!(!t.time_bank_active, "next player starts on regular time");
+        assert_eq!(t.action_deadline, 52 * NANOS);
+        // Finish the hand, then the next deal refills a little.
+        while t.phase.is_betting() {
+            let p = to_act_player(&t);
+            if t.act(&p, Action::Check, 33 * NANOS).is_err() {
+                t.act(&p, Action::Call, 33 * NANOS).unwrap();
+            }
+        }
+        t.start_hand([7; 32], 40 * NANOS).unwrap();
+        assert_eq!(t.seat(i).time_bank, TIME_BANK_MAX - 10 * NANOS);
+        // Not sitting out: someone who used it but acted in time keeps playing.
+        assert!(!t.seat(i).sitting_out);
     }
 
     #[test]

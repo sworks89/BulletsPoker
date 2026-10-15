@@ -270,6 +270,8 @@ main { padding: 18px 0; }
 
 @media (max-width: 1500px) {
   .brand .tag, .me-name { display: none; }
+  .topbar { gap: 10px; }
+  .nav { padding: 8px 7px; }
 }
 
 /* ---- multi-tabling ---- */
@@ -396,3 +398,50 @@ main { padding: 18px 0; }
 .modal textarea { width: 100%; box-sizing: border-box; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; resize: vertical; }
 .status-banner { margin-top: 8px; background: #3a2c07; border: 1px solid #b45309; color: #fde68a; border-radius: 10px; padding: 8px 12px; font-size: 14px; }
 .strike { text-decoration: line-through; }
+
+/* ---- time bank & connection ---- */
+.timer.bank { background: #f97316; }
+.action-tag.bank-tag { white-space: nowrap; font-weight: 700; color: #fdba74; background: #3b1d08; border: 1px solid #c2410c; animation: pulse 1s ease-in-out infinite alternate; }
+.bank-chip { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; white-space: nowrap; align-self: center; }
+.bank-chip.on { color: #fdba74; border-color: #c2410c; background: #3b1d08; font-weight: 700; }
+.status-banner.reconnecting { background: #10243f; border-color: #2563eb; color: #bfdbfe; display: flex; align-items: center; gap: 8px; }
+.spinner { width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; display: inline-block; animation: spin 0.8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { from { opacity: 0.75; } to { opacity: 1; } }
+
+/* ---- admin ---- */
+.admin { display: flex; flex-direction: column; gap: 12px; }
+.admin-head { align-items: center; flex-wrap: wrap; }
+.admin-head h2 { margin: 0 8px 0 0; }
+.admin-head .tabs { flex-wrap: wrap; }
+.admin-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.admin-grid .span2 { grid-column: 1 / -1; }
+.stat-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.stat-tile { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.stat-tile.warn { border-color: #b45309; background: #2b2108; }
+.stat-value { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stat-label { font-size: 12px; color: var(--muted); }
+.switch-row { display: flex; align-items: center; gap: 8px; cursor: pointer; text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--text); }
+.switch-row input { width: auto; margin: 0; flex: none; }
+.paused-panel { border-color: #b45309; }
+.report-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; background: var(--panel-2); }
+.report-card.resolved { opacity: 0.75; }
+.report-details { margin: 0; font-style: italic; }
+.evidence { border-left: 3px solid #b91c1c; padding: 4px 10px; background: var(--bg); border-radius: 4px; display: flex; flex-direction: column; gap: 2px; max-height: 180px; overflow-y: auto; }
+.btn.danger { background: #7f1d1d; color: #fecaca; border-color: #b91c1c; }
+.btn.danger:hover { background: #991b1b; }
+.link { background: none; border: none; padding: 0; color: var(--accent-2); font: inherit; font-weight: 700; cursor: pointer; text-decoration: underline; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 14px; }
+.kv > span { color: var(--muted); }
+input.narrow { width: 80px; flex: none; }
+.narrow-search { max-width: 200px; text-transform: none; font-weight: 400; }
+.nowrap { white-space: nowrap; }
+.admin textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; resize: vertical; width: 100%; box-sizing: border-box; }
+.admin code { word-break: break-all; }
+.admin .panel > .btn { align-self: flex-start; }
+.admin-btn { background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; width: 34px; height: 34px; font-size: 16px; cursor: pointer; flex: none; }
+.admin-btn.active { border-color: var(--accent); }
+@media (max-width: 800px) {
+  .admin-grid { grid-template-columns: 1fr; }
+  .admin .grid td, .admin .grid th { padding: 6px 4px; font-size: 12px; }
+}

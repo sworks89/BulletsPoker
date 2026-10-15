@@ -24,7 +24,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 use jackpot::JackpotInfo;
 use medals::MedalDef;
-use moderation::{AuditEntry, ModAction, Report, ReportReason};
+use moderation::{AuditEntry, ModAction, ModPlayerView, Report, ReportReason};
 use table::{Action, Currency, TableConfig};
 use wallet::{LedgerOp, OpKind, OpStatus, PauseFlags, SolvencyReport};
 use tournament::{TournamentDetail, TournamentSummary, TournamentTemplate};
@@ -786,6 +786,33 @@ fn report_player(target: Principal, reason: ReportReason, details: String, chann
     with_mut(|s| s.report(p, target, reason, details, channel, now()))
 }
 
+/// What the signed-in caller may administer (drives the admin page).
+#[derive(CandidType, Deserialize)]
+pub struct Roles {
+    pub admin: bool,
+    pub moderator: bool,
+}
+
+#[query]
+fn get_my_roles() -> Roles {
+    let p = ic_cdk::api::msg_caller();
+    let admin = p != Principal::anonymous() && ic_cdk::api::is_controller(&p);
+    Roles { admin, moderator: admin || with(|s| s.is_moderator(&p)) }
+}
+
+#[query]
+fn mod_get_player(p: Principal) -> R<ModPlayerView> {
+    moderator()?;
+    with(|s| s.mod_player_view(&p)).ok_or_else(|| "No such player".into())
+}
+
+/// The latest reports, open or resolved.
+#[query]
+fn mod_recent_reports(limit: u32) -> R<Vec<Report>> {
+    moderator()?;
+    Ok(with(|s| s.recent_reports(limit.min(200) as usize)))
+}
+
 #[query]
 fn mod_open_reports() -> R<Vec<Report>> {
     moderator()?;
@@ -827,15 +854,29 @@ fn admin_set_moderator(p: Principal, enabled: bool) -> R<()> {
         } else {
             s.moderators.remove(&p);
         }
-        s.audit(a, format!("Moderator {}: {enabled}", p.to_text()), now());
+        let who = s.who(&p);
+        s.audit(a, format!("Moderator {who}: {enabled}"), now());
     });
     Ok(())
 }
 
+/// Settings an admin can change from the admin page.
+#[derive(CandidType, Deserialize)]
+pub struct AdminConfig {
+    /// Moderators with their usernames (empty if they have no profile).
+    pub moderators: Vec<(Principal, String)>,
+    pub banned_words: Vec<String>,
+    pub signups_per_hour: u32,
+}
+
 #[query]
-fn admin_list_moderators() -> R<Vec<Principal>> {
+fn admin_get_config() -> R<AdminConfig> {
     admin()?;
-    Ok(with(|s| s.moderators.iter().copied().collect()))
+    Ok(with(|s| AdminConfig {
+        moderators: s.moderators.iter().map(|p| (*p, s.users.get(p).map(|u| u.username).unwrap_or_default())).collect(),
+        banned_words: s.banned_words.clone(),
+        signups_per_hour: s.signups_per_hour,
+    }))
 }
 
 /// Replaces the chat/username word filter (whole words, case-insensitive).

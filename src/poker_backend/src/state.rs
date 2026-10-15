@@ -444,6 +444,8 @@ pub struct SeatView {
     pub gift: Option<String>,
     /// The viewer's own note about this player, if any.
     pub note: Option<PlayerNote>,
+    /// Seconds left in this player's time bank.
+    pub time_bank_secs: u32,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -459,6 +461,8 @@ pub struct TableView {
     pub button: u8,
     pub to_act: Option<u8>,
     pub action_deadline: u64,
+    /// The player to act is on their time bank (`action_deadline` includes it).
+    pub time_bank_active: bool,
     pub now: u64,
     pub last_result: Option<HandResult>,
     pub my_seat: Option<u8>,
@@ -1902,6 +1906,11 @@ impl State {
                         .filter(|g| g.expires_at > now)
                         .map(|g| self.icon(g.item)),
                     note: viewer.and_then(|v| self.stores.notes.get(&(v, s.player))),
+                    time_bank_secs: if t.time_bank_active && t.to_act == Some(i) {
+                        t.action_deadline.saturating_sub(now) / 1_000_000_000
+                    } else {
+                        s.time_bank / 1_000_000_000
+                    } as u32,
                 })
             })
             .collect();
@@ -1926,6 +1935,7 @@ impl State {
             button: t.button as u8,
             to_act: t.to_act.map(|i| i as u8),
             action_deadline: t.action_deadline,
+            time_bank_active: t.time_bank_active,
             now,
             last_result: t.last_result.clone(),
             my_seat: my_seat.map(|i| i as u8),
@@ -2983,6 +2993,12 @@ mod tests {
         s.send_chat(p(2), Channel::Lobby, "sorry".into(), 20 * SEC + 3600 * SEC).unwrap();
         assert_eq!(s.audit_log.len(), 2, "mute and resolution are audited");
         assert_eq!(s.open_reports().len(), 10);
+        let view = s.mod_player_view(&p(2)).unwrap();
+        assert_eq!(view.reports.len(), 11);
+        assert!(matches!(view.reports.last().unwrap().status, crate::moderation::ReportStatus::Resolved { .. }), "oldest is the resolved one");
+        assert!(view.chat_muted_until > 0);
+        assert_eq!(s.recent_reports(3).len(), 3);
+        assert_eq!(s.recent_reports(3)[0].id, 11, "newest first");
     }
 
     #[test]

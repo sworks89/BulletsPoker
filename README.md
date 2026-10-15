@@ -6,7 +6,8 @@ A social Texas Hold'em poker room that runs entirely on the [Internet Computer](
 
 **Poker**
 - No-limit Texas Hold'em cash tables (heads-up up to 10-max) with blinds, a moving button, min-raise rules, all-ins, side pots, split pots and odd-chip handling
-- Action clock: a player who times out is checked or folded and sat out ("I'm back" to return)
+- Action clock with a time bank: when your clock runs out, up to 30 seconds of extra time kicks in automatically (you're only charged what you use, and it refills 2 seconds every hand). A player who runs out of both is checked or folded and sat out ("I'm back" to return)
+- A "reconnecting" banner when your connection drops, and an instant catch-up when it returns
 - Hole cards stay private: the backend only returns your own cards, plus hands shown at showdown
 - A fresh deck every hand, shuffled with on-chain randomness (`raw_rand`)
 - Configurable rake (default 2.5%, capped at 3 big blinds, and none if there's no flop)
@@ -149,6 +150,8 @@ Only controllers can call the `admin_*` methods (create tables, add recurring to
 
 **Abuse protection.** `inspect_message` drops ingress calls before they cost cycles: anonymous or unregistered callers (except `register`), arguments over 16 KB, `admin_*` from non-controllers, `mod_*` from non-moderators, and callers over budget. Each player gets a burst of 20 update calls, refilling at 5 per second; every endpoint checks again, since `inspect_message` isn't guaranteed to run. Sign-ups are capped per hour (`admin_set_signup_limit`, default 1,000), hosted tables are capped at 200 overall, and friend lists, friend requests and block lists are bounded.
 
+**Admin page.** Controllers and moderators get a 🛡️ button in the top bar (the backend decides via `get_my_roles`; every action is re-checked server-side). Admins see the live overview (players, tables, money, solvency, cycles and memory), the emergency switches, the report queue, player lookup with mute/suspend/moderator controls, treasury withdrawals, jackpot top-ups, unconfirmed ledger operations (retry or settle), settings (moderators, sign-up limit, word filter) and the audit log. Moderators see only the report queue and player lookup.
+
 **Moderation.** `admin_set_moderator` appoints moderators. They use `mod_open_reports`, `mod_resolve_report` (dismiss, warn, mute or suspend), `mod_mute`, `mod_ban` and `mod_unban`. `admin_set_banned_words` replaces the word filter. Every admin and moderator action lands in the audit log (`admin_audit_log`).
 
 **Monitoring.** `https://<backend-id>.raw.icp0.io/metrics` serves Prometheus text: players (registered, active in the last 5 minutes, seated), tables, hands dealt, cycles, heap and stable memory, treasury, liabilities, jackpots, unresolved and failed ledger ops, the last solvency check, pause switches, reports, bans and rate-limited calls. `/health` returns `ok`. Responses are uncertified and contain nothing private, so use them for dashboards and alerts only. Controllers can also call `admin_get_metrics`. Suggested alerts: `bp_solvency_ok == 0`, `bp_unresolved_ledger_ops > 0` for 30 minutes, `bp_cycles` below 2T, and no increase in `bp_hands_dealt_total` while `bp_seated_players > 1`.
@@ -167,4 +170,4 @@ Only controllers can call the `admin_*` methods (create tables, add recurring to
 
 ## Roadmap ideas
 
-vetKeys-encrypted hole cards · Omaha and Crazy Pineapple · bounty tournaments · animated avatars as images/NFTs · automated collusion detection · a moderator dashboard in the frontend.
+vetKeys-encrypted hole cards · Omaha and Crazy Pineapple · bounty tournaments · animated avatars as images/NFTs · automated collusion detection · multisig control of the canister (e.g. Orbit).

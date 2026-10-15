@@ -20,6 +20,17 @@ export type Action = { 'Call' : null } |
   } |
   { 'AllIn' : null } |
   { 'Check' : null };
+/**
+ * Settings an admin can change from the admin page.
+ */
+export interface AdminConfig {
+  /**
+   * Moderators with their usernames (empty if they have no profile).
+   */
+  'moderators' : Array<[Principal, string]>,
+  'banned_words' : Array<string>,
+  'signups_per_hour' : number,
+}
 export interface AuditEntry {
   'action' : string,
   'actor' : Principal,
@@ -294,6 +305,32 @@ export type ModAction = {
     'MuteChat' : number
   };
 /**
+ * What moderators see when they look a player up.
+ */
+export interface ModPlayerView {
+  'id' : Principal,
+  'ban' : [] | [Ban],
+  'status' : string,
+  'chat_muted_until' : bigint,
+  'username' : string,
+  'balance' : bigint,
+  'chips' : bigint,
+  'is_moderator' : boolean,
+  'created_at' : bigint,
+  'level' : number,
+  /**
+   * Tables they're seated at.
+   */
+  'tables' : BigUint64Array | bigint[],
+  /**
+   * Reports against them, newest first (open and resolved, up to 20).
+   */
+  'reports' : Array<Report>,
+  'last_seen' : bigint,
+  'net_winnings' : bigint,
+  'hands_played' : bigint,
+}
+/**
  * Color label for a player note (a quick read on a player's style).
  */
 export type NoteColor = { 'Red' : null } |
@@ -448,9 +485,11 @@ export type Result_1 = { 'Ok' : number } |
   { 'Err' : string };
 export type Result_10 = { 'Ok' : Array<LedgerOp> } |
   { 'Err' : string };
-export type Result_11 = { 'Ok' : Array<Report> } |
+export type Result_11 = { 'Ok' : ModPlayerView } |
   { 'Err' : string };
-export type Result_12 = { 'Ok' : Profile } |
+export type Result_12 = { 'Ok' : Array<Report> } |
+  { 'Err' : string };
+export type Result_13 = { 'Ok' : Profile } |
   { 'Err' : string };
 export type Result_2 = { 'Ok' : Array<AuditEntry> } |
   { 'Err' : string };
@@ -460,14 +499,18 @@ export type Result_4 = { 'Ok' : SolvencyReport } |
   { 'Err' : string };
 export type Result_5 = { 'Ok' : bigint } |
   { 'Err' : string };
-export type Result_6 = { 'Ok' : Metrics } |
+export type Result_6 = { 'Ok' : AdminConfig } |
   { 'Err' : string };
-export type Result_7 = { 'Ok' : HouseStats } |
+export type Result_7 = { 'Ok' : Metrics } |
   { 'Err' : string };
-export type Result_8 = { 'Ok' : Array<Principal> } |
+export type Result_8 = { 'Ok' : HouseStats } |
   { 'Err' : string };
 export type Result_9 = { 'Ok' : LedgerOp } |
   { 'Err' : string };
+/**
+ * What the signed-in caller may administer (drives the admin page).
+ */
+export interface Roles { 'admin' : boolean, 'moderator' : boolean }
 export interface RoomArgs {
   'action_timeout_secs' : bigint,
   'password' : [] | [string],
@@ -479,6 +522,10 @@ export interface RoomArgs {
 export interface SeatView {
   'bet' : bigint,
   'in_hand' : boolean,
+  /**
+   * Seconds left in this player's time bank.
+   */
+  'time_bank_secs' : number,
   'username' : string,
   'player' : Principal,
   'all_in' : boolean,
@@ -638,6 +685,10 @@ export interface TableView {
   'locked' : boolean,
   'last_result' : [] | [HandResult],
   'tournament' : [] | [TournamentBadge],
+  /**
+   * The player to act is on their time bank (`action_deadline` includes it).
+   */
+  'time_bank_active' : boolean,
   'min_raise_to' : bigint,
   'seats' : Array<[] | [SeatView]>,
   'action_deadline' : bigint,
@@ -828,9 +879,9 @@ export interface _SERVICE {
    */
   'admin_check_solvency' : ActorMethod<[], Result_4>,
   'admin_create_table' : ActorMethod<[TableConfig], Result_5>,
-  'admin_get_metrics' : ActorMethod<[], Result_6>,
-  'admin_house_stats' : ActorMethod<[], Result_7>,
-  'admin_list_moderators' : ActorMethod<[], Result_8>,
+  'admin_get_config' : ActorMethod<[], Result_6>,
+  'admin_get_metrics' : ActorMethod<[], Result_7>,
+  'admin_house_stats' : ActorMethod<[], Result_8>,
   /**
    * Settles an unknown op after checking the ledger by hand (beyond the 24h retry window).
    */
@@ -914,6 +965,7 @@ export interface _SERVICE {
    */
   'get_my_ledger_ops' : ActorMethod<[], Array<LedgerOp>>,
   'get_my_profile' : ActorMethod<[], [] | [Profile]>,
+  'get_my_roles' : ActorMethod<[], Roles>,
   /**
    * All your notes, most recently updated first.
    */
@@ -945,18 +997,23 @@ export interface _SERVICE {
    * Suspends a player for `hours` (0 = permanent). They keep access to withdrawals.
    */
   'mod_ban' : ActorMethod<[Principal, number, string], Result>,
+  'mod_get_player' : ActorMethod<[Principal], Result_11>,
   /**
    * Mutes a player in every chat for `hours` (0 lifts the mute).
    */
   'mod_mute' : ActorMethod<[Principal, number], Result>,
-  'mod_open_reports' : ActorMethod<[], Result_11>,
+  'mod_open_reports' : ActorMethod<[], Result_12>,
+  /**
+   * The latest reports, open or resolved.
+   */
+  'mod_recent_reports' : ActorMethod<[number], Result_12>,
   'mod_resolve_report' : ActorMethod<[bigint, ModAction, string], Result>,
   'mod_unban' : ActorMethod<[Principal], Result>,
   /**
    * Buys a fresh starting stack during a tournament's rebuy period (buy-in only, no fee).
    */
   'rebuy_tournament' : ActorMethod<[bigint], Result>,
-  'register' : ActorMethod<[string], Result_12>,
+  'register' : ActorMethod<[string], Result_13>,
   'register_tournament' : ActorMethod<[bigint], Result>,
   'remove_friend' : ActorMethod<[Principal], Result>,
   /**

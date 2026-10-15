@@ -1,18 +1,19 @@
 import { AppProvider, useApp, type View } from './context';
 import { countdown, icp } from './format';
-import { unwrap, type ServiceStatus } from './ic';
-import { useState } from 'react';
+import { unwrap, type Roles, type ServiceStatus } from './ic';
+import { useEffect, useState } from 'react';
 import { usePoll } from './context';
 import { History } from './components/History';
 import { Tournaments } from './components/Tournaments';
 import { Lobby } from './components/Lobby';
 import { TableArea, TableStrip } from './components/MultiTable';
-import { TablesProvider } from './tables';
+import { TablesProvider, useTables } from './tables';
 import { Wallet } from './components/Wallet';
 import { Store } from './components/Store';
 import { Friends } from './components/Friends';
 import { Leaderboard, ProfilePage, Register } from './components/Profile';
 import { AccountNotice } from './components/Safety';
+import { Admin } from './components/Admin';
 
 const NAV: { name: View['name']; label: string }[] = [
   { name: 'lobby', label: 'Lobby' },
@@ -35,6 +36,15 @@ function Shell() {
     }
   };
   const requests = profile?.friend_requests.length ?? 0;
+  const [roles, setRoles] = useState<Roles>({ admin: false, moderator: false });
+  useEffect(() => {
+    if (!principal) {
+      setRoles({ admin: false, moderator: false });
+      return;
+    }
+    backend.get_my_roles().then(setRoles).catch(() => {});
+  }, [backend, principal]);
+  const staff = roles.admin || roles.moderator;
 
   return (
     <div className="app">
@@ -52,6 +62,16 @@ function Shell() {
           ))}
         </nav>
         <div className="account">
+          {staff && (
+            <button
+              className={`admin-btn ${view.name === 'admin' ? 'active' : ''}`}
+              onClick={() => go({ name: 'admin' })}
+              title={roles.admin ? 'Admin' : 'Moderation'}
+              aria-label={roles.admin ? 'Admin' : 'Moderation'}
+            >
+              🛡️
+            </button>
+          )}
           {profile ? (
             <>
               <button
@@ -89,6 +109,7 @@ function Shell() {
 
       <StatusBanner />
       <AccountNotice />
+      <ConnectionBanner />
       <TableStrip />
 
       <main>
@@ -101,6 +122,7 @@ function Shell() {
         {view.name === 'history' && <History />}
         {view.name === 'tournaments' && <Tournaments key={String(view.id ?? '')} initial={view.id} />}
         {view.name === 'profile' && <ProfilePage />}
+        {view.name === 'admin' && <Admin roles={roles} />}
       </main>
 
       <footer className="footer muted small">
@@ -108,6 +130,17 @@ function Shell() {
       </footer>
 
       {principal && !profile && <Register />}
+    </div>
+  );
+}
+
+/** Shown while table updates are failing (dropped connection). */
+function ConnectionBanner() {
+  const { reconnecting } = useTables();
+  if (!reconnecting) return null;
+  return (
+    <div className="status-banner reconnecting">
+      <span className="spinner" /> Connection lost, reconnecting… If it's your turn, your time bank starts automatically when your clock runs out.
     </div>
   );
 }

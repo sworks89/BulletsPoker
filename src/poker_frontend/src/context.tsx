@@ -12,7 +12,8 @@ export type View =
   | { name: 'leaderboard' }
   | { name: 'history' }
   | { name: 'tournaments'; id?: bigint }
-  | { name: 'profile' };
+  | { name: 'profile' }
+  | { name: 'admin' };
 
 interface Toast {
   id: number;
