@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "output_env_file": ".env",
+  "canisters": {
+    "poker_backend": {
+      "type": "rust",
+      "package": "poker_backend",
+      "candid": "src/poker_backend/poker_backend.did"
+    },
+    "poker_frontend": {
+      "type": "assets",
+      "dependencies": [
+        "poker_backend"
+      ],
+      "build": [
+        "npm --prefix src/poker_frontend ci",
+        "npm --prefix src/poker_frontend run build"
+      ],
+      "source": [
+        "src/poker_frontend/dist"
+      ]
+    },
+    "icp_ledger": {
+      "type": "custom",
+      "candid": "https://github.com/dfinity/ic/releases/download/ledger-suite-icp-2025-08-29/ledger.did",
+      "wasm": "https://github.com/dfinity/ic/releases/download/ledger-suite-icp-2025-08-29/ledger-canister_notify-method.wasm.gz",
+      "specified_id": "ryjl3-tyaaa-aaaaa-aaaba-cai",
+      "remote": {
+        "id": {
+          "ic": "ryjl3-tyaaa-aaaaa-aaaba-cai"
+        }
+      }
+    },
+    "internet_identity": {
+      "type": "custom",
+      "candid": "https://github.com/dfinity/internet-identity/releases/latest/download/internet_identity.did",
+      "wasm": "https://github.com/dfinity/internet-identity/releases/latest/download/internet_identity_dev.wasm.gz",
+      "init_arg": "(opt record { captcha_config = opt record { max_unsolved_captchas = 50 : nat64; captcha_trigger = variant { Static = variant { CaptchaDisabled } } } })",
+      "remote": {
+        "id": {
+          "ic": "rdmx6-jaaaa-aaaaa-aaadq-cai"
+        }
+      }
+    }
+  }
+}

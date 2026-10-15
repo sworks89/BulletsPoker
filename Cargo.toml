@@ -1,0 +1,8 @@
+[workspace]
+members = ["src/poker_backend"]
+resolver = "2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1

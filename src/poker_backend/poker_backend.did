@@ -1,0 +1,232 @@
+// [Account](https://github.com/dfinity/ICRC-1/blob/main/standards/ICRC-3/README.md#value)
+// representation of ledgers supporting the ICRC-1 standard.
+type Account = record { owner : principal; subaccount : opt blob };
+type Action = variant {
+  Call;
+  Fold;
+  // Bet or raise so that the player's total bet on this street is the given amount.
+  Raise : nat64;
+  AllIn;
+  Check;
+};
+type Channel = variant { Lobby; Table : nat64 };
+type ChatMessage = record {
+  id : nat64;
+  username : text;
+  from : opt principal;
+  kind : MessageKind;
+  "text" : text;
+  time : nat64;
+};
+type DepositInfo = record {
+  fee : nat64;
+  // Legacy account identifier for exchanges / older wallets.
+  account_id : text;
+  ledger : principal;
+  // ICRC-1 account to send ICP to (this canister + your deposit subaccount).
+  account : Account;
+};
+type FriendInfo = record {
+  id : principal;
+  username : text;
+  tables : vec nat64;
+  avatar : text;
+  online : bool;
+};
+type HandResult = record {
+  pot : nat64;
+  hand_no : nat64;
+  rake : nat64;
+  shown : vec ShownHand;
+  players : vec PlayerResult;
+  board : blob;
+  winners : vec Winner;
+};
+type HouseStats = record {
+  // What the canister's main ledger account must hold to cover everything.
+  liabilities_total : nat64;
+  chips_on_tables : nat64;
+  wallet_balances : nat64;
+  users : nat64;
+  treasury : nat64;
+};
+type InitArgs = record { ledger : opt principal; ledger_fee : opt nat64 };
+type ItemKind = variant { CardBack; Avatar; Gift };
+type LeaderboardEntry = record {
+  id : principal;
+  username : text;
+  level : nat32;
+  stats : Stats;
+  avatar : text;
+};
+type MessageKind = variant { System; Gift; Text };
+type Phase = variant { Flop; Turn; River; HandOver; Waiting; PreFlop };
+type PlayerResult = record {
+  won : nat64;
+  player : principal;
+  committed : nat64;
+};
+type Profile = record {
+  id : principal;
+  xp : nat64;
+  status : text;
+  friend_requests : vec principal;
+  username : text;
+  balance : nat64;
+  inventory : vec nat32;
+  created_at : nat64;
+  level : nat32;
+  stats : Stats;
+  card_back : nat32;
+  friends : vec principal;
+  avatar : nat32;
+};
+type PublicProfile = record {
+  id : principal;
+  status : text;
+  username : text;
+  level : nat32;
+  tables : vec nat64;
+  stats : Stats;
+  avatar : text;
+  online : bool;
+};
+type Result = variant { Ok; Err : text };
+type Result_1 = variant { Ok : nat32; Err : text };
+type Result_2 = variant { Ok : nat64; Err : text };
+type Result_3 = variant { Ok : HouseStats; Err : text };
+type Result_4 = variant { Ok : Profile; Err : text };
+type SeatView = record {
+  bet : nat64;
+  in_hand : bool;
+  username : text;
+  player : principal;
+  all_in : bool;
+  cards : blob;
+  gift : opt text;
+  has_cards : bool;
+  seat : nat8;
+  last_action : opt text;
+  level : nat32;
+  stack : nat64;
+  card_back : text;
+  sitting_out : bool;
+  folded : bool;
+  avatar : text;
+};
+type ShownHand = record {
+  player : principal;
+  cards : blob;
+  hand : text;
+  seat : nat8;
+};
+type Stats = record {
+  biggest_pot_won : nat64;
+  hands_won : nat64;
+  net_winnings : int64;
+  hands_played : nat64;
+};
+type StoreItem = record {
+  id : nat32;
+  // Emoji or image URL rendered by the frontend.
+  icon : text;
+  kind : ItemKind;
+  name : text;
+  description : text;
+  available : bool;
+  // Price in e8s. Zero means free.
+  price : nat64;
+};
+type TableConfig = record {
+  small_blind : nat64;
+  action_timeout_secs : nat64;
+  min_buy_in : nat64;
+  name : text;
+  // Rake in basis points of the pot (250 = 2.5%). Only taken when a flop is dealt.
+  rake_bps : nat16;
+  rake_cap : nat64;
+  max_seats : nat8;
+  big_blind : nat64;
+  max_buy_in : nat64;
+};
+type TableSummary = record {
+  id : nat64;
+  small_blind : nat64;
+  min_buy_in : nat64;
+  name : text;
+  max_seats : nat8;
+  avg_pot : nat64;
+  players : nat8;
+  big_blind : nat64;
+  phase : Phase;
+  max_buy_in : nat64;
+};
+type TableView = record {
+  id : nat64;
+  now : nat64;
+  pot : nat64;
+  my_seat : opt nat8;
+  to_call : nat64;
+  hand_no : nat64;
+  last_result : opt HandResult;
+  min_raise_to : nat64;
+  seats : vec opt SeatView;
+  action_deadline : nat64;
+  to_act : opt nat8;
+  current_bet : nat64;
+  board : blob;
+  phase : Phase;
+  config : TableConfig;
+  button : nat8;
+  max_raise_to : nat64;
+};
+type Winner = record {
+  player : principal;
+  hand : text;
+  seat : nat8;
+  amount : nat64;
+};
+service : (opt InitArgs) -> {
+  act : (nat64, Action) -> (Result);
+  admin_add_item : (StoreItem) -> (Result_1);
+  admin_create_table : (TableConfig) -> (Result_2);
+  admin_house_stats : () -> (Result_3) query;
+  admin_set_item_available : (nat32, bool) -> (Result);
+  // Withdraws house revenue (rake and store sales) from the treasury.
+  admin_withdraw_treasury : (Account, nat64) -> (Result_2);
+  buy_item : (nat32) -> (Result);
+  // Deposit via plain transfer: send ICP to your deposit account (see
+  // `get_deposit_info`) from any wallet or exchange, then call this.
+  claim_deposit : () -> (Result_2);
+  // Deposit via ICRC-2: the caller first approves this canister for
+  // `amount + fee` on the ICP ledger, then calls this.
+  deposit : (nat64) -> (Result_2);
+  equip : (nat32) -> (Result);
+  find_user : (text) -> (opt PublicProfile) query;
+  get_chat : (Channel, nat64) -> (vec ChatMessage) query;
+  get_deposit_info : () -> (DepositInfo) query;
+  get_dms : (principal, nat64) -> (vec ChatMessage) query;
+  get_friends : () -> (vec FriendInfo) query;
+  get_leaderboard : () -> (vec LeaderboardEntry) query;
+  get_my_profile : () -> (opt Profile) query;
+  get_profile : (principal) -> (opt PublicProfile) query;
+  get_table : (nat64) -> (opt TableView) query;
+  join_table : (nat64, nat8, nat64) -> (Result);
+  leave_table : (nat64) -> (Result_2);
+  list_store : () -> (vec StoreItem) query;
+  list_tables : () -> (vec TableSummary) query;
+  ping : () -> ();
+  register : (text) -> (Result_4);
+  remove_friend : (principal) -> (Result);
+  respond_friend_request : (principal, bool) -> (Result);
+  send_chat : (Channel, text) -> (Result);
+  send_dm : (principal, text) -> (Result);
+  send_friend_request : (principal) -> (Result);
+  send_gift : (nat64, principal, nat32) -> (Result);
+  set_status : (text) -> (Result);
+  sit_out : (nat64, bool) -> (Result);
+  top_up : (nat64, nat64) -> (Result);
+  whoami : () -> (principal) query;
+  // Sends `amount` e8s to `to`. The ledger fee is charged on top.
+  withdraw : (Account, nat64) -> (Result_2);
+}
