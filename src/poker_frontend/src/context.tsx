@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { authClient, makeActors, type Backend, type Ledger, type Profile, type StoreItem } from './ic';
+import { authClient, makeActors, type Backend, type Ledger, type MedalDef, type Profile, type StoreItem } from './ic';
 import type { Principal } from '@icp-sdk/core/principal';
 import { errorText } from './format';
 
@@ -11,6 +11,7 @@ export type View =
   | { name: 'friends' }
   | { name: 'leaderboard' }
   | { name: 'history' }
+  | { name: 'tournaments'; id?: bigint }
   | { name: 'profile' };
 
 interface Toast {
@@ -25,6 +26,7 @@ interface AppState {
   principal: Principal | null;
   profile: Profile | null;
   items: Map<number, StoreItem>;
+  medals: Map<string, MedalDef>;
   view: View;
   go: (v: View) => void;
   refreshProfile: () => Promise<void>;
@@ -48,6 +50,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [principal, setPrincipal] = useState<Principal | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [items, setItems] = useState<Map<number, StoreItem>>(new Map());
+  const [medals, setMedals] = useState<Map<string, MedalDef>>(new Map());
   const [view, setView] = useState<View>({ name: 'lobby' });
   const [toasts, setToasts] = useState<Toast[]>([]);
 
@@ -68,6 +71,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     ]);
     setProfile(p[0] ?? null);
     setItems(new Map(store.map((i) => [i.id, i])));
+    const defs = await a.backend.list_medals();
+    setMedals(new Map(defs.map((m) => [m.id, m])));
   }, []);
 
   useEffect(() => {
@@ -86,6 +91,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       principal,
       profile,
       items,
+      medals,
       view,
       go: setView,
       refreshProfile,
@@ -110,7 +116,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       },
     };
-  }, [actors, principal, profile, items, view, connect, notify]);
+  }, [actors, principal, profile, items, medals, view, connect, notify]);
 
   if (!value) {
     return <div className="splash">♠ ♥ Shuffling up… ♦ ♣</div>;

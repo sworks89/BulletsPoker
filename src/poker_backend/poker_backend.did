@@ -28,6 +28,7 @@ type DepositInfo = record {
   // ICRC-1 account to send ICP to (this canister + your deposit subaccount).
   account : Account;
 };
+type EarnedMedal = record { id : text; earned_at : nat64 };
 type FriendInfo = record {
   id : principal;
   username : text;
@@ -106,6 +107,12 @@ type LogEntry = record {
   // The player's total bet on this street after the action, or the amount won/returned.
   amount : nat64;
 };
+type MedalDef = record {
+  id : text;
+  icon : text;
+  name : text;
+  description : text;
+};
 type MessageKind = variant { System; Gift; Text; Throw };
 type Phase = variant { Flop; Turn; River; HandOver; Waiting; PreFlop };
 type PlayerResult = record {
@@ -134,6 +141,7 @@ type Profile = record {
   friends : vec principal;
   daily_streak : nat32;
   avatar : nat32;
+  medals : vec EarnedMedal;
 };
 type PublicProfile = record {
   id : principal;
@@ -143,6 +151,7 @@ type PublicProfile = record {
   tables : vec nat64;
   stats : Stats;
   avatar : text;
+  medals : vec text;
   online : bool;
 };
 type Result = variant { Ok; Err : text };
@@ -150,6 +159,14 @@ type Result_1 = variant { Ok : nat32; Err : text };
 type Result_2 = variant { Ok : nat64; Err : text };
 type Result_3 = variant { Ok : HouseStats; Err : text };
 type Result_4 = variant { Ok : Profile; Err : text };
+type RoomArgs = record {
+  action_timeout_secs : nat64;
+  password : opt text;
+  name : text;
+  max_seats : nat8;
+  currency : Currency;
+  big_blind : nat64;
+};
 type SeatView = record {
   bet : nat64;
   in_hand : bool;
@@ -182,6 +199,15 @@ type ShownHand = record {
   cards : blob;
   hand : text;
   seat : nat8;
+};
+type Standing = record {
+  table : opt nat64;
+  username : text;
+  player : principal;
+  chips : nat64;
+  place : opt nat32;
+  prize : nat64;
+  avatar : text;
 };
 type Stats = record {
   // Largest ICP pot won, in e8s.
@@ -224,12 +250,15 @@ type TableSummary = record {
   small_blind : nat64;
   min_buy_in : nat64;
   name : text;
+  locked : bool;
   max_seats : nat8;
   avg_pot : nat64;
   players : nat8;
   currency : Currency;
   big_blind : nat64;
   phase : Phase;
+  // Username of the player who created this room, for player-created tables.
+  room_owner : opt text;
   max_buy_in : nat64;
 };
 type TableView = record {
@@ -239,7 +268,10 @@ type TableView = record {
   my_seat : opt nat8;
   to_call : nat64;
   hand_no : nat64;
+  // Joining needs a password.
+  locked : bool;
   last_result : opt HandResult;
+  tournament : opt TournamentBadge;
   min_raise_to : nat64;
   seats : vec opt SeatView;
   action_deadline : nat64;
@@ -250,6 +282,8 @@ type TableView = record {
   board : blob;
   phase : Phase;
   config : TableConfig;
+  // The player who created this room, if it is a player-created table.
+  room_owner : opt principal;
   button : nat8;
   max_raise_to : nat64;
 };
@@ -260,6 +294,74 @@ type ThrowEvent = record {
   icon : text;
   time : nat64;
 };
+type TournamentBadge = record {
+  id : nat64;
+  small_blind : nat64;
+  name : text;
+  level : nat32;
+  finished : bool;
+  big_blind : nat64;
+  entrants : nat32;
+  players_left : nat32;
+  my_place : opt nat32;
+  my_prize : nat64;
+  next_level_at : nat64;
+};
+type TournamentDetail = record {
+  small_blind : nat64;
+  standings : vec Standing;
+  level : nat32;
+  tables : vec nat64;
+  summary : TournamentSummary;
+  big_blind : nat64;
+  next_level_at : nat64;
+  payouts : vec nat64;
+};
+type TournamentKind = variant {
+  // Starts at a set time if enough players registered.
+  Scheduled;
+  // Starts as soon as it fills up.
+  SitAndGo;
+};
+type TournamentStatus = variant { Finished; Running; Cancelled; Registering };
+type TournamentSummary = record {
+  id : nat64;
+  fee : nat64;
+  status : TournamentStatus;
+  // The table the viewer is playing at, if any.
+  my_table : opt nat64;
+  min_players : nat32;
+  start_at : nat64;
+  kind : TournamentKind;
+  name : text;
+  level_secs : nat64;
+  max_players : nat32;
+  currency : Currency;
+  prize_pool : nat64;
+  players_left : nat32;
+  registered_me : bool;
+  starting_stack : nat64;
+  buy_in : nat64;
+  registered : nat32;
+};
+type TournamentTemplate = record {
+  // Goes to the house (ICP) or leaves circulation (chips).
+  fee : nat64;
+  min_players : nat32;
+  kind : TournamentKind;
+  name : text;
+  level_secs : nat64;
+  // Scheduled events: time between runs.
+  interval_secs : nat64;
+  max_players : nat32;
+  // Minimum prize pool, only for play-chip events (the house mints chips).
+  guarantee : nat64;
+  currency : Currency;
+  starting_stack : nat64;
+  // Goes into the prize pool.
+  buy_in : nat64;
+  table_size : nat8;
+};
 type Winner = record {
   player : principal;
   hand : text;
@@ -269,6 +371,8 @@ type Winner = record {
 service : (opt InitArgs) -> {
   act : (nat64, Action) -> (Result);
   admin_add_item : (StoreItem) -> (Result_1);
+  // Adds a recurring tournament (a sit-and-go or a scheduled event).
+  admin_add_tournament : (TournamentTemplate) -> (Result_1);
   admin_create_table : (TableConfig) -> (Result_2);
   admin_house_stats : () -> (Result_3) query;
   admin_set_item_available : (nat32, bool) -> (Result);
@@ -280,6 +384,9 @@ service : (opt InitArgs) -> {
   // Deposit via plain transfer: send ICP to your deposit account (see
   // `get_deposit_info`) from any wallet or exchange, then call this.
   claim_deposit : () -> (Result_2);
+  close_room : (nat64) -> (Result);
+  // Creates your own table. Hosts of ICP tables earn 20% of the rake it generates.
+  create_room : (RoomArgs) -> (Result_2);
   // Deposit via ICRC-2: the caller first approves this canister for
   // `amount + fee` on the ICP ledger, then calls this.
   deposit : (nat64) -> (Result_2);
@@ -297,12 +404,17 @@ service : (opt InitArgs) -> {
   get_my_profile : () -> (opt Profile) query;
   get_profile : (principal) -> (opt PublicProfile) query;
   get_table : (nat64) -> (opt TableView) query;
-  join_table : (nat64, nat8, nat64) -> (Result);
+  get_tournament : (nat64) -> (opt TournamentDetail) query;
+  // `password` is only needed for password-protected player rooms.
+  join_table : (nat64, nat8, nat64, opt text) -> (Result);
   leave_table : (nat64) -> (Result_2);
+  list_medals : () -> (vec MedalDef) query;
   list_store : () -> (vec StoreItem) query;
   list_tables : () -> (vec TableSummary) query;
+  list_tournaments : () -> (vec TournamentSummary) query;
   ping : () -> ();
   register : (text) -> (Result_4);
+  register_tournament : (nat64) -> (Result);
   remove_friend : (principal) -> (Result);
   respond_friend_request : (principal, bool) -> (Result);
   send_chat : (Channel, text) -> (Result);
@@ -313,6 +425,7 @@ service : (opt InitArgs) -> {
   sit_out : (nat64, bool) -> (Result);
   throw_item : (nat64, principal, nat32, Currency) -> (Result);
   top_up : (nat64, nat64) -> (Result);
+  unregister_tournament : (nat64) -> (Result);
   update_settings : (Settings) -> (Result);
   whoami : () -> (principal) query;
   // Sends `amount` e8s to `to`. The ledger fee is charged on top.

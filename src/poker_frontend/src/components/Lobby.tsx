@@ -3,12 +3,14 @@ import { useApp, usePoll } from '../context';
 import type { FriendInfo, TableSummary } from '../ic';
 import { amount, isChips } from '../format';
 import { Chat } from './Chat';
+import { CreateRoom } from './CreateRoom';
 
 export function Lobby() {
   const { backend, go, profile } = useApp();
   const [tables, setTables] = useState<TableSummary[]>([]);
   const [friends, setFriends] = useState<FriendInfo[]>([]);
   const [mode, setMode] = useState<'chips' | 'icp'>('chips');
+  const [creating, setCreating] = useState(false);
 
   usePoll(
     async () => {
@@ -34,6 +36,14 @@ export function Lobby() {
             <button className={`chip ${mode === 'icp' ? 'active' : ''}`} onClick={() => setMode('icp')}>
               ∞ ICP
             </button>
+            <button className="chip" onClick={() => go({ name: 'tournaments' })}>
+              🏆 Tournaments
+            </button>
+            {profile && (
+              <button className="btn small" onClick={() => setCreating(true)}>
+                + Host a table
+              </button>
+            )}
           </div>
         </div>
         {mode === 'chips' ? (
@@ -58,6 +68,8 @@ export function Lobby() {
                 <td>
                   <b>{t.name}</b>
                   {t.max_seats === 2 && <span className="tag">HU</span>}
+                  {t.locked && <span className="tag">🔒</span>}
+                  {t.room_owner[0] !== undefined && <div className="muted small">hosted by {t.room_owner[0]}</div>}
                 </td>
                 <td>
                   {amount(t.small_blind, t.currency)} / {amount(t.big_blind, t.currency)}
@@ -83,6 +95,7 @@ export function Lobby() {
         </table>
       </section>
 
+      {creating && <CreateRoom onClose={() => setCreating(false)} />}
       <aside className="side">
         {profile && (
           <div className="panel">

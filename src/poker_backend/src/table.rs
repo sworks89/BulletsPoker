@@ -203,6 +203,9 @@ pub struct Table {
     pub rake_accrued: u64,
     /// Action log of the current (or just finished) hand.
     pub log: Vec<LogEntry>,
+    /// Tournament tables deal in players who are sitting out (they post blinds
+    /// and are folded immediately), so absent players blind off and the event ends.
+    pub tournament_mode: bool,
 }
 
 const NANOS: u64 = 1_000_000_000;
@@ -227,6 +230,7 @@ impl Table {
             last_result: None,
             rake_accrued: 0,
             log: vec![],
+            tournament_mode: false,
         }
     }
 
@@ -307,6 +311,25 @@ impl Table {
     }
 
     /// Adds chips to a stack between hands (or after folding).
+    /// Seats a player with an exact stack, bypassing buy-in limits (tournament seating
+    /// and table balancing).
+    pub fn seat_player(&mut self, player: Principal, seat: usize, stack: u64) -> Result<(), String> {
+        if self.seats.get(seat).is_none_or(|s| s.is_some()) {
+            return Err("Seat unavailable".into());
+        }
+        self.seats[seat] = Some(Seat::new(player, stack));
+        Ok(())
+    }
+
+    pub fn free_seats(&self) -> Vec<usize> {
+        (0..self.n()).filter(|&i| self.seats[i].is_none()).collect()
+    }
+
+    /// True between hands, when players can be moved without affecting a pot.
+    pub fn between_hands(&self) -> bool {
+        !self.phase.is_betting()
+    }
+
     pub fn top_up(&mut self, player: &Principal, amount: u64) -> Result<(), String> {
         let i = self.seat_of(player).ok_or("You are not seated")?;
         let in_live_hand = self.phase.is_betting() && self.seat(i).live();
@@ -359,7 +382,7 @@ impl Table {
         self.seats
             .iter()
             .flatten()
-            .filter(|s| s.stack > 0 && !s.sitting_out && !s.left)
+            .filter(|s| s.stack > 0 && (!s.sitting_out || self.tournament_mode) && !s.left)
             .count()
     }
 
@@ -411,6 +434,7 @@ impl Table {
             return Err("Need at least two players".into());
         }
 
+        let tournament_mode = self.tournament_mode;
         for s in self.seats.iter_mut().flatten() {
             s.hole.clear();
             s.bet = 0;
@@ -419,7 +443,7 @@ impl Table {
             s.all_in = false;
             s.acted = false;
             s.last_action = None;
-            s.in_hand = s.stack > 0 && !s.sitting_out;
+            s.in_hand = s.stack > 0 && (!s.sitting_out || tournament_mode) && !s.left;
         }
         self.hand_no += 1;
         self.deck = shuffled_deck(seed);
@@ -518,7 +542,14 @@ impl Table {
         };
         let current_bet = self.current_bet;
         self.to_act = self.next_where(start, |s| s.can_act() && (!s.acted || s.bet < current_bet));
-        self.action_deadline = now + self.config.action_timeout_secs * NANOS;
+        self.set_deadline(now);
+    }
+
+    /// Starts the clock for whoever is to act. Absent tournament players act at once.
+    fn set_deadline(&mut self, now: u64) {
+        let away = self.tournament_mode
+            && self.to_act.is_some_and(|i| self.seats[i].as_ref().is_some_and(|s| s.sitting_out));
+        self.action_deadline = if away { now } else { now + self.config.action_timeout_secs * NANOS };
     }
 
     fn deal_board(&mut self, n: usize) {
@@ -556,7 +587,7 @@ impl Table {
         self.set_phase(next, now);
         self.log_street();
         self.to_act = self.next_where(self.button, |s| s.can_act());
-        self.action_deadline = now + self.config.action_timeout_secs * NANOS;
+        self.set_deadline(now);
     }
 
     fn log_street(&mut self) {
@@ -1046,6 +1077,33 @@ mod tests {
         let river = t.log.iter().find(|e| e.text == "River").unwrap();
         assert_eq!(river.phase, Phase::River);
         assert_eq!(t.dealt_hands().len(), 2);
+    }
+
+    #[test]
+    fn tournament_mode_blinds_off_absent_players() {
+        let mut t = Table::new(1, config());
+        t.tournament_mode = true;
+        t.sit(p(1), 0, 100).unwrap();
+        t.sit(p(2), 1, 100).unwrap();
+        t.set_sitting_out(&p(1), true).unwrap();
+        let mut now = 0;
+        let mut hands = 0;
+        // p1 is away: they keep being dealt in and auto-folded until they bust.
+        while t.seats[0].as_ref().is_some_and(|s| s.stack > 0) && hands < 100 {
+            t.start_hand([hands as u8; 32], now).unwrap();
+            while t.phase.is_betting() {
+                if t.seat(t.to_act.unwrap()).player == p(1) {
+                    assert_eq!(t.action_deadline, now, "absent player acts immediately");
+                    t.handle_timeout(now).unwrap();
+                } else {
+                    t.act(&p(2), Action::Call, now).unwrap();
+                }
+            }
+            now += 10 * NANOS;
+            hands += 1;
+        }
+        assert!(hands < 100);
+        assert_eq!(t.seats[1].as_ref().unwrap().stack, 200);
     }
 
     #[test]

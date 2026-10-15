@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useApp, usePoll } from '../context';
-import { unwrap, type SeatView, type StoreItem, type TableView, type ThrowEvent } from '../ic';
-import { amount, amountWithUnit, bytes, cardRank, cardSuit, CHIPS, ICP, icp, isChips, suitClass, type CurrencyV } from '../format';
+import { unwrap, type PublicProfile, type SeatView, type StoreItem, type TableView, type ThrowEvent } from '../ic';
+import { amount, amountWithUnit, bytes, cardRank, cardSuit, CHIPS, countdown, ICP, icp, isChips, suitClass, type CurrencyV } from '../format';
 import { sounds } from '../sound';
 import { Chat } from './Chat';
 
@@ -120,6 +120,8 @@ export function TablePage({ id }: { id: bigint }) {
   if (!view) return <div className="splash">Loading table…</div>;
 
   const currency = view.config.currency;
+  const tourney = view.tournament[0];
+  const isHost = !!profile && view.room_owner[0]?.toText() === profile.id.toText();
   const mySeat = view.my_seat[0];
   const phase = Object.keys(view.phase)[0];
   const remaining = Math.max(0, Number(view.action_deadline / 1_000_000n) + clockOffset - Date.now());
@@ -155,7 +157,12 @@ export function TablePage({ id }: { id: bigint }) {
           </button>
           <div>
             <b>{view.config.name}</b>
-            <span className={`tag ${isChips(currency) ? 'chips' : ''}`}>{isChips(currency) ? 'Play chips' : 'ICP'}</span>
+            {tourney ? (
+              <span className="tag live">Tournament</span>
+            ) : (
+              <span className={`tag ${isChips(currency) ? 'chips' : ''}`}>{isChips(currency) ? 'Play chips' : 'ICP'}</span>
+            )}
+            {view.locked && <span className="tag">🔒</span>}
             <span className="muted">
               {' '}
               · NLHE {amount(view.config.small_blind, currency)}/{amount(view.config.big_blind, currency)} · Hand #{String(view.hand_no)}
@@ -167,22 +174,62 @@ export function TablePage({ id }: { id: bigint }) {
                 <button className="btn ghost" onClick={() => run(async () => unwrap(await backend.sit_out(id, !me.sitting_out)))}>
                   {me.sitting_out ? "I'm back" : 'Sit out'}
                 </button>
-                <button
-                  className="btn ghost"
-                  onClick={async () => {
-                    const r = await run(async () => unwrap(await backend.leave_table(id)));
-                    if (r !== undefined) {
-                      await refreshProfile();
-                      await load();
-                    }
-                  }}
-                >
-                  Stand up
-                </button>
+                {!tourney && (
+                  <button
+                    className="btn ghost"
+                    onClick={async () => {
+                      const r = await run(async () => unwrap(await backend.leave_table(id)));
+                      if (r !== undefined) {
+                        await refreshProfile();
+                        await load();
+                      }
+                    }}
+                  >
+                    Stand up
+                  </button>
+                )}
               </>
+            )}
+            {isHost && view.seats.every((s) => !s[0]) && (
+              <button
+                className="btn ghost"
+                onClick={async () => {
+                  const r = await run(async () => unwrap(await backend.close_room(id)), 'Table closed');
+                  if (r !== undefined) go({ name: 'lobby' });
+                }}
+              >
+                Close table
+              </button>
             )}
           </div>
         </div>
+
+        {tourney && (
+          <div className="tourney-bar">
+            <button className="chip" onClick={() => go({ name: 'tournaments', id: tourney.id })}>
+              {tourney.name}
+            </button>
+            <span>
+              Level {tourney.level} · <b>{tourney.small_blind.toLocaleString()}/{tourney.big_blind.toLocaleString()}</b>
+            </span>
+            {!tourney.finished && <span className="muted">Next level in {countdown(tourney.next_level_at)}</span>}
+            <span className="muted">
+              {tourney.players_left}/{tourney.entrants} players left
+            </span>
+            {tourney.my_place[0] !== undefined && (
+              <span className="tag live">
+                You finished #{tourney.my_place[0]}
+                {tourney.my_prize > 0n ? ` · won ${amountWithUnit(tourney.my_prize, CHIPS)}` : ''}
+              </span>
+            )}
+          </div>
+        )}
+        {view.room_owner[0] && (
+          <div className="muted small host-line">
+            Hosted by {isHost ? 'you' : 'a player'}
+            {isHost && !isChips(currency) ? ' · you earn 20% of the rake here' : ''}
+          </div>
+        )}
 
         <div className="felt-wrap">
           <div className="felt">
@@ -215,7 +262,7 @@ export function TablePage({ id }: { id: bigint }) {
             if (!s) {
               return (
                 <div key={i} className="seat empty" style={pos}>
-                  {mySeat === undefined && profile ? (
+                  {mySeat === undefined && profile && !tourney ? (
                     <button className="btn small" onClick={() => setBuyInSeat(i)}>
                       Sit
                     </button>
@@ -364,6 +411,8 @@ function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number;
   const balance = (chips ? profile?.chips : profile?.balance) ?? 0n;
   const max = balance < view.config.max_buy_in ? balance : view.config.max_buy_in;
   const [value, setValue] = useState<bigint>(max);
+  const [password, setPassword] = useState('');
+  const needsPassword = view.locked && view.room_owner[0]?.toText() !== profile?.id.toText();
   const short = balance < view.config.min_buy_in;
 
   return (
@@ -395,6 +444,7 @@ function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number;
               onChange={(e) => setValue(BigInt(e.target.value))}
             />
             <div className="big">{amountWithUnit(value, currency)}</div>
+            {needsPassword && <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Table password" />}
             <div className="row gap">
               <button className="btn ghost" onClick={onClose}>
                 Cancel
@@ -402,7 +452,7 @@ function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number;
               <button
                 className="btn"
                 onClick={async () => {
-                  const r = await run(async () => unwrap(await backend.join_table(view.id, seat, value)), 'Good luck!');
+                  const r = await run(async () => unwrap(await backend.join_table(view.id, seat, value, needsPassword ? [password] : [])), 'Good luck!');
                   if (r !== undefined) {
                     onClose();
                     await Promise.all([refreshProfile(), onDone()]);
@@ -420,7 +470,11 @@ function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number;
 }
 
 function PlayerCard({ seat, view, canThrow, onClose }: { seat: SeatView; view: TableView; canThrow: boolean; onClose: () => void }) {
-  const { backend, items, profile, run, refreshProfile } = useApp();
+  const { backend, items, medals, profile, run, refreshProfile } = useApp();
+  const [pub, setPub] = useState<PublicProfile | null>(null);
+  useEffect(() => {
+    backend.get_profile(seat.player).then((p) => setPub(p[0] ?? null));
+  }, [backend, seat.player]);
   const all = [...items.values()];
   const gifts = all.filter((i) => 'Gift' in i.kind);
   const throwables = all.filter((i) => 'Throwable' in i.kind);
@@ -464,8 +518,23 @@ function PlayerCard({ seat, view, canThrow, onClose }: { seat: SeatView; view: T
           <div>
             <h3>{seat.username}</h3>
             <div className="muted">Level {seat.level}</div>
+            {pub && (
+              <div className="muted small">
+                {String(pub.stats.hands_played)} hands · {String(pub.stats.hands_won)} won
+                {pub.status && <> · “{pub.status}”</>}
+              </div>
+            )}
           </div>
         </div>
+        {pub && pub.medals.length > 0 && (
+          <div className="medal-strip">
+            {pub.medals.map((m) => (
+              <span key={m} title={medals.get(m)?.name}>
+                {medals.get(m)?.icon}
+              </span>
+            ))}
+          </div>
+        )}
         {profile && !isFriend && (
           <button className="btn" onClick={() => run(async () => unwrap(await backend.send_friend_request(seat.player)), 'Friend request sent')}>
             + Add friend

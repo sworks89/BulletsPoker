@@ -2,6 +2,7 @@ import { AppProvider, useApp, type View } from './context';
 import { countdown, icp } from './format';
 import { unwrap } from './ic';
 import { History } from './components/History';
+import { Tournaments } from './components/Tournaments';
 import { Lobby } from './components/Lobby';
 import { TablePage } from './components/Table';
 import { Wallet } from './components/Wallet';
@@ -11,6 +12,7 @@ import { Leaderboard, ProfilePage, Register } from './components/Profile';
 
 const NAV: { name: View['name']; label: string }[] = [
   { name: 'lobby', label: 'Lobby' },
+  { name: 'tournaments', label: 'Tournaments' },
   { name: 'store', label: 'Store' },
   { name: 'friends', label: 'Friends' },
   { name: 'history', label: 'History' },
@@ -63,7 +65,7 @@ function Shell() {
               </button>
               <button className="me" onClick={() => go({ name: 'profile' })}>
                 <span className="avatar sm">{items.get(profile.avatar)?.icon}</span>
-                {profile.username}
+                <span className="me-name">{profile.username}</span>
               </button>
               <button className="btn ghost small" onClick={() => run(signOut)}>
                 Sign out
@@ -89,6 +91,7 @@ function Shell() {
         {view.name === 'friends' && <Friends />}
         {view.name === 'leaderboard' && <Leaderboard />}
         {view.name === 'history' && <History />}
+        {view.name === 'tournaments' && <Tournaments key={String(view.id ?? '')} initial={view.id} />}
         {view.name === 'profile' && <ProfilePage />}
       </main>
 

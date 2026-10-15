@@ -4,6 +4,8 @@
 //! natively; `lib.rs` wraps it in canister endpoints.
 
 use crate::table::{Action, Currency, HandResult, LogEntry, Phase, Table, TableConfig};
+use crate::tournament::{Tournament, TournamentBadge, TournamentTemplate};
+use sha2::{Digest, Sha256};
 use candid::{CandidType, Deserialize, Principal};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -23,6 +25,10 @@ const HISTORY_MAX: usize = 20_000;
 pub const SIGNUP_CHIPS: u64 = 20_000;
 pub const DAILY_CHIPS: u64 = 5_000;
 const MAX_STREAK: u32 = 7;
+/// Share of the rake paid to the creator of a player-created ICP room.
+pub const HOST_RAKE_SHARE_BPS: u64 = 2_000;
+const ROOM_IDLE_CLOSE_NS: u64 = 30 * 60 * 1_000_000_000;
+const MAX_ROOMS_PER_USER: usize = 2;
 
 pub type R<T> = Result<T, String>;
 
@@ -82,6 +88,10 @@ pub struct User {
     pub daily_streak: u32,
     pub last_daily_at: u64,
     pub last_throw_at: u64,
+    /// Medal id -> time earned.
+    pub medals: BTreeMap<String, u64>,
+    pub gifts_sent: u64,
+    pub throws_made: u64,
     pub avatar: u32,
     pub card_back: u32,
     pub inventory: Vec<u32>,
@@ -215,6 +225,33 @@ pub struct State {
     pub next_hand_id: u64,
     pub throws: BTreeMap<u64, VecDeque<ThrowEvent>>,
     pub next_throw_id: u64,
+    /// Player-created tables, by table id.
+    pub rooms: BTreeMap<u64, Room>,
+    pub tournaments: BTreeMap<u64, Tournament>,
+    pub next_tournament_id: u64,
+    /// Table id -> tournament id for tournament tables.
+    pub table_tournament: BTreeMap<u64, u64>,
+    /// Recurring tournaments; a fresh instance opens whenever the previous one starts.
+    pub templates: Vec<TournamentTemplate>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct Room {
+    pub owner: Principal,
+    /// SHA-256 of (table id, password) for password-protected rooms.
+    pub password_hash: Option<Vec<u8>>,
+    pub created_at: u64,
+    pub last_active: u64,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct RoomArgs {
+    pub name: String,
+    pub currency: Currency,
+    pub big_blind: u64,
+    pub max_seats: u8,
+    pub password: Option<String>,
+    pub action_timeout_secs: u64,
 }
 
 // ------------------------------------------------------------------ views
@@ -241,6 +278,13 @@ pub struct Profile {
     pub xp: u64,
     pub level: u32,
     pub created_at: u64,
+    pub medals: Vec<EarnedMedal>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct EarnedMedal {
+    pub id: String,
+    pub earned_at: u64,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -253,6 +297,7 @@ pub struct PublicProfile {
     pub level: u32,
     pub online: bool,
     pub tables: Vec<u64>,
+    pub medals: Vec<String>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -296,6 +341,11 @@ pub struct TableView {
     pub max_raise_to: u64,
     /// Items thrown in the last few seconds, for clients to animate.
     pub throws: Vec<ThrowEvent>,
+    pub tournament: Option<TournamentBadge>,
+    /// The player who created this room, if it is a player-created table.
+    pub room_owner: Option<Principal>,
+    /// Joining needs a password.
+    pub locked: bool,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -311,6 +361,9 @@ pub struct TableSummary {
     pub max_seats: u8,
     pub phase: Phase,
     pub avg_pot: u64,
+    /// Username of the player who created this room, for player-created tables.
+    pub room_owner: Option<String>,
+    pub locked: bool,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -456,6 +509,11 @@ impl State {
             next_hand_id: 1,
             throws: BTreeMap::new(),
             next_throw_id: 1,
+            rooms: BTreeMap::new(),
+            tournaments: BTreeMap::new(),
+            next_tournament_id: 1,
+            table_tournament: BTreeMap::new(),
+            templates: crate::tournament::default_templates(),
         };
         for (kind, name, price, chip_price, icon, description) in default_items() {
             s.add_item(StoreItem {
@@ -477,11 +535,11 @@ impl State {
 
     // ------------------------------------------------------------ profiles
 
-    fn user(&self, p: &Principal) -> R<&User> {
+    pub(crate) fn user(&self, p: &Principal) -> R<&User> {
         self.users.get(p).ok_or_else(|| "Create a profile first".to_string())
     }
 
-    fn user_mut(&mut self, p: &Principal) -> R<&mut User> {
+    pub(crate) fn user_mut(&mut self, p: &Principal) -> R<&mut User> {
         self.users.get_mut(p).ok_or_else(|| "Create a profile first".to_string())
     }
 
@@ -499,7 +557,7 @@ impl State {
             .unwrap_or(0)
     }
 
-    fn icon(&self, id: u32) -> String {
+    pub(crate) fn icon(&self, id: u32) -> String {
         self.items.get(&id).map(|i| i.icon.clone()).unwrap_or_default()
     }
 
@@ -530,6 +588,9 @@ impl State {
                 daily_streak: 0,
                 last_daily_at: 0,
                 last_throw_at: 0,
+                medals: BTreeMap::new(),
+                gifts_sent: 0,
+                throws_made: 0,
                 avatar,
                 card_back,
                 inventory: vec![],
@@ -567,6 +628,7 @@ impl State {
             xp: u.xp,
             level: level_for_xp(u.xp),
             created_at: u.created_at,
+            medals: u.medals.iter().map(|(id, t)| EarnedMedal { id: id.clone(), earned_at: *t }).collect(),
         })
     }
 
@@ -593,6 +655,7 @@ impl State {
             level: level_for_xp(u.xp),
             online: self.is_online(p, u, now),
             tables: self.tables_of(p),
+            medals: u.medals.keys().cloned().collect(),
         })
     }
 
@@ -700,7 +763,12 @@ impl State {
     pub fn send_gift(&mut self, caller: Principal, table_id: u64, to: Principal, item_id: u32, currency: Currency, now: u64) -> R<()> {
         let (item, from_name, to_name, _, _) = self.table_item_target(&caller, table_id, &to, item_id, ItemKind::Gift)?;
         self.pay_for(&caller, &item, currency)?;
-        self.user_mut(&caller)?.xp += 5;
+        let u = self.user_mut(&caller)?;
+        u.xp += 5;
+        u.gifts_sent += 1;
+        if u.gifts_sent >= 10 {
+            self.award(&caller, "generous", Some(Channel::Table(table_id)), now);
+        }
         self.user_mut(&to)?.gift = Some(ActiveGift {
             item: item_id,
             from: from_name.clone(),
@@ -729,7 +797,12 @@ impl State {
             return Err("Wait a moment before throwing again".into());
         }
         self.pay_for(&caller, &item, currency)?;
-        self.user_mut(&caller)?.last_throw_at = now;
+        let u = self.user_mut(&caller)?;
+        u.last_throw_at = now;
+        u.throws_made += 1;
+        if u.throws_made >= 25 {
+            self.award(&caller, "food_fight", Some(Channel::Table(table_id)), now);
+        }
         let id = self.next_throw_id;
         self.next_throw_id += 1;
         let q = self.throws.entry(table_id).or_default();
@@ -804,6 +877,9 @@ impl State {
         u.last_daily_at = now;
         let amount = daily_amount(u.daily_streak);
         u.chips += amount;
+        if u.daily_streak >= MAX_STREAK {
+            self.award(&caller, "dedicated", None, now);
+        }
         Ok(amount)
     }
 
@@ -826,13 +902,13 @@ impl State {
             wallet_balances,
             chips_on_tables,
             treasury: self.treasury,
-            liabilities_total: wallet_balances + chips_on_tables + self.treasury,
+            liabilities_total: wallet_balances + chips_on_tables + self.treasury + self.icp_in_tournaments(),
         }
     }
 
     // ---------------------------------------------------------------- chat
 
-    fn post(&mut self, ch: Channel, from: Option<Principal>, username: String, text: String, kind: MessageKind, now: u64) {
+    pub(crate) fn post(&mut self, ch: Channel, from: Option<Principal>, username: String, text: String, kind: MessageKind, now: u64) {
         let id = self.next_msg_id;
         self.next_msg_id += 1;
         let q = self.chats.entry(ch).or_default();
@@ -935,6 +1011,11 @@ impl State {
         if accept {
             self.user_mut(&caller)?.friends.insert(from);
             self.user_mut(&from)?.friends.insert(caller);
+            for p in [caller, from] {
+                if self.users[&p].friends.len() >= 10 {
+                    self.award(&p, "popular", None, 0);
+                }
+            }
         }
         Ok(())
     }
@@ -994,17 +1075,111 @@ impl State {
         Ok(id)
     }
 
-    fn table_mut(&mut self, id: u64) -> R<&mut Table> {
+    /// Creates a player-hosted table. ICP rooms pay the host a share of the rake.
+    pub fn create_room(&mut self, caller: Principal, args: RoomArgs, now: u64) -> R<u64> {
+        self.user(&caller)?;
+        let owned = self.rooms.values().filter(|r| r.owner == caller).count();
+        if owned >= MAX_ROOMS_PER_USER {
+            return Err(format!("You can have at most {MAX_ROOMS_PER_USER} open tables"));
+        }
+        let bb = args.big_blind;
+        let (min_bb, max_bb) = match args.currency {
+            Currency::Chips => (2, 10_000),
+            Currency::Icp => (2_000, 10_000_000),
+        };
+        if !bb.is_multiple_of(2) || bb < min_bb || bb > max_bb {
+            return Err(format!("Big blind must be an even amount between {} and {}", fmt_amount(args.currency, min_bb), fmt_amount(args.currency, max_bb)));
+        }
+        if let Some(pw) = &args.password {
+            if pw.is_empty() || pw.len() > 32 {
+                return Err("Passwords are 1-32 characters".into());
+            }
+        }
+        let icp = args.currency == Currency::Icp;
+        let cfg = TableConfig {
+            name: args.name.trim().to_string(),
+            currency: args.currency,
+            small_blind: bb / 2,
+            big_blind: bb,
+            min_buy_in: bb * 20,
+            max_buy_in: bb * 100,
+            max_seats: args.max_seats,
+            rake_bps: if icp { 250 } else { 0 },
+            rake_cap: if icp { bb * 3 } else { 0 },
+            action_timeout_secs: args.action_timeout_secs,
+        };
+        let id = self.create_table(cfg)?;
+        self.rooms.insert(
+            id,
+            Room {
+                owner: caller,
+                password_hash: args.password.map(|pw| room_password_hash(id, &pw)),
+                created_at: now,
+                last_active: now,
+            },
+        );
+        self.award(&caller, "host", None, now);
+        Ok(id)
+    }
+
+    /// Closes the caller's room once nobody is seated.
+    pub fn close_room(&mut self, caller: Principal, id: u64) -> R<()> {
+        let room = self.rooms.get(&id).ok_or("Not a player-created table")?;
+        if room.owner != caller {
+            return Err("Only the host can close this table".into());
+        }
+        if self.tables.get(&id).is_some_and(|t| t.player_count() > 0) {
+            return Err("Wait until everyone has left".into());
+        }
+        self.remove_table(id);
+        Ok(())
+    }
+
+    fn remove_table(&mut self, id: u64) {
+        self.rooms.remove(&id);
+        self.tables.remove(&id);
+        self.applied_hand.remove(&id);
+        self.throws.remove(&id);
+        self.chats.remove(&Channel::Table(id));
+    }
+
+    fn close_idle_rooms(&mut self, now: u64) {
+        let idle: Vec<u64> = self
+            .rooms
+            .iter()
+            .filter(|(id, r)| {
+                now.saturating_sub(r.last_active) > ROOM_IDLE_CLOSE_NS && self.tables.get(id).is_none_or(|t| t.player_count() == 0)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in idle {
+            self.remove_table(id);
+        }
+    }
+
+    pub(crate) fn table_mut(&mut self, id: u64) -> R<&mut Table> {
         self.tables.get_mut(&id).ok_or_else(|| "No such table".to_string())
     }
 
+    /// Currency of a cash table. Tournament tables can't be joined or left directly.
     fn table_currency(&self, id: u64) -> R<Currency> {
+        if self.table_tournament.contains_key(&id) {
+            return Err("This is a tournament table. Register from the Tournaments page; sit out if you need a break".into());
+        }
         Ok(self.tables.get(&id).ok_or("No such table")?.config.currency)
     }
 
-    pub fn join_table(&mut self, caller: Principal, id: u64, seat: u8, buy_in: u64, now: u64) -> R<()> {
+    pub fn join_table(&mut self, caller: Principal, id: u64, seat: u8, buy_in: u64, password: Option<String>, now: u64) -> R<()> {
         let name = self.user(&caller)?.username.clone();
         let currency = self.table_currency(id)?;
+        if let Some(room) = self.rooms.get(&id) {
+            if let Some(hash) = &room.password_hash {
+                let ok = room.owner == caller || password.is_some_and(|pw| room_password_hash(id, &pw) == *hash);
+                if !ok {
+                    return Err("Wrong table password".into());
+                }
+            }
+        }
         // Check funds before seating so a failed debit can't leave chips on the table.
         self.debit_in(&caller, currency, buy_in)?;
         if let Err(e) = self.table_mut(id)?.sit(caller, seat, buy_in) {
@@ -1053,9 +1228,24 @@ impl State {
         };
         let currency = t.config.currency;
         let rake = std::mem::take(&mut t.rake_accrued);
-        if currency == Currency::Icp {
-            self.treasury += rake;
+        if currency == Currency::Icp && rake > 0 {
+            // Room hosts earn a share of the rake their table generates.
+            let host = self.rooms.get(&id).map(|r| r.owner);
+            let host_cut = if host.is_some() { rake * HOST_RAKE_SHARE_BPS / 10_000 } else { 0 };
+            if let Some(h) = host {
+                if self.credit(&h, host_cut).is_err() {
+                    self.treasury += host_cut;
+                }
+            }
+            self.treasury += rake - host_cut;
         }
+        if let Some(r) = self.rooms.get_mut(&id) {
+            r.last_active = now;
+        }
+        let in_tournament = self.table_tournament.contains_key(&id);
+        let Some(t) = self.tables.get(&id) else {
+            return;
+        };
         if t.phase != Phase::HandOver {
             return;
         }
@@ -1090,6 +1280,8 @@ impl State {
                 u.xp += 1;
                 let net = pr.won as i64 - pr.committed as i64;
                 match currency {
+                    // Tournament chips have no value outside the event.
+                    _ if in_tournament => {}
                     Currency::Icp => {
                         u.stats.net_winnings += net;
                         if pr.won > 0 {
@@ -1106,10 +1298,19 @@ impl State {
         }
         for w in &result.winners {
             let name = self.users.get(&w.player).map(|u| u.username.clone()).unwrap_or_default();
-            let text = format!("{} wins {} ({})", name, fmt_amount(currency, w.amount), w.hand);
+            let text = if in_tournament {
+                format!("{} wins {} chips ({})", name, w.amount, w.hand)
+            } else {
+                format!("{} wins {} ({})", name, fmt_amount(currency, w.amount), w.hand)
+            };
             self.post(Channel::Table(id), None, String::new(), text, MessageKind::System, now);
         }
-        self.auto_top_up(id);
+        self.award_hand_medals(id, (!in_tournament).then_some(currency), &result, now);
+        if in_tournament {
+            self.after_tournament_hand(id, now);
+        } else {
+            self.auto_top_up(id);
+        }
     }
 
     fn record_hand(&mut self, table_id: u64, result: &HandResult, shown: &[u8], now: u64) {
@@ -1235,6 +1436,8 @@ impl State {
 
     /// Times out slow players and reports tables that need a new hand dealt.
     pub fn tick(&mut self, now: u64) -> Vec<u64> {
+        self.tournament_tick(now);
+        self.close_idle_rooms(now);
         let ids: Vec<u64> = self.tables.keys().copied().collect();
         let mut ready = vec![];
         for id in ids {
@@ -1268,6 +1471,7 @@ impl State {
     pub fn list_tables(&self) -> Vec<TableSummary> {
         self.tables
             .values()
+            .filter(|t| !self.table_tournament.contains_key(&t.id))
             .map(|t| TableSummary {
                 id: t.id,
                 name: t.config.name.clone(),
@@ -1280,6 +1484,11 @@ impl State {
                 max_seats: t.config.max_seats,
                 phase: t.phase,
                 avg_pot: t.last_result.as_ref().map_or(0, |r| r.pot),
+                room_owner: self
+                    .rooms
+                    .get(&t.id)
+                    .map(|r| self.users.get(&r.owner).map(|u| u.username.clone()).unwrap_or_default()),
+                locked: self.rooms.get(&t.id).is_some_and(|r| r.password_hash.is_some()),
             })
             .collect()
     }
@@ -1349,8 +1558,18 @@ impl State {
                 .get(&id)
                 .map(|q| q.iter().filter(|e| e.time + THROW_VISIBLE_NS > now).cloned().collect())
                 .unwrap_or_default(),
+            tournament: self.table_tournament.get(&id).and_then(|tid| self.tournament_badge(*tid, viewer)),
+            room_owner: self.rooms.get(&id).map(|r| r.owner),
+            locked: self.rooms.get(&id).is_some_and(|r| r.password_hash.is_some()),
         })
     }
+}
+
+fn room_password_hash(table_id: u64, password: &str) -> Vec<u8> {
+    let mut h = Sha256::new();
+    h.update(table_id.to_le_bytes());
+    h.update(password.as_bytes());
+    h.finalize().to_vec()
 }
 
 pub fn fmt_amount(currency: Currency, amount: u64) -> String {
@@ -1414,7 +1633,7 @@ mod tests {
         let beer = s.items.values().find(|i| i.name == "Beer").unwrap().id;
         let icp_table = 5; // Penny Lane
         assert!(s.send_gift(p(1), icp_table, p(2), beer, Currency::Icp, 0).is_err()); // p2 not seated
-        s.join_table(p(2), icp_table, 0, 1_000_000, 0).unwrap();
+        s.join_table(p(2), icp_table, 0, 1_000_000, None, 0).unwrap();
         s.send_gift(p(1), icp_table, p(2), beer, Currency::Icp, 0).unwrap();
         let v = s.table_view(icp_table, None, 1).unwrap();
         assert_eq!(v.seats[0].as_ref().unwrap().gift.as_deref(), Some("🍺"));
@@ -1453,10 +1672,10 @@ mod tests {
         let before = total_value(&s);
         let table = 7; // Low Rollers: 0.001/0.002 ICP
         let buy = s.tables[&table].config.max_buy_in;
-        s.join_table(p(1), table, 0, buy, 0).unwrap();
-        s.join_table(p(2), table, 3, buy, 0).unwrap();
-        s.join_table(p(3), table, 5, buy, 0).unwrap();
-        assert!(s.join_table(p(1), table, 1, buy, 0).is_err());
+        s.join_table(p(1), table, 0, buy, None, 0).unwrap();
+        s.join_table(p(2), table, 3, buy, None, 0).unwrap();
+        s.join_table(p(3), table, 5, buy, None, 0).unwrap();
+        assert!(s.join_table(p(1), table, 1, buy, None, 0).is_err());
         assert_eq!(total_value(&s), before);
 
         let mut now = 1;
@@ -1478,7 +1697,7 @@ mod tests {
             for k in 1..=3 {
                 if s.tables[&table].seat_of(&p(k)).is_none() {
                     let seat = (0..9).find(|&i| s.tables[&table].seats[i].is_none()).unwrap();
-                    s.join_table(p(k), table, seat as u8, buy, now).unwrap();
+                    s.join_table(p(k), table, seat as u8, buy, None, now).unwrap();
                 }
             }
         }
@@ -1528,8 +1747,8 @@ mod tests {
         let chip_table = 1; // Free Roll Fun, 5/10 chips
         assert_eq!(s.tables[&chip_table].config.currency, Currency::Chips);
         let before = s.house_stats();
-        s.join_table(p(1), chip_table, 0, 1_000, 0).unwrap();
-        s.join_table(p(2), chip_table, 1, 1_000, 0).unwrap();
+        s.join_table(p(1), chip_table, 0, 1_000, None, 0).unwrap();
+        s.join_table(p(2), chip_table, 1, 1_000, None, 0).unwrap();
         // ICP is untouched and chip tables don't count as ICP liabilities.
         assert_eq!(s.users[&p(1)].balance, 10 * E8S);
         assert_eq!(s.users[&p(1)].chips, SIGNUP_CHIPS - 1_000);
@@ -1543,7 +1762,7 @@ mod tests {
         assert_eq!(s.users[&p(1)].stats.chip_net + s.users[&p(2)].stats.chip_net, 0);
         assert_eq!(s.users[&p(1)].stats.net_winnings, 0);
         // Not enough chips to sit at the 250/500 table (min buy-in 10,000 is fine, 50,000 is not).
-        assert!(s.join_table(p(3), 4, 0, 50_000, now).is_err());
+        assert!(s.join_table(p(3), 4, 0, 50_000, None, now).is_err());
         assert_eq!(s.users[&p(3)].chips, SIGNUP_CHIPS);
     }
 
@@ -1578,9 +1797,9 @@ mod tests {
         let mut s = setup();
         let tomato = s.items.values().find(|i| i.name == "Tomato").unwrap().id;
         let table = 1;
-        s.join_table(p(1), table, 0, 1_000, 0).unwrap();
+        s.join_table(p(1), table, 0, 1_000, None, 0).unwrap();
         assert!(s.throw_item(p(1), table, p(2), tomato, Currency::Chips, SEC).is_err()); // target not seated
-        s.join_table(p(2), table, 4, 1_000, 0).unwrap();
+        s.join_table(p(2), table, 4, 1_000, None, 0).unwrap();
         assert!(s.throw_item(p(3), table, p(2), tomato, Currency::Chips, SEC).is_err()); // thrower not seated
         assert!(s.throw_item(p(1), table, p(1), tomato, Currency::Chips, SEC).is_err());
         s.throw_item(p(1), table, p(2), tomato, Currency::Chips, 10 * SEC).unwrap();
@@ -1596,8 +1815,8 @@ mod tests {
     fn hand_history_is_private_and_respects_muck() {
         let mut s = setup();
         let table = 1;
-        s.join_table(p(1), table, 0, 1_000, 0).unwrap();
-        s.join_table(p(2), table, 1, 1_000, 0).unwrap();
+        s.join_table(p(1), table, 0, 1_000, None, 0).unwrap();
+        s.join_table(p(2), table, 1, 1_000, None, 0).unwrap();
         // p1 shows losing hands, p2 mucks them (the default).
         let open = Settings { auto_muck: false, ..Settings::default() };
         s.update_settings(p(1), open).unwrap();
@@ -1631,13 +1850,258 @@ mod tests {
         let table = 1; // max buy-in 1,000 chips
         let st = Settings { auto_top_up: true, ..Settings::default() };
         s.update_settings(p(1), st).unwrap();
-        s.join_table(p(1), table, 0, 200, 0).unwrap();
-        s.join_table(p(2), table, 1, 1_000, 0).unwrap();
+        s.join_table(p(1), table, 0, 200, None, 0).unwrap();
+        s.join_table(p(2), table, 1, 1_000, None, 0).unwrap();
         play_hands(&mut s, table, 1, SEC);
         let stack = s.tables[&table].seats[0].as_ref().unwrap().stack;
         assert_eq!(stack, 1_000);
         let total = s.users[&p(1)].chips + stack;
         assert_eq!(total as i64, SIGNUP_CHIPS as i64 + s.users[&p(1)].stats.chip_net);
+    }
+
+    /// Drives every table: deals ready tables and plays aggressively until `done`.
+    fn run_until(s: &mut State, mut now: u64, max_rounds: u32, done: impl Fn(&State) -> bool) -> u64 {
+        let mut k: u64 = 7;
+        for round in 0..max_rounds {
+            if done(s) {
+                return now;
+            }
+            for id in s.tick(now) {
+                s.start_hand(id, [(round % 251) as u8; 32], now);
+            }
+            let ids: Vec<u64> = s.tables.keys().copied().collect();
+            for id in ids {
+                while s.tables.get(&id).is_some_and(|t| t.phase.is_betting()) {
+                    let t = &s.tables[&id];
+                    let i = t.to_act.unwrap();
+                    let actor = t.seats[i].as_ref().unwrap().player;
+                    k = k.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    let action = match (k >> 33) % 4 {
+                        0 => Action::AllIn,
+                        1 => Action::Fold,
+                        _ => Action::Call,
+                    };
+                    if s.act(actor, id, action, now).is_err() {
+                        s.act(actor, id, Action::Call, now).unwrap();
+                    }
+                }
+            }
+            now += 6 * SEC;
+        }
+        panic!("did not finish in {max_rounds} rounds");
+    }
+
+    fn open_tournament(s: &mut State, name: &str) -> u64 {
+        s.ensure_tournaments(0);
+        s.tournaments
+            .values()
+            .find(|t| t.template.name == name && t.status == crate::tournament::TournamentStatus::Registering)
+            .unwrap()
+            .id
+    }
+
+    fn many_players(s: &mut State, n: u8) {
+        for k in 10..10 + n {
+            s.register(p(k), format!("bot{k}"), 0).unwrap();
+            s.credit(&p(k), 10 * E8S).unwrap();
+        }
+    }
+
+    #[test]
+    fn chip_sit_and_go_runs_to_completion() {
+        use crate::tournament::TournamentStatus::*;
+        let mut s = setup();
+        many_players(&mut s, 6);
+        let id = open_tournament(&mut s, "Chip Sit & Go · 6 max");
+        let chips_before: u64 = s.users.values().map(|u| u.chips).sum();
+        for k in 10..15 {
+            s.register_tournament(p(k), id, SEC).unwrap();
+        }
+        assert!(s.register_tournament(p(10), id, SEC).is_err(), "no double registration");
+        s.unregister_tournament(p(14), id).unwrap();
+        s.register_tournament(p(14), id, SEC).unwrap();
+        assert_eq!(s.tournaments[&id].status, Registering);
+        s.register_tournament(p(15), id, 2 * SEC).unwrap(); // sixth player starts it
+        assert_eq!(s.tournaments[&id].status, Running);
+        let table = s.tournaments[&id].tables[0];
+        assert!(s.leave_table(p(10), table, 2 * SEC).is_err(), "can't cash out tournament chips");
+        assert!(s.list_tables().iter().all(|t| t.id != table));
+        // A new instance opened for the next six players.
+        s.ensure_tournaments(3 * SEC);
+        assert_eq!(s.list_tournaments(None).iter().filter(|t| t.name == "Chip Sit & Go · 6 max").count(), 2);
+
+        let now = run_until(&mut s, 3 * SEC, 5_000, |s| s.tournaments[&id].status == Finished);
+        let t = &s.tournaments[&id];
+        let mut places: Vec<u32> = t.entrants.iter().map(|e| e.place.unwrap()).collect();
+        places.sort();
+        assert_eq!(places, (1..=6).collect::<Vec<_>>());
+        assert_eq!(t.paid, 6_000);
+        let winner = t.entrants.iter().find(|e| e.place == Some(1)).unwrap();
+        assert_eq!(winner.prize, 3_900);
+        assert!(s.users[&winner.player].medals.contains_key("sng_champ"));
+        let chips_after: u64 = s.users.values().map(|u| u.chips).sum();
+        assert_eq!(chips_after, chips_before, "buy-ins all paid back out as prizes");
+        // Tables close a minute after the finish.
+        s.tick(now + 61 * SEC);
+        assert!(!s.tables.contains_key(&table));
+    }
+
+    #[test]
+    fn icp_tournament_accounting() {
+        use crate::tournament::TournamentStatus::*;
+        let mut s = setup();
+        many_players(&mut s, 2);
+        let before = s.house_stats().liabilities_total;
+        let id = open_tournament(&mut s, "ICP Heads-Up Duel");
+        s.register_tournament(p(10), id, SEC).unwrap();
+        assert_eq!(s.house_stats().liabilities_total, before);
+        s.register_tournament(p(11), id, SEC).unwrap();
+        assert_eq!(s.tournaments[&id].status, Running);
+        assert_eq!(s.house_stats().liabilities_total, before);
+        run_until(&mut s, 2 * SEC, 5_000, |s| s.tournaments[&id].status == Finished);
+        assert_eq!(s.house_stats().liabilities_total, before);
+        let fee = E8S / 400;
+        assert_eq!(s.treasury, 2 * fee);
+        let balances = s.users[&p(10)].balance + s.users[&p(11)].balance;
+        assert_eq!(balances, 20 * E8S - 2 * fee);
+    }
+
+    #[test]
+    fn scheduled_multi_table_tournament_balances_tables() {
+        use crate::tournament::TournamentStatus::*;
+        let mut s = setup();
+        many_players(&mut s, 20);
+        let id = open_tournament(&mut s, "Hourly Freeroll");
+        let start_at = s.tournaments[&id].start_at;
+        for k in 10..30 {
+            s.register_tournament(p(k), id, SEC).unwrap();
+        }
+        s.tick(start_at - 1);
+        assert_eq!(s.tournaments[&id].status, Registering);
+        s.tick(start_at);
+        assert_eq!(s.tournaments[&id].status, Running);
+        assert_eq!(s.tournaments[&id].tables.len(), 3);
+        let pool = s.tournaments[&id].prize_pool;
+        assert_eq!(pool, 50_000, "freeroll guarantee");
+        // Blinds rise every level (5 minutes), on every table.
+        s.tick(start_at + 300 * SEC);
+        assert_eq!(s.tournaments[&id].level, 1);
+        for tid in &s.tournaments[&id].tables {
+            assert_eq!(s.tables[tid].config.big_blind, crate::tournament::blinds_at(1, 3_000).1);
+        }
+
+        let check = |s: &State| {
+            let t = &s.tournaments[&id];
+            for tid in &t.tables {
+                if let Some(tb) = s.tables.get(tid) {
+                    assert!(tb.seats.iter().flatten().count() <= 9);
+                }
+            }
+            // Every remaining player is seated exactly once.
+            for e in t.entrants.iter().filter(|e| e.place.is_none()) {
+                let seats = t.tables.iter().filter(|tid| s.tables.get(tid).is_some_and(|tb| tb.seat_of(&e.player).is_some())).count();
+                assert_eq!(seats, 1);
+            }
+            t.status == Finished
+        };
+        run_until(&mut s, start_at + 300 * SEC, 20_000, check);
+        let t = &s.tournaments[&id];
+        let mut places: Vec<u32> = t.entrants.iter().map(|e| e.place.unwrap()).collect();
+        places.sort();
+        assert_eq!(places, (1..=20).collect::<Vec<_>>());
+        assert_eq!(t.paid, pool);
+        assert_eq!(t.entrants.iter().filter(|e| e.prize > 0).count(), 5);
+    }
+
+    #[test]
+    fn scheduled_tournament_cancels_and_refunds() {
+        use crate::tournament::TournamentStatus::*;
+        let mut s = setup();
+        many_players(&mut s, 2);
+        let id = open_tournament(&mut s, "ICP Nightly");
+        s.register_tournament(p(10), id, SEC).unwrap();
+        s.register_tournament(p(11), id, SEC).unwrap(); // needs 3
+        assert!(s.users[&p(10)].balance < 10 * E8S);
+        s.tick(s.tournaments[&id].start_at);
+        assert_eq!(s.tournaments[&id].status, Cancelled);
+        assert_eq!(s.users[&p(10)].balance, 10 * E8S);
+        assert_eq!(s.treasury, 0);
+    }
+
+    #[test]
+    fn player_rooms() {
+        let mut s = setup();
+        let args = |pw: Option<&str>| RoomArgs {
+            name: "Mark's Game".into(),
+            currency: Currency::Icp,
+            big_blind: 200_000,
+            max_seats: 6,
+            password: pw.map(String::from),
+            action_timeout_secs: 30,
+        };
+        let id = s.create_room(p(1), args(Some("aces")), 0).unwrap();
+        assert!(s.users[&p(1)].medals.contains_key("host"));
+        let summary = s.list_tables().into_iter().find(|t| t.id == id).unwrap();
+        assert!(summary.locked);
+        assert_eq!(summary.room_owner.as_deref(), Some("player1"));
+        assert!(s.join_table(p(2), id, 1, 10_000_000, None, 0).is_err());
+        assert!(s.join_table(p(2), id, 1, 10_000_000, Some("kings".into()), 0).is_err());
+        s.join_table(p(2), id, 1, 10_000_000, Some("aces".into()), 0).unwrap();
+        s.join_table(p(1), id, 0, 10_000_000, None, 0).unwrap(); // host needs no password
+        let before = s.house_stats().liabilities_total;
+        let now = play_hands(&mut s, id, 10, SEC);
+        assert_eq!(s.house_stats().liabilities_total, before);
+        // Each hand's rake is split 80/20 between the house and the host.
+        let rakes: Vec<u64> = s.hands.values().filter(|h| h.table_id == id).map(|h| h.rake).collect();
+        assert!(rakes.iter().sum::<u64>() > 0);
+        let host_cut: u64 = rakes.iter().map(|r| r * HOST_RAKE_SHARE_BPS / 10_000).sum();
+        assert_eq!(s.treasury, rakes.iter().sum::<u64>() - host_cut);
+        let net_play: i64 = (1..=2).map(|k| s.users[&p(k)].stats.net_winnings).sum();
+        assert_eq!(net_play, -(rakes.iter().sum::<u64>() as i64));
+        assert!(s.close_room(p(1), id).is_err(), "players still seated");
+        assert!(s.close_room(p(2), id).is_err());
+        s.leave_table(p(1), id, now).unwrap();
+        s.leave_table(p(2), id, now).unwrap();
+        s.create_room(p(1), args(None), now).unwrap();
+        assert!(s.create_room(p(1), args(None), now).is_err(), "room limit");
+        s.close_room(p(1), id).unwrap();
+        assert!(!s.tables.contains_key(&id));
+    }
+
+    #[test]
+    fn medals_for_hands_and_social() {
+        let mut s = setup();
+        let table = 1;
+        s.join_table(p(1), table, 0, 1_000, None, 0).unwrap();
+        s.join_table(p(2), table, 1, 1_000, None, 0).unwrap();
+        play_hands(&mut s, table, 3, SEC);
+        assert!(s.users[&p(1)].medals.contains_key("first_hand"));
+        let winner = if s.users[&p(1)].stats.hands_won > 0 { p(1) } else { p(2) };
+        assert!(s.users[&winner].medals.contains_key("first_pot"));
+        let xp = s.users[&p(1)].xp;
+        s.award(&p(1), "first_hand", None, 0);
+        assert_eq!(s.users[&p(1)].xp, xp, "medals are awarded once");
+
+        // A royal flush at showdown.
+        let card = |r: u8, su: u8| r * 4 + su;
+        let result = HandResult {
+            hand_no: 99,
+            board: vec![card(12, 3), card(11, 3), card(10, 3), card(0, 0), card(1, 1)],
+            winners: vec![crate::table::Winner { seat: 0, player: p(3), amount: 100, hand: "Straight Flush".into() }],
+            shown: vec![
+                crate::table::ShownHand { seat: 0, player: p(3), cards: vec![card(9, 3), card(8, 3)], hand: String::new() },
+                crate::table::ShownHand { seat: 1, player: p(2), cards: vec![card(12, 0), card(12, 1)], hand: String::new() },
+            ],
+            players: vec![],
+            pot: 100,
+            rake: 0,
+        };
+        s.award_hand_medals(table, Some(Currency::Chips), &result, 0);
+        for m in ["royal_flush", "straight_flush", "quads", "full_house"] {
+            assert!(s.users[&p(3)].medals.contains_key(m), "{m}");
+        }
+        // p2 lost holding trip aces: not strong enough for a bad beat.
+        assert!(!s.users[&p(2)].medals.contains_key("bad_beat"));
     }
 
     #[test]

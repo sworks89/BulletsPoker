@@ -16,6 +16,18 @@ A social Texas Hold'em poker room that runs entirely on the [Internet Computer](
 - Separate rake-free chip tables; chips are never backed by or exchangeable for ICP
 - Cosmetics, gifts and throwables can be bought with chips as well as ICP (premium items stay ICP only)
 
+**Tournaments**
+- Sit-and-go's that start as soon as they fill (chips and ICP, heads-up to 9-max), re-opening automatically
+- Scheduled multi-table tournaments (an hourly play-chip freeroll with a guaranteed prize pool, plus a nightly ICP event) with rising blinds, table balancing and merging down to a final table, and payouts that scale with the field
+- Absent players keep getting dealt in and blind off, so every event finishes; tournament chips can't be cashed out, and prizes go straight to your wallet
+
+**Host your own table**
+- Any player can open a table (chips or ICP) with their choice of stakes, seats and clock, optionally password protected
+- Hosts of ICP tables earn 20% of the rake their table generates; empty tables close after 30 minutes
+
+**Medals**
+- 19 medals for milestones (first pot, 1,000 hands), big hands (quads, royal flush, bad beats), social play (gifts, throwables, friends) and tournament results, shown on profiles and in player cards
+
 **Hand history & settings**
 - Your last 50 hands with a step-by-step replay (board, pot and action log). Only your own cards and hands shown at showdown are revealed
 - Settings saved to your profile: four-color deck, auto-muck losing hands, auto top-up, sounds, show/hide throwables
@@ -42,7 +54,9 @@ src/
   poker_backend/            Rust canister (ic-cdk 0.20)
     src/cards.rs            deck, SHA-256 seeded Fisher–Yates shuffle, 7-card evaluator
     src/table.rs            Hold'em state machine (pure logic, heavily tested)
-    src/state.rs            users, wallet balances, store, gifts, chat, friends, tables
+    src/state.rs            users, wallet balances, store, gifts, chat, friends, tables, player rooms
+    src/tournament.rs       sit-and-go's and scheduled tournaments: blinds, payouts, balancing
+    src/medals.rs           medal definitions and awarding
     src/ledger.rs           ICP ledger calls (ICRC-1 transfer, ICRC-2 transfer_from), deposit accounts
     src/lib.rs              canister endpoints, timers, upgrade persistence
     poker_backend.did       Candid interface (generated from the Rust code)
@@ -85,7 +99,7 @@ dfx deploy --network ic poker_backend   # defaults to the real ICP ledger
 dfx deploy --network ic poker_frontend
 ```
 
-Only controllers can call the `admin_*` methods (create tables, add store items, view house stats, withdraw the treasury). Six tables, from micro to high stakes, and the default store catalogue are created at install time.
+Only controllers can call the `admin_*` methods (create tables, add recurring tournaments, add store items, view house stats, withdraw the treasury). Six tables, from micro to high stakes, and the default store catalogue are created at install time.
 
 ## Before taking real money: read this
 
@@ -97,4 +111,4 @@ Only controllers can call the `admin_*` methods (create tables, add store items,
 
 ## Roadmap ideas
 
-Sit-and-go and multi-table tournaments · vetKeys-encrypted hole cards · achievements · private/password tables · animated avatars as images/NFTs · moderators and mute/report · auto-stand for players sitting out too long.
+vetKeys-encrypted hole cards · Omaha and Crazy Pineapple · bad-beat jackpot · rebuys and late registration · animated avatars as images/NFTs · moderators and mute/report · auto-stand for players sitting out too long.

@@ -3,8 +3,10 @@
 
 pub mod cards;
 pub mod ledger;
+pub mod medals;
 pub mod state;
 pub mod table;
+pub mod tournament;
 
 use candid::{CandidType, Deserialize, Principal};
 use ic_cdk::{init, post_upgrade, pre_upgrade, query, update};
@@ -14,7 +16,9 @@ use state::*;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::time::Duration;
+use medals::MedalDef;
 use table::{Action, Currency, TableConfig};
+use tournament::{TournamentDetail, TournamentSummary, TournamentTemplate};
 
 /// Mainnet ICP ledger.
 const ICP_LEDGER: &str = "ryjl3-tyaaa-aaaaa-aaaba-cai";
@@ -346,10 +350,55 @@ fn get_table(id: u64) -> Option<TableView> {
     with(|s| s.table_view(id, Some(p), now()))
 }
 
+/// `password` is only needed for password-protected player rooms.
 #[update]
-fn join_table(id: u64, seat: u8, buy_in: u64) -> R<()> {
+fn join_table(id: u64, seat: u8, buy_in: u64, password: Option<String>) -> R<()> {
     let p = caller()?;
-    with_mut(|s| s.join_table(p, id, seat, buy_in, now()))
+    with_mut(|s| s.join_table(p, id, seat, buy_in, password, now()))
+}
+
+/// Creates your own table. Hosts of ICP tables earn 20% of the rake it generates.
+#[update]
+fn create_room(args: RoomArgs) -> R<u64> {
+    let p = caller()?;
+    with_mut(|s| s.create_room(p, args, now()))
+}
+
+#[update]
+fn close_room(id: u64) -> R<()> {
+    let p = caller()?;
+    with_mut(|s| s.close_room(p, id))
+}
+
+// ------------------------------------------------------------- tournaments
+
+#[query]
+fn list_tournaments() -> Vec<TournamentSummary> {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.list_tournaments(Some(p)))
+}
+
+#[query]
+fn get_tournament(id: u64) -> Option<TournamentDetail> {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.tournament_detail(id, Some(p)))
+}
+
+#[update]
+fn register_tournament(id: u64) -> R<()> {
+    let p = caller()?;
+    with_mut(|s| s.register_tournament(p, id, now()))
+}
+
+#[update]
+fn unregister_tournament(id: u64) -> R<()> {
+    let p = caller()?;
+    with_mut(|s| s.unregister_tournament(p, id))
+}
+
+#[query]
+fn list_medals() -> Vec<MedalDef> {
+    medals::medal_defs()
 }
 
 #[update]
@@ -436,6 +485,13 @@ fn get_leaderboard() -> Vec<LeaderboardEntry> {
 fn admin_create_table(cfg: TableConfig) -> R<u64> {
     admin()?;
     with_mut(|s| s.create_table(cfg))
+}
+
+/// Adds a recurring tournament (a sit-and-go or a scheduled event).
+#[update]
+fn admin_add_tournament(template: TournamentTemplate) -> R<u32> {
+    admin()?;
+    with_mut(|s| s.add_template(template))
 }
 
 #[update]

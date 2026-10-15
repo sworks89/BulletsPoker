@@ -1,0 +1,807 @@
+//! Sit-and-go and scheduled multi-table tournaments.
+//!
+//! A tournament runs on ordinary tables in `tournament_mode`. Stacks on those
+//! tables are tournament chips, not ICP or play chips: real value lives in the
+//! tournament's prize pool and is paid out to wallets as players finish.
+
+use crate::state::{Channel, MessageKind, State, E8S, R};
+use crate::table::{Currency, Table, TableConfig};
+use candid::{CandidType, Deserialize, Principal};
+use sha2::{Digest, Sha256};
+
+const NANOS: u64 = 1_000_000_000;
+/// Finished tournament tables stay viewable this long before being removed.
+const CLOSE_AFTER_NS: u64 = 60 * NANOS;
+
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub enum TournamentKind {
+    /// Starts as soon as it fills up.
+    SitAndGo,
+    /// Starts at a set time if enough players registered.
+    Scheduled,
+}
+
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub enum TournamentStatus {
+    Registering,
+    Running,
+    Finished,
+    Cancelled,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct TournamentTemplate {
+    pub name: String,
+    pub kind: TournamentKind,
+    pub currency: Currency,
+    /// Goes into the prize pool.
+    pub buy_in: u64,
+    /// Goes to the house (ICP) or leaves circulation (chips).
+    pub fee: u64,
+    /// Minimum prize pool, only for play-chip events (the house mints chips).
+    pub guarantee: u64,
+    pub starting_stack: u64,
+    pub min_players: u32,
+    pub max_players: u32,
+    pub table_size: u8,
+    pub level_secs: u64,
+    /// Scheduled events: time between runs.
+    pub interval_secs: u64,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct Entrant {
+    pub player: Principal,
+    pub place: Option<u32>,
+    pub prize: u64,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct Tournament {
+    pub id: u64,
+    pub template_index: u32,
+    pub template: TournamentTemplate,
+    pub status: TournamentStatus,
+    /// Scheduled start time (ns); zero for sit-and-go's.
+    pub start_at: u64,
+    pub started_at: u64,
+    pub finished_at: u64,
+    pub level: u32,
+    pub level_started_at: u64,
+    pub entrants: Vec<Entrant>,
+    pub tables: Vec<u64>,
+    pub prize_pool: u64,
+    /// Prize for each finishing place, 1st first.
+    pub payouts: Vec<u64>,
+    pub paid: u64,
+}
+
+// ------------------------------------------------------------------- views
+
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct TournamentSummary {
+    pub id: u64,
+    pub name: String,
+    pub kind: TournamentKind,
+    pub currency: Currency,
+    pub status: TournamentStatus,
+    pub buy_in: u64,
+    pub fee: u64,
+    pub starting_stack: u64,
+    pub start_at: u64,
+    pub registered: u32,
+    pub min_players: u32,
+    pub max_players: u32,
+    pub players_left: u32,
+    pub prize_pool: u64,
+    pub level_secs: u64,
+    pub registered_me: bool,
+    /// The table the viewer is playing at, if any.
+    pub my_table: Option<u64>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct Standing {
+    pub player: Principal,
+    pub username: String,
+    pub avatar: String,
+    pub chips: u64,
+    pub place: Option<u32>,
+    pub prize: u64,
+    pub table: Option<u64>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct TournamentDetail {
+    pub summary: TournamentSummary,
+    pub level: u32,
+    pub small_blind: u64,
+    pub big_blind: u64,
+    pub next_level_at: u64,
+    pub payouts: Vec<u64>,
+    pub standings: Vec<Standing>,
+    pub tables: Vec<u64>,
+}
+
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct TournamentBadge {
+    pub id: u64,
+    pub name: String,
+    pub level: u32,
+    pub small_blind: u64,
+    pub big_blind: u64,
+    pub next_level_at: u64,
+    pub players_left: u32,
+    pub entrants: u32,
+    pub my_place: Option<u32>,
+    pub my_prize: u64,
+    pub finished: bool,
+}
+
+// ----------------------------------------------------------------- structure
+
+/// Big blind multipliers (x2) of the level-1 big blind.
+const LEVELS_X2: &[u64] = &[2, 3, 4, 6, 8, 10, 15, 20, 30, 40, 60, 80, 100, 150, 200, 300, 400, 600, 800, 1000];
+
+/// Blinds at a level (0-based). Level 1 big blind is 1/75 of the starting stack.
+pub fn blinds_at(level: u32, starting_stack: u64) -> (u64, u64) {
+    let base = (starting_stack / 75).max(2);
+    let l = level as usize;
+    let mut bb = if l < LEVELS_X2.len() {
+        base * LEVELS_X2[l] / 2
+    } else {
+        let mut bb = base * LEVELS_X2[LEVELS_X2.len() - 1] / 2;
+        for _ in LEVELS_X2.len()..=l {
+            bb = bb * 3 / 2;
+        }
+        bb
+    };
+    bb = bb.max(2) & !1; // even, so the small blind is exactly half
+    (bb / 2, bb)
+}
+
+/// Share of the prize pool (basis points) for each paid place.
+pub fn payout_bps(entrants: usize) -> &'static [u64] {
+    match entrants {
+        0..=2 => &[10_000],
+        3..=6 => &[6_500, 3_500],
+        7..=10 => &[5_000, 3_000, 2_000],
+        11..=20 => &[4_000, 2_500, 1_600, 1_100, 800],
+        21..=50 => &[3_000, 2_000, 1_400, 1_000, 800, 650, 500, 350, 300],
+        _ => &[2_500, 1_600, 1_150, 850, 700, 600, 500, 400, 350, 300, 250, 200, 200, 200, 200],
+    }
+}
+
+pub fn payouts_for(pool: u64, entrants: usize) -> Vec<u64> {
+    let bps = payout_bps(entrants);
+    let mut v: Vec<u64> = bps.iter().map(|b| (pool as u128 * *b as u128 / 10_000) as u64).collect();
+    let rest = pool - v.iter().sum::<u64>();
+    v[0] += rest;
+    v
+}
+
+pub fn default_templates() -> Vec<TournamentTemplate> {
+    use Currency::*;
+    use TournamentKind::*;
+    let sng = |name: &str, currency, buy_in, fee, players, table_size| TournamentTemplate {
+        name: name.into(),
+        kind: SitAndGo,
+        currency,
+        buy_in,
+        fee,
+        guarantee: 0,
+        starting_stack: 1_500,
+        min_players: players,
+        max_players: players,
+        table_size,
+        level_secs: 180,
+        interval_secs: 0,
+    };
+    vec![
+        sng("Chip Sit & Go · 6 max", Chips, 1_000, 0, 6, 6),
+        sng("Chip Heads-Up Duel", Chips, 500, 0, 2, 2),
+        sng("Chip Sit & Go · 9 max", Chips, 2_500, 0, 9, 9),
+        sng("ICP Sit & Go · 6 max", Icp, E8S / 10, E8S / 200, 6, 6),
+        sng("ICP Heads-Up Duel", Icp, E8S / 20, E8S / 400, 2, 2),
+        TournamentTemplate {
+            name: "Hourly Freeroll".into(),
+            kind: Scheduled,
+            currency: Chips,
+            buy_in: 0,
+            fee: 0,
+            guarantee: 50_000,
+            starting_stack: 3_000,
+            min_players: 2,
+            max_players: 180,
+            table_size: 9,
+            level_secs: 300,
+            interval_secs: 3_600,
+        },
+        TournamentTemplate {
+            name: "ICP Nightly".into(),
+            kind: Scheduled,
+            currency: Icp,
+            buy_in: E8S / 2,
+            fee: E8S / 40,
+            guarantee: 0,
+            starting_stack: 5_000,
+            min_players: 3,
+            max_players: 360,
+            table_size: 9,
+            level_secs: 480,
+            interval_secs: 86_400,
+        },
+    ]
+}
+
+pub fn validate_template(t: &TournamentTemplate) -> R<()> {
+    if t.name.trim().is_empty() || t.name.len() > 40 {
+        return Err("Name must be 1-40 characters".into());
+    }
+    if !(2..=10).contains(&t.table_size) || t.min_players < 2 || t.max_players < t.min_players || t.max_players > 1_000 {
+        return Err("Invalid player limits".into());
+    }
+    if t.kind == TournamentKind::SitAndGo && t.max_players > t.table_size as u32 {
+        return Err("Sit-and-go's are single table".into());
+    }
+    if t.kind == TournamentKind::Scheduled && t.interval_secs < 600 {
+        return Err("Scheduled events need an interval of at least 10 minutes".into());
+    }
+    if t.currency == Currency::Icp && t.guarantee > 0 {
+        return Err("Guarantees are only available for play-chip events".into());
+    }
+    if t.starting_stack < 150 || !(30..=3_600).contains(&t.level_secs) {
+        return Err("Invalid structure".into());
+    }
+    Ok(())
+}
+
+impl Tournament {
+    fn players_left(&self) -> u32 {
+        self.entrants.iter().filter(|e| e.place.is_none()).count() as u32
+    }
+
+    fn blinds(&self) -> (u64, u64) {
+        blinds_at(self.level, self.template.starting_stack)
+    }
+
+    fn next_level_at(&self) -> u64 {
+        self.level_started_at + self.template.level_secs * NANOS
+    }
+}
+
+impl State {
+    fn tournament_mut(&mut self, id: u64) -> R<&mut Tournament> {
+        self.tournaments.get_mut(&id).ok_or_else(|| "No such tournament".to_string())
+    }
+
+    fn seat_table_of(&self, t: &Tournament, p: &Principal) -> Option<u64> {
+        t.tables.iter().copied().find(|tid| self.tables.get(tid).is_some_and(|tb| tb.seat_of(p).is_some()))
+    }
+
+    /// Opens a registering instance for every template that doesn't have one.
+    pub fn ensure_tournaments(&mut self, now: u64) {
+        for (idx, tpl) in self.templates.clone().into_iter().enumerate() {
+            let open = self
+                .tournaments
+                .values()
+                .any(|t| t.template_index == idx as u32 && t.status == TournamentStatus::Registering);
+            if open {
+                continue;
+            }
+            let start_at = match tpl.kind {
+                TournamentKind::SitAndGo => 0,
+                TournamentKind::Scheduled => {
+                    let interval = tpl.interval_secs * NANOS;
+                    (now / interval + 1) * interval
+                }
+            };
+            let id = self.next_tournament_id;
+            self.next_tournament_id += 1;
+            self.tournaments.insert(
+                id,
+                Tournament {
+                    id,
+                    template_index: idx as u32,
+                    prize_pool: 0,
+                    template: tpl,
+                    status: TournamentStatus::Registering,
+                    start_at,
+                    started_at: 0,
+                    finished_at: 0,
+                    level: 0,
+                    level_started_at: 0,
+                    entrants: vec![],
+                    tables: vec![],
+                    payouts: vec![],
+                    paid: 0,
+                },
+            );
+        }
+        // Forget old finished events (keep the most recent 200).
+        let done: Vec<u64> = self
+            .tournaments
+            .values()
+            .filter(|t| matches!(t.status, TournamentStatus::Finished | TournamentStatus::Cancelled))
+            .map(|t| t.id)
+            .collect();
+        if done.len() > 200 {
+            for id in &done[..done.len() - 200] {
+                self.tournaments.remove(id);
+            }
+        }
+    }
+
+    pub fn register_tournament(&mut self, caller: Principal, id: u64, now: u64) -> R<()> {
+        self.user(&caller)?;
+        let t = self.tournaments.get(&id).ok_or("No such tournament")?;
+        if t.status != TournamentStatus::Registering {
+            return Err("Registration is closed".into());
+        }
+        if t.entrants.iter().any(|e| e.player == caller) {
+            return Err("You are already registered".into());
+        }
+        if t.entrants.len() as u32 >= t.template.max_players {
+            return Err("Tournament is full".into());
+        }
+        let (currency, buy_in, fee) = (t.template.currency, t.template.buy_in, t.template.fee);
+        self.debit_in(&caller, currency, buy_in + fee)?;
+        if currency == Currency::Icp {
+            self.treasury += fee;
+        }
+        let t = self.tournament_mut(id)?;
+        t.prize_pool += buy_in;
+        t.entrants.push(Entrant {
+            player: caller,
+            place: None,
+            prize: 0,
+        });
+        if t.template.kind == TournamentKind::SitAndGo && t.entrants.len() as u32 == t.template.max_players {
+            self.start_tournament(id, now);
+        }
+        Ok(())
+    }
+
+    pub fn unregister_tournament(&mut self, caller: Principal, id: u64) -> R<()> {
+        let t = self.tournament_mut(id)?;
+        if t.status != TournamentStatus::Registering {
+            return Err("The tournament has already started".into());
+        }
+        let pos = t.entrants.iter().position(|e| e.player == caller).ok_or("You are not registered")?;
+        t.entrants.remove(pos);
+        t.prize_pool -= t.template.buy_in;
+        let (currency, buy_in, fee) = (t.template.currency, t.template.buy_in, t.template.fee);
+        self.refund_entry(&caller, currency, buy_in, fee);
+        Ok(())
+    }
+
+    fn refund_entry(&mut self, p: &Principal, currency: Currency, buy_in: u64, fee: u64) {
+        if currency == Currency::Icp {
+            self.treasury -= fee;
+        }
+        let _ = self.credit_in(p, currency, buy_in + fee);
+    }
+
+    fn start_tournament(&mut self, id: u64, now: u64) {
+        let t = self.tournaments.get(&id).unwrap().clone();
+        if (t.entrants.len() as u32) < t.template.min_players {
+            for e in &t.entrants {
+                self.refund_entry(&e.player, t.template.currency, t.template.buy_in, t.template.fee);
+            }
+            let t = self.tournaments.get_mut(&id).unwrap();
+            t.status = TournamentStatus::Cancelled;
+            t.prize_pool = 0;
+            t.finished_at = now;
+            return;
+        }
+        let tpl = &t.template;
+        let pool = if tpl.currency == Currency::Chips {
+            t.prize_pool.max(tpl.guarantee)
+        } else {
+            t.prize_pool
+        };
+        let n = t.entrants.len();
+
+        // Random-looking but reproducible seating order.
+        let mut order: Vec<Principal> = t.entrants.iter().map(|e| e.player).collect();
+        order.sort_by_key(|p| {
+            let mut h = Sha256::new();
+            h.update(now.to_le_bytes());
+            h.update(id.to_le_bytes());
+            h.update(p.as_slice());
+            h.finalize().to_vec()
+        });
+
+        let size = tpl.table_size as usize;
+        let n_tables = n.div_ceil(size);
+        let (sb, bb) = blinds_at(0, tpl.starting_stack);
+        let mut table_ids = vec![];
+        for k in 0..n_tables {
+            let tid = self.next_table_id;
+            self.next_table_id += 1;
+            let cfg = TableConfig {
+                name: if n_tables == 1 { tpl.name.clone() } else { format!("{} · Table {}", tpl.name, k + 1) },
+                currency: Currency::Chips,
+                small_blind: sb,
+                big_blind: bb,
+                min_buy_in: tpl.starting_stack,
+                max_buy_in: tpl.starting_stack,
+                max_seats: tpl.table_size,
+                rake_bps: 0,
+                rake_cap: 0,
+                action_timeout_secs: 20,
+            };
+            let mut table = Table::new(tid, cfg);
+            table.tournament_mode = true;
+            self.tables.insert(tid, table);
+            self.table_tournament.insert(tid, id);
+            table_ids.push(tid);
+        }
+        // Deal players round-robin so tables are balanced, spread around each table.
+        for (k, tid) in table_ids.iter().enumerate() {
+            let group: Vec<&Principal> = order.iter().skip(k).step_by(n_tables).collect();
+            let table = self.tables.get_mut(tid).unwrap();
+            for (j, p) in group.iter().enumerate() {
+                table.seat_player(**p, j * size / group.len(), tpl.starting_stack).unwrap();
+            }
+        }
+        for tid in &table_ids {
+            self.post(Channel::Table(*tid), None, String::new(), format!("{} has started. Good luck!", tpl.name), MessageKind::System, now);
+        }
+        let t = self.tournaments.get_mut(&id).unwrap();
+        t.status = TournamentStatus::Running;
+        t.started_at = now;
+        t.level = 0;
+        t.level_started_at = now;
+        t.tables = table_ids;
+        t.prize_pool = pool;
+        t.payouts = payouts_for(pool, n);
+        let name = t.template.name.clone();
+        self.post(Channel::Lobby, None, String::new(), format!("🏁 {name} is under way with {n} players"), MessageKind::System, now);
+    }
+
+    /// Runs every tick: opens new events, starts scheduled ones, raises blinds,
+    /// keeps tables balanced and removes finished tables.
+    pub fn tournament_tick(&mut self, now: u64) {
+        self.ensure_tournaments(now);
+        let ids: Vec<u64> = self.tournaments.keys().copied().collect();
+        for id in ids {
+            let t = &self.tournaments[&id];
+            match t.status {
+                TournamentStatus::Registering if t.template.kind == TournamentKind::Scheduled && now >= t.start_at => {
+                    self.start_tournament(id, now);
+                }
+                TournamentStatus::Running => {
+                    if now >= t.next_level_at() {
+                        let t = self.tournaments.get_mut(&id).unwrap();
+                        t.level += 1;
+                        t.level_started_at = now;
+                        let (sb, bb) = t.blinds();
+                        let tables = t.tables.clone();
+                        for tid in tables {
+                            if let Some(tb) = self.tables.get_mut(&tid) {
+                                tb.config.small_blind = sb;
+                                tb.config.big_blind = bb;
+                                self.post(Channel::Table(tid), None, String::new(), format!("Blinds are now {sb}/{bb}"), MessageKind::System, now);
+                            }
+                        }
+                    }
+                    self.balance_tables(id);
+                }
+                TournamentStatus::Finished if t.finished_at + CLOSE_AFTER_NS <= now && !t.tables.is_empty() => {
+                    let tables = std::mem::take(&mut self.tournaments.get_mut(&id).unwrap().tables);
+                    for tid in tables {
+                        self.tables.remove(&tid);
+                        self.table_tournament.remove(&tid);
+                        self.applied_hand.remove(&tid);
+                        self.throws.remove(&tid);
+                        self.chats.remove(&Channel::Table(tid));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// After a hand at a tournament table: knocks out busted players, pays
+    /// prizes, ends the event or rebalances tables.
+    pub fn after_tournament_hand(&mut self, table_id: u64, now: u64) {
+        let Some(&id) = self.table_tournament.get(&table_id) else { return };
+        let Some(result) = self.tables.get(&table_id).and_then(|t| t.last_result.clone()) else { return };
+        let t = &self.tournaments[&id];
+        if t.status != TournamentStatus::Running {
+            return;
+        }
+        let tb = &self.tables[&table_id];
+        // Busted this hand: larger starting stack finishes higher.
+        let mut busted: Vec<(u64, Principal)> = tb
+            .seats
+            .iter()
+            .flatten()
+            .filter(|s| s.stack == 0 && s.in_hand)
+            .filter(|s| t.entrants.iter().any(|e| e.player == s.player && e.place.is_none()))
+            .map(|s| (result.players.iter().find(|r| r.player == s.player).map_or(0, |r| r.committed), s.player))
+            .collect();
+        busted.sort();
+        let mut left = t.players_left();
+        for (_, p) in busted {
+            self.finish_player(id, &p, left, Some(table_id), now);
+            left -= 1;
+        }
+        if left == 1 {
+            let winner = self.tournaments[&id].entrants.iter().find(|e| e.place.is_none()).unwrap().player;
+            self.finish_player(id, &winner, 1, Some(table_id), now);
+            let t = self.tournaments.get_mut(&id).unwrap();
+            t.status = TournamentStatus::Finished;
+            t.finished_at = now;
+            let kind = t.template.kind;
+            let name = t.template.name.clone();
+            let winner_name = self.users.get(&winner).map(|u| u.username.clone()).unwrap_or_default();
+            self.post(Channel::Lobby, None, String::new(), format!("🏆 {winner_name} won the {name}!"), MessageKind::System, now);
+            let medal = if kind == TournamentKind::SitAndGo { "sng_champ" } else { "champion" };
+            self.award(&winner, medal, Some(Channel::Table(table_id)), now);
+            // Leave the final table seated so everyone sees the result; it closes shortly.
+            return;
+        }
+        self.balance_tables(id);
+    }
+
+    fn finish_player(&mut self, id: u64, p: &Principal, place: u32, table: Option<u64>, now: u64) {
+        let t = self.tournaments.get_mut(&id).unwrap();
+        let prize = t.payouts.get(place as usize - 1).copied().unwrap_or(0);
+        let currency = t.template.currency;
+        if let Some(e) = t.entrants.iter_mut().find(|e| e.player == *p) {
+            e.place = Some(place);
+            e.prize = prize;
+        }
+        t.paid += prize;
+        let name = t.template.name.clone();
+        let username = self.users.get(p).map(|u| u.username.clone()).unwrap_or_default();
+        if prize > 0 {
+            let _ = self.credit_in(p, currency, prize);
+            self.award(p, "in_the_money", table.map(Channel::Table), now);
+        }
+        if let Some(tid) = table {
+            let text = if prize > 0 {
+                format!("{username} finishes #{place} in {name} and wins {}", crate::state::fmt_amount(currency, prize))
+            } else {
+                format!("{username} finishes #{place}")
+            };
+            self.post(Channel::Table(tid), None, String::new(), text, MessageKind::System, now);
+        }
+    }
+
+    /// Breaks a table when the others have room for its players, otherwise
+    /// moves players from the fullest table to the emptiest. Only moves players
+    /// from tables that are between hands.
+    fn balance_tables(&mut self, id: u64) {
+        let size = self.tournaments[&id].template.table_size as usize;
+        for _ in 0..size * 2 {
+            let tables = self.tournaments[&id].tables.clone();
+            let counts: Vec<(u64, usize)> = tables
+                .iter()
+                .filter_map(|tid| {
+                    let tb = self.tables.get(tid)?;
+                    Some((*tid, tb.seats.iter().flatten().filter(|s| s.stack > 0 && !s.left).count()))
+                })
+                .collect();
+            if counts.len() < 2 {
+                return;
+            }
+            let total: usize = counts.iter().map(|c| c.1).sum();
+            let (min_t, min_c) = *counts.iter().min_by_key(|c| c.1).unwrap();
+            let (max_t, max_c) = *counts.iter().max_by_key(|c| c.1).unwrap();
+
+            if total <= (counts.len() - 1) * size {
+                // Break the smallest table once it is between hands.
+                if !self.tables[&min_t].between_hands() {
+                    return;
+                }
+                let movers: Vec<Principal> = self.tables[&min_t]
+                    .seats
+                    .iter()
+                    .flatten()
+                    .filter(|s| s.stack > 0 && !s.left)
+                    .map(|s| s.player)
+                    .collect();
+                for p in movers {
+                    let dest = counts
+                        .iter()
+                        .filter(|c| c.0 != min_t)
+                        .filter(|c| !self.tables[&c.0].free_seats().is_empty())
+                        .min_by_key(|c| self.tables[&c.0].seats.iter().flatten().count())
+                        .map(|c| c.0);
+                    let Some(dest) = dest else { return };
+                    self.move_player(&p, min_t, dest);
+                }
+                self.tables.remove(&min_t);
+                self.table_tournament.remove(&min_t);
+                self.tournaments.get_mut(&id).unwrap().tables.retain(|t| *t != min_t);
+                continue;
+            }
+            if max_c >= min_c + 2 && self.tables[&max_t].between_hands() {
+                let mover = self.tables[&max_t]
+                    .seats
+                    .iter()
+                    .flatten()
+                    .find(|s| s.stack > 0 && !s.left)
+                    .map(|s| s.player);
+                if let Some(p) = mover {
+                    self.move_player(&p, max_t, min_t);
+                    continue;
+                }
+            }
+            return;
+        }
+    }
+
+    fn move_player(&mut self, p: &Principal, from: u64, to: u64) {
+        let away = self.tables[&from].seat_of(p).and_then(|i| self.tables[&from].seats[i].as_ref()).is_some_and(|s| s.sitting_out);
+        let Ok(stack) = self.tables.get_mut(&from).unwrap().stand(p, 0) else { return };
+        let dest = self.tables.get_mut(&to).unwrap();
+        let seat = dest.free_seats()[0];
+        dest.seat_player(*p, seat, stack).unwrap();
+        if away {
+            let _ = dest.set_sitting_out(p, true);
+        }
+    }
+
+    // ----------------------------------------------------------------- views
+
+    fn summary(&self, t: &Tournament, viewer: Option<Principal>) -> TournamentSummary {
+        TournamentSummary {
+            id: t.id,
+            name: t.template.name.clone(),
+            kind: t.template.kind,
+            currency: t.template.currency,
+            status: t.status,
+            buy_in: t.template.buy_in,
+            fee: t.template.fee,
+            starting_stack: t.template.starting_stack,
+            start_at: t.start_at,
+            registered: t.entrants.len() as u32,
+            min_players: t.template.min_players,
+            max_players: t.template.max_players,
+            players_left: t.players_left(),
+            prize_pool: if t.status == TournamentStatus::Registering && t.template.currency == Currency::Chips {
+                t.prize_pool.max(t.template.guarantee)
+            } else {
+                t.prize_pool
+            },
+            level_secs: t.template.level_secs,
+            registered_me: viewer.is_some_and(|v| t.entrants.iter().any(|e| e.player == v)),
+            my_table: viewer.and_then(|v| self.seat_table_of(t, &v)),
+        }
+    }
+
+    pub fn list_tournaments(&self, viewer: Option<Principal>) -> Vec<TournamentSummary> {
+        let mut v: Vec<TournamentSummary> = self
+            .tournaments
+            .values()
+            .filter(|t| {
+                matches!(t.status, TournamentStatus::Registering | TournamentStatus::Running)
+                    || viewer.is_some_and(|v| t.entrants.iter().any(|e| e.player == v)) && t.status == TournamentStatus::Finished
+            })
+            .map(|t| self.summary(t, viewer))
+            .collect();
+        v.sort_by_key(|s| (s.status != TournamentStatus::Running, s.start_at, s.id));
+        v
+    }
+
+    pub fn tournament_detail(&self, id: u64, viewer: Option<Principal>) -> Option<TournamentDetail> {
+        let t = self.tournaments.get(&id)?;
+        let mut standings: Vec<Standing> = t
+            .entrants
+            .iter()
+            .map(|e| {
+                let table = self.seat_table_of(t, &e.player);
+                let chips = table
+                    .and_then(|tid| {
+                        let tb = &self.tables[&tid];
+                        tb.seat_of(&e.player).and_then(|i| tb.seats[i].as_ref()).map(|s| s.stack + s.committed * tb.phase.is_betting() as u64)
+                    })
+                    .unwrap_or(0);
+                let u = self.users.get(&e.player);
+                Standing {
+                    player: e.player,
+                    username: u.map(|u| u.username.clone()).unwrap_or_default(),
+                    avatar: u.map(|u| self.icon(u.avatar)).unwrap_or_default(),
+                    chips: if e.place.is_some() { 0 } else { chips },
+                    place: e.place,
+                    prize: e.prize,
+                    table: if e.place.is_some() { None } else { table },
+                }
+            })
+            .collect();
+        standings.sort_by_key(|s| (s.place.unwrap_or(0), std::cmp::Reverse(s.chips)));
+        let (small_blind, big_blind) = t.blinds();
+        Some(TournamentDetail {
+            summary: self.summary(t, viewer),
+            level: t.level + 1,
+            small_blind,
+            big_blind,
+            next_level_at: if t.status == TournamentStatus::Running { t.next_level_at() } else { 0 },
+            payouts: if t.payouts.is_empty() {
+                payouts_for(self.summary(t, None).prize_pool, (t.entrants.len()).max(t.template.min_players as usize))
+            } else {
+                t.payouts.clone()
+            },
+            standings,
+            tables: t.tables.clone(),
+        })
+    }
+
+    pub fn tournament_badge(&self, id: u64, viewer: Option<Principal>) -> Option<TournamentBadge> {
+        let t = self.tournaments.get(&id)?;
+        let me = viewer.and_then(|v| t.entrants.iter().find(|e| e.player == v));
+        let (small_blind, big_blind) = t.blinds();
+        Some(TournamentBadge {
+            id,
+            name: t.template.name.clone(),
+            level: t.level + 1,
+            small_blind,
+            big_blind,
+            next_level_at: t.next_level_at(),
+            players_left: t.players_left(),
+            entrants: t.entrants.len() as u32,
+            my_place: me.and_then(|e| e.place),
+            my_prize: me.map_or(0, |e| e.prize),
+            finished: t.status == TournamentStatus::Finished,
+        })
+    }
+
+    /// ICP held for tournaments: entries not yet paid out as prizes.
+    pub fn icp_in_tournaments(&self) -> u64 {
+        self.tournaments
+            .values()
+            .filter(|t| t.template.currency == Currency::Icp)
+            .filter(|t| matches!(t.status, TournamentStatus::Registering | TournamentStatus::Running))
+            .map(|t| t.prize_pool - t.paid)
+            .sum()
+    }
+
+    pub fn add_template(&mut self, tpl: TournamentTemplate) -> R<u32> {
+        validate_template(&tpl)?;
+        self.templates.push(tpl);
+        Ok(self.templates.len() as u32 - 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blind_schedule_rises() {
+        assert_eq!(blinds_at(0, 1_500), (10, 20));
+        assert_eq!(blinds_at(1, 1_500), (15, 30));
+        let mut last = 0;
+        for l in 0..30 {
+            let (sb, bb) = blinds_at(l, 1_500);
+            assert_eq!(sb * 2, bb);
+            assert!(bb > last, "level {l}");
+            last = bb;
+        }
+    }
+
+    #[test]
+    fn payouts_sum_to_pool() {
+        for n in [2usize, 3, 6, 9, 15, 40, 120, 500] {
+            for pool in [0u64, 1, 999, 6_000, 123_456_789] {
+                let p = payouts_for(pool, n);
+                assert_eq!(p.iter().sum::<u64>(), pool);
+                assert!(p.windows(2).all(|w| w[0] >= w[1]));
+            }
+        }
+        for n in 2..600 {
+            assert_eq!(payout_bps(n).iter().sum::<u64>(), 10_000);
+        }
+    }
+
+    #[test]
+    fn default_templates_are_valid() {
+        for t in default_templates() {
+            validate_template(&t).unwrap();
+        }
+    }
+}

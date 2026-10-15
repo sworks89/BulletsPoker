@@ -47,6 +47,7 @@ export interface DepositInfo {
    */
   'account' : Account,
 }
+export interface EarnedMedal { 'id' : string, 'earned_at' : bigint }
 export interface FriendInfo {
   'id' : Principal,
   'username' : string,
@@ -141,6 +142,12 @@ export interface LogEntry {
    */
   'amount' : bigint,
 }
+export interface MedalDef {
+  'id' : string,
+  'icon' : string,
+  'name' : string,
+  'description' : string,
+}
 export type MessageKind = { 'System' : null } |
   { 'Gift' : null } |
   { 'Text' : null } |
@@ -181,6 +188,7 @@ export interface Profile {
   'friends' : Array<Principal>,
   'daily_streak' : number,
   'avatar' : number,
+  'medals' : Array<EarnedMedal>,
 }
 export interface PublicProfile {
   'id' : Principal,
@@ -190,6 +198,7 @@ export interface PublicProfile {
   'tables' : BigUint64Array | bigint[],
   'stats' : Stats,
   'avatar' : string,
+  'medals' : Array<string>,
   'online' : boolean,
 }
 export type Result = { 'Ok' : null } |
@@ -202,6 +211,14 @@ export type Result_3 = { 'Ok' : HouseStats } |
   { 'Err' : string };
 export type Result_4 = { 'Ok' : Profile } |
   { 'Err' : string };
+export interface RoomArgs {
+  'action_timeout_secs' : bigint,
+  'password' : [] | [string],
+  'name' : string,
+  'max_seats' : number,
+  'currency' : Currency,
+  'big_blind' : bigint,
+}
 export interface SeatView {
   'bet' : bigint,
   'in_hand' : boolean,
@@ -238,6 +255,15 @@ export interface ShownHand {
   'cards' : Uint8Array | number[],
   'hand' : string,
   'seat' : number,
+}
+export interface Standing {
+  'table' : [] | [bigint],
+  'username' : string,
+  'player' : Principal,
+  'chips' : bigint,
+  'place' : [] | [number],
+  'prize' : bigint,
+  'avatar' : string,
 }
 export interface Stats {
   /**
@@ -294,12 +320,17 @@ export interface TableSummary {
   'small_blind' : bigint,
   'min_buy_in' : bigint,
   'name' : string,
+  'locked' : boolean,
   'max_seats' : number,
   'avg_pot' : bigint,
   'players' : number,
   'currency' : Currency,
   'big_blind' : bigint,
   'phase' : Phase,
+  /**
+   * Username of the player who created this room, for player-created tables.
+   */
+  'room_owner' : [] | [string],
   'max_buy_in' : bigint,
 }
 export interface TableView {
@@ -309,7 +340,12 @@ export interface TableView {
   'my_seat' : [] | [number],
   'to_call' : bigint,
   'hand_no' : bigint,
+  /**
+   * Joining needs a password.
+   */
+  'locked' : boolean,
   'last_result' : [] | [HandResult],
+  'tournament' : [] | [TournamentBadge],
   'min_raise_to' : bigint,
   'seats' : Array<[] | [SeatView]>,
   'action_deadline' : bigint,
@@ -322,6 +358,10 @@ export interface TableView {
   'board' : Uint8Array | number[],
   'phase' : Phase,
   'config' : TableConfig,
+  /**
+   * The player who created this room, if it is a player-created table.
+   */
+  'room_owner' : [] | [Principal],
   'button' : number,
   'max_raise_to' : bigint,
 }
@@ -332,6 +372,93 @@ export interface ThrowEvent {
   'icon' : string,
   'time' : bigint,
 }
+export interface TournamentBadge {
+  'id' : bigint,
+  'small_blind' : bigint,
+  'name' : string,
+  'level' : number,
+  'finished' : boolean,
+  'big_blind' : bigint,
+  'entrants' : number,
+  'players_left' : number,
+  'my_place' : [] | [number],
+  'my_prize' : bigint,
+  'next_level_at' : bigint,
+}
+export interface TournamentDetail {
+  'small_blind' : bigint,
+  'standings' : Array<Standing>,
+  'level' : number,
+  'tables' : BigUint64Array | bigint[],
+  'summary' : TournamentSummary,
+  'big_blind' : bigint,
+  'next_level_at' : bigint,
+  'payouts' : BigUint64Array | bigint[],
+}
+export type TournamentKind = {
+    /**
+     * Starts at a set time if enough players registered.
+     */
+    'Scheduled' : null
+  } |
+  {
+    /**
+     * Starts as soon as it fills up.
+     */
+    'SitAndGo' : null
+  };
+export type TournamentStatus = { 'Finished' : null } |
+  { 'Running' : null } |
+  { 'Cancelled' : null } |
+  { 'Registering' : null };
+export interface TournamentSummary {
+  'id' : bigint,
+  'fee' : bigint,
+  'status' : TournamentStatus,
+  /**
+   * The table the viewer is playing at, if any.
+   */
+  'my_table' : [] | [bigint],
+  'min_players' : number,
+  'start_at' : bigint,
+  'kind' : TournamentKind,
+  'name' : string,
+  'level_secs' : bigint,
+  'max_players' : number,
+  'currency' : Currency,
+  'prize_pool' : bigint,
+  'players_left' : number,
+  'registered_me' : boolean,
+  'starting_stack' : bigint,
+  'buy_in' : bigint,
+  'registered' : number,
+}
+export interface TournamentTemplate {
+  /**
+   * Goes to the house (ICP) or leaves circulation (chips).
+   */
+  'fee' : bigint,
+  'min_players' : number,
+  'kind' : TournamentKind,
+  'name' : string,
+  'level_secs' : bigint,
+  /**
+   * Scheduled events: time between runs.
+   */
+  'interval_secs' : bigint,
+  'max_players' : number,
+  /**
+   * Minimum prize pool, only for play-chip events (the house mints chips).
+   */
+  'guarantee' : bigint,
+  'currency' : Currency,
+  'starting_stack' : bigint,
+  /**
+   * Goes into the prize pool.
+   */
+  'buy_in' : bigint,
+  'table_size' : number,
+}
 export interface Winner {
   'player' : Principal,
   'hand' : string,
@@ -341,6 +468,10 @@ export interface Winner {
 export interface _SERVICE {
   'act' : ActorMethod<[bigint, Action], Result>,
   'admin_add_item' : ActorMethod<[StoreItem], Result_1>,
+  /**
+   * Adds a recurring tournament (a sit-and-go or a scheduled event).
+   */
+  'admin_add_tournament' : ActorMethod<[TournamentTemplate], Result_1>,
   'admin_create_table' : ActorMethod<[TableConfig], Result_2>,
   'admin_house_stats' : ActorMethod<[], Result_3>,
   'admin_set_item_available' : ActorMethod<[number, boolean], Result>,
@@ -358,6 +489,11 @@ export interface _SERVICE {
    * `get_deposit_info`) from any wallet or exchange, then call this.
    */
   'claim_deposit' : ActorMethod<[], Result_2>,
+  'close_room' : ActorMethod<[bigint], Result>,
+  /**
+   * Creates your own table. Hosts of ICP tables earn 20% of the rake it generates.
+   */
+  'create_room' : ActorMethod<[RoomArgs], Result_2>,
   /**
    * Deposit via ICRC-2: the caller first approves this canister for
    * `amount + fee` on the ICP ledger, then calls this.
@@ -381,12 +517,19 @@ export interface _SERVICE {
   'get_my_profile' : ActorMethod<[], [] | [Profile]>,
   'get_profile' : ActorMethod<[Principal], [] | [PublicProfile]>,
   'get_table' : ActorMethod<[bigint], [] | [TableView]>,
-  'join_table' : ActorMethod<[bigint, number, bigint], Result>,
+  'get_tournament' : ActorMethod<[bigint], [] | [TournamentDetail]>,
+  /**
+   * `password` is only needed for password-protected player rooms.
+   */
+  'join_table' : ActorMethod<[bigint, number, bigint, [] | [string]], Result>,
   'leave_table' : ActorMethod<[bigint], Result_2>,
+  'list_medals' : ActorMethod<[], Array<MedalDef>>,
   'list_store' : ActorMethod<[], Array<StoreItem>>,
   'list_tables' : ActorMethod<[], Array<TableSummary>>,
+  'list_tournaments' : ActorMethod<[], Array<TournamentSummary>>,
   'ping' : ActorMethod<[], undefined>,
   'register' : ActorMethod<[string], Result_4>,
+  'register_tournament' : ActorMethod<[bigint], Result>,
   'remove_friend' : ActorMethod<[Principal], Result>,
   'respond_friend_request' : ActorMethod<[Principal, boolean], Result>,
   'send_chat' : ActorMethod<[Channel, string], Result>,
@@ -397,6 +540,7 @@ export interface _SERVICE {
   'sit_out' : ActorMethod<[bigint, boolean], Result>,
   'throw_item' : ActorMethod<[bigint, Principal, number, Currency], Result>,
   'top_up' : ActorMethod<[bigint, bigint], Result>,
+  'unregister_tournament' : ActorMethod<[bigint], Result>,
   'update_settings' : ActorMethod<[Settings], Result>,
   'whoami' : ActorMethod<[], Principal>,
   /**

@@ -74,6 +74,8 @@ export function ProfilePage() {
         </div>
       </div>
 
+      <MedalsPanel />
+
       <SettingsPanel />
 
       <div className="panel">
@@ -105,6 +107,28 @@ const SETTINGS: { key: keyof Settings; label: string; hint: string }[] = [
   { key: 'sound', label: 'Sounds', hint: 'Chime on your turn, deals, wins and throws.' },
   { key: 'show_throwables', label: 'Show throwables', hint: 'Animate tomatoes, pies and friends flying across the table.' },
 ];
+
+function MedalsPanel() {
+  const { profile, medals } = useApp();
+  if (!profile) return null;
+  const earned = new Map(profile.medals.map((m) => [m.id, m.earned_at]));
+  return (
+    <div className="panel">
+      <div className="panel-title">
+        Medals ({earned.size}/{medals.size})
+      </div>
+      <div className="medal-grid">
+        {[...medals.values()].map((m) => (
+          <div key={m.id} className={`medal ${earned.has(m.id) ? 'earned' : ''}`} title={m.description}>
+            <span className="medal-icon">{m.icon}</span>
+            <b className="small">{m.name}</b>
+            <span className="muted small">{m.description}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function SettingsPanel() {
   const { backend, profile, run, refreshProfile } = useApp();

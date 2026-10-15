@@ -39,7 +39,7 @@ h2, h3, h4 { margin: 0 0 6px; }
 .btn:disabled { opacity: 0.5; cursor: default; }
 .btn.small { padding: 5px 10px; font-size: 13px; }
 .btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
-.chip { background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; font-size: 13px; text-transform: capitalize; }
+.chip { background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; font-size: 13px; }
 .chip.active { border-color: var(--accent); color: var(--accent); }
 .tag { font-size: 11px; background: #2a3550; color: var(--accent-2); border-radius: 4px; padding: 1px 6px; margin-left: 6px; vertical-align: middle; }
 .badge { background: var(--red); color: #fff; border-radius: 999px; font-size: 11px; padding: 0 6px; margin-left: 5px; }
@@ -48,11 +48,11 @@ h2, h3, h4 { margin: 0 0 6px; }
 
 /* layout */
 .app { max-width: 1400px; margin: 0 auto; padding: 0 16px; }
-.topbar { display: flex; align-items: center; gap: 24px; padding: 14px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-.brand { font-weight: 800; font-size: 20px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+.topbar { display: flex; align-items: center; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.brand { font-weight: 800; font-size: 20px; white-space: nowrap; cursor: pointer; display: flex; align-items: center; gap: 6px; }
 .logo { color: var(--accent); font-size: 26px; }
-nav { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; }
-.nav { background: none; border: 0; padding: 8px 12px; border-radius: 8px; color: var(--muted); font-weight: 600; }
+nav { display: flex; gap: 2px; flex: 1; flex-wrap: nowrap; overflow-x: auto; min-width: 0; scrollbar-width: none; }
+.nav { background: none; border: 0; padding: 8px 10px; white-space: nowrap; border-radius: 8px; color: var(--muted); font-weight: 600; }
 .nav.active, .nav:hover { color: var(--text); background: var(--panel-2); }
 .account { display: flex; align-items: center; gap: 10px; }
 .balance { background: #10261a; border: 1px solid #1f5e3a; color: var(--green); border-radius: 8px; padding: 6px 10px; font-weight: 700; }
@@ -187,7 +187,6 @@ main { padding: 18px 0; }
   .topbar { gap: 10px; }
   .topbar nav { order: 3; width: 100%; flex: none; flex-wrap: nowrap; overflow-x: auto; }
   .account { margin-left: auto; }
-  .me { display: none; }
   .table-header > div:nth-child(2) .muted { display: block; font-size: 12px; }
   .felt { inset: 14% 4%; border-width: 8px; }
   .felt-logo { display: none; }
@@ -250,3 +249,25 @@ main { padding: 18px 0; }
   .daily, .chips-balance { padding: 4px 6px; font-size: 13px; }
 }
 .msg.throw { color: #fdba74; }
+
+/* ---- tier 2: tournaments, rooms, medals ---- */
+.tag.live { background: #5c1f1f; color: #fecaca; }
+.tourney-row { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+.tourney-row:hover { background: var(--panel-2); }
+.tourney-row.active { border-color: var(--accent); background: var(--panel-2); }
+.seatbar.wide { margin-top: 4px; display: flex; align-items: center; flex-wrap: wrap; }
+.seatbar.wide span:not(.muted) { width: 5px; height: 10px; }
+.payouts { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 14px; }
+.me-row td { background: rgba(245,185,26,0.08); }
+.tourney-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; margin-bottom: 8px; font-size: 14px; }
+.tourney-bar .chip { text-transform: none; }
+.host-line { margin: -4px 0 6px; }
+.medal-strip { display: flex; gap: 6px; font-size: 22px; flex-wrap: wrap; }
+.medal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+.medal { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 2px; padding: 10px 6px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); opacity: 0.45; filter: grayscale(1); }
+.medal.earned { opacity: 1; filter: none; border-color: var(--accent); }
+.medal-icon { font-size: 30px; }
+
+@media (max-width: 1500px) {
+  .brand .tag, .me-name { display: none; }
+}
