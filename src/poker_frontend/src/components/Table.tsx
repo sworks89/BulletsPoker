@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import { useApp, usePoll } from '../context';
+import { useApp } from '../context';
+import { isMyTurn, useTables } from '../tables';
 import { unwrap, type PublicProfile, type SeatView, type StoreItem, type TableView, type ThrowEvent } from '../ic';
 import { amount, amountWithUnit, bytes, cardRank, cardSuit, CHIPS, countdown, ICP, icp, isChips, suitClass, type CurrencyV } from '../format';
 import { sounds } from '../sound';
@@ -45,10 +46,14 @@ interface Flying {
   to: { left: string; top: string };
 }
 
-export function TablePage({ id }: { id: bigint }) {
+/**
+ * One poker table. Several can be mounted at once (multi-tabling): `visible`
+ * hides background tabs, and `compact` is the smaller tiled layout.
+ */
+export function TablePage({ id, visible = true, compact = false }: { id: bigint; visible?: boolean; compact?: boolean }) {
   const { backend, profile, run, refreshProfile, go } = useApp();
-  const [view, setView] = useState<TableView | null>(null);
-  const [clockOffset, setClockOffset] = useState(0);
+  const { open, views, clockOffset, refresh, closeTable, focus } = useTables();
+  const view = views.get(String(id)) ?? null;
   const [, setTick] = useState(0);
   const [buyInSeat, setBuyInSeat] = useState<number | null>(null);
   const [selected, setSelected] = useState<SeatView | null>(null);
@@ -58,19 +63,15 @@ export function TablePage({ id }: { id: bigint }) {
   const seenThrows = useRef<Set<bigint> | null>(null);
   const settings = profile?.settings;
 
-  const load = async () => {
-    const v = (await backend.get_table(id))[0] ?? null;
-    if (v) setClockOffset(Date.now() - Number(v.now / 1_000_000n));
-    setView(v);
-  };
-  usePoll(load, 1000, [backend, id]);
+  const load = refresh;
 
   useEffect(() => {
+    if (!visible) return;
     const t = setInterval(() => setTick((x) => x + 1), 250);
     return () => clearInterval(t);
-  }, []);
+  }, [visible]);
 
-  const myTurn = !!view && view.my_seat.length > 0 && view.to_act.length > 0 && view.my_seat[0] === view.to_act[0];
+  const myTurn = isMyTurn(view ?? undefined);
   const lastTurnKey = useRef('');
   useEffect(() => {
     if (!view || !myTurn) return;
@@ -108,7 +109,7 @@ export function TablePage({ id }: { id: bigint }) {
     const fresh = view.throws.filter((t) => !seenThrows.current!.has(t.id));
     if (fresh.length === 0) return;
     fresh.forEach((t) => seenThrows.current!.add(t.id));
-    if (settings && !settings.show_throwables) return;
+    if ((settings && !settings.show_throwables) || !visible) return;
     if (settings?.sound) sounds.splat();
     const add = fresh.map((t: ThrowEvent) => ({ id: t.id, icon: t.icon, from: seatPos(view, t.from_seat), to: seatPos(view, t.to_seat) }));
     setFlying((f) => [...f, ...add]);
@@ -117,7 +118,7 @@ export function TablePage({ id }: { id: bigint }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, settings?.show_throwables]);
 
-  if (!view) return <div className="splash">Loading table…</div>;
+  if (!view) return visible ? <div className="splash">Loading table…</div> : null;
 
   const currency = view.config.currency;
   const tourney = view.tournament[0];
@@ -145,16 +146,28 @@ export function TablePage({ id }: { id: bigint }) {
   };
 
   const result = phase === 'HandOver' ? view.last_result[0] : undefined;
+  // In tab mode, point to another open table that is waiting on you.
+  const elsewhere = compact ? undefined : open.filter((o) => o !== id).map((o) => views.get(String(o))).find((v) => isMyTurn(v));
   const winnerSeats = new Set(result?.winners.map((w) => w.seat) ?? []);
   const step = isChips(currency) ? 1 : Number(view.config.small_blind);
 
   return (
-    <div className="table-page">
+    <div
+      className={`table-page ${compact ? 'compact' : ''} ${myTurn ? 'my-turn' : ''}`}
+      style={visible ? undefined : { display: 'none' }}
+      onMouseDown={compact ? () => focus(id) : undefined}
+    >
       <div className="table-main">
         <div className="table-header">
-          <button className="btn ghost" onClick={() => go({ name: 'lobby' })}>
-            ← Lobby
-          </button>
+          {compact ? (
+            <button className="btn ghost small" title="Close table" onClick={() => closeTable(id)}>
+              ✕
+            </button>
+          ) : (
+            <button className="btn ghost" onClick={() => go({ name: 'lobby' })}>
+              ← Lobby
+            </button>
+          )}
           <div>
             <b>{view.config.name}</b>
             {tourney ? (
@@ -370,6 +383,10 @@ export function TablePage({ id }: { id: bigint }) {
                 </div>
               )}
             </>
+          ) : elsewhere ? (
+            <button className="btn elsewhere" onClick={() => focus(elsewhere.id)}>
+              Your turn at {elsewhere.config.name} →
+            </button>
           ) : (
             <div className="muted">
               {!profile
@@ -384,9 +401,11 @@ export function TablePage({ id }: { id: bigint }) {
         </div>
       </div>
 
-      <aside className="side">
-        <Chat channel={{ Table: id }} title="Table chat" />
-      </aside>
+      {!compact && visible && (
+        <aside className="side">
+          <Chat channel={{ Table: id }} title="Table chat" />
+        </aside>
+      )}
 
       {buyInSeat !== null && <BuyIn view={view} seat={buyInSeat} onClose={() => setBuyInSeat(null)} onDone={load} />}
       {selected && <PlayerCard seat={selected} view={view} canThrow={mySeat !== undefined} onClose={() => setSelected(null)} />}

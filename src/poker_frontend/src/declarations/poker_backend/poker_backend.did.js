@@ -406,6 +406,11 @@ export const idlFactory = ({ IDL }) => {
         ['query'],
       ),
     'get_table' : IDL.Func([IDL.Nat64], [IDL.Opt(TableView)], ['query']),
+    'get_tables' : IDL.Func(
+        [IDL.Vec(IDL.Nat64)],
+        [IDL.Vec(TableView)],
+        ['query'],
+      ),
     'get_tournament' : IDL.Func(
         [IDL.Nat64],
         [IDL.Opt(TournamentDetail)],

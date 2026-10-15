@@ -404,6 +404,9 @@ service : (opt InitArgs) -> {
   get_my_profile : () -> (opt Profile) query;
   get_profile : (principal) -> (opt PublicProfile) query;
   get_table : (nat64) -> (opt TableView) query;
+  // `password` is only needed for password-protected player rooms.
+  // Views of several tables at once (for multi-tabling); unknown ids are skipped.
+  get_tables : (vec nat64) -> (vec TableView) query;
   get_tournament : (nat64) -> (opt TournamentDetail) query;
   // `password` is only needed for password-protected player rooms.
   join_table : (nat64, nat8, nat64, opt text) -> (Result);

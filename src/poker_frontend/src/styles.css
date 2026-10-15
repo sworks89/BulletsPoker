@@ -271,3 +271,65 @@ main { padding: 18px 0; }
 @media (max-width: 1500px) {
   .brand .tag, .me-name { display: none; }
 }
+
+/* ---- multi-tabling ---- */
+.table-strip { display: flex; align-items: center; gap: 6px; padding: 8px 0 0; overflow-x: auto; scrollbar-width: none; }
+.strip-tab { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); cursor: pointer; white-space: nowrap; max-width: 260px; }
+.strip-tab:hover { background: var(--panel-2); }
+.strip-tab.active { border-color: var(--accent); background: var(--panel-2); }
+.strip-tab.turn { border-color: var(--accent); background: #3a2c07; animation: glow 1.2s ease-in-out infinite; }
+.strip-tab.turn .strip-info { color: var(--accent-2); font-weight: 700; }
+.strip-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+.strip-info { font-size: 12px; color: var(--muted); }
+.strip-close { background: none; border: 0; color: var(--muted); font-size: 12px; padding: 2px 6px; border-radius: 6px; }
+.strip-close:hover { background: #3f1d1d; color: #fecaca; }
+.strip-add { background: none; border: 1px dashed var(--line); color: var(--muted); border-radius: 10px; padding: 6px 12px; white-space: nowrap; }
+.strip-controls { margin-left: auto; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.strip-auto { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.strip-auto input { width: auto; accent-color: var(--accent); }
+
+.tile-area { display: grid; grid-template-columns: 1fr 300px; gap: 12px; align-items: start; }
+.tile-area > * { min-width: 0; }
+.tile-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.tile-grid.n2 { grid-template-columns: 1fr 1fr; }
+.tile { border: 2px solid transparent; border-radius: 12px; padding: 4px; min-width: 0; }
+.tile.focused { border-color: rgba(245,185,26,.5); }
+.table-page.compact { display: block; }
+.table-page.compact .table-header { margin-bottom: 4px; gap: 6px; font-size: 13px; }
+.table-page.compact .table-header .btn { padding: 4px 8px; font-size: 12px; }
+.table-page.compact .table-header .muted { display: none; }
+.table-page.compact .tourney-bar { font-size: 12px; padding: 4px 8px; gap: 8px; }
+.table-page.compact .host-line { display: none; }
+.table-page.compact .felt-wrap { min-height: 0; aspect-ratio: 16 / 10; }
+.table-page.compact .felt { border-width: 8px; }
+.table-page.compact .felt-logo { display: none; }
+.table-page.compact .card { width: 34px; height: 48px; }
+.table-page.compact .card .rank, .table-page.compact .card .suit { font-size: 14px; }
+.table-page.compact .card.sm { width: 24px; height: 34px; }
+.table-page.compact .card.sm .rank, .table-page.compact .card.sm .suit { font-size: 10px; }
+.table-page.compact .seat { width: 78px; }
+.table-page.compact .seat .avatar { width: 32px; height: 32px; font-size: 18px; border-width: 1px; }
+.table-page.compact .seat .hole { min-height: 34px; margin-bottom: -10px; }
+.table-page.compact .nameplate { min-width: 70px; padding: 1px 4px; }
+.table-page.compact .nameplate .name, .table-page.compact .nameplate .stack { font-size: 10px; }
+.table-page.compact .lvl, .table-page.compact .action-tag { font-size: 9px; }
+.table-page.compact .seat.empty { width: 56px; height: 36px; }
+.table-page.compact .dealer { width: 16px; height: 16px; font-size: 9px; top: 18px; }
+.table-page.compact .bet { font-size: 10px; bottom: -18px; }
+.table-page.compact .pot { font-size: 12px; min-height: 0; }
+.table-page.compact .result { font-size: 11px; padding: 3px 8px; }
+.table-page.compact .action-bar { margin-top: 10px; min-height: 0; padding: 6px; gap: 6px; }
+.table-page.compact .action-bar .btn { padding: 7px 12px; font-size: 13px; }
+.table-page.compact .action-bar > .muted { font-size: 12px; }
+.table-page.compact .raise { min-width: 160px; gap: 4px; }
+.table-page.compact .raise .chip { padding: 2px 6px; font-size: 11px; }
+.table-page.compact.my-turn .action-bar { border-color: var(--accent); box-shadow: 0 0 12px rgba(245,185,26,.35); }
+.table-page.compact .flying { font-size: 24px; }
+
+@media (max-width: 1100px) {
+  .tile-area { grid-template-columns: 1fr; }
+  .tile-grid, .tile-grid.n2 { grid-template-columns: 1fr; }
+  .strip-controls .chip:nth-child(2) { display: none; }
+}
+.table-page.compact .felt-wrap { margin-top: 22px; }
+.btn.elsewhere { animation: glow 1.2s ease-in-out infinite; }

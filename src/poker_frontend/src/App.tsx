@@ -4,7 +4,8 @@ import { unwrap } from './ic';
 import { History } from './components/History';
 import { Tournaments } from './components/Tournaments';
 import { Lobby } from './components/Lobby';
-import { TablePage } from './components/Table';
+import { TableArea, TableStrip } from './components/MultiTable';
+import { TablesProvider } from './tables';
 import { Wallet } from './components/Wallet';
 import { Store } from './components/Store';
 import { Friends } from './components/Friends';
@@ -83,9 +84,11 @@ function Shell() {
         </div>
       </header>
 
+      <TableStrip />
+
       <main>
         {view.name === 'lobby' && <Lobby />}
-        {view.name === 'table' && <TablePage id={view.id} />}
+        <TableArea />
         {view.name === 'wallet' && <Wallet />}
         {view.name === 'store' && <Store />}
         {view.name === 'friends' && <Friends />}
@@ -107,7 +110,9 @@ function Shell() {
 export default function App() {
   return (
     <AppProvider>
-      <Shell />
+      <TablesProvider>
+        <Shell />
+      </TablesProvider>
     </AppProvider>
   );
 }

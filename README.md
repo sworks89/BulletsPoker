@@ -16,6 +16,11 @@ A social Texas Hold'em poker room that runs entirely on the [Internet Computer](
 - Separate rake-free chip tables; chips are never backed by or exchangeable for ICP
 - Cosmetics, gifts and throwables can be bought with chips as well as ICP (premium items stay ICP only)
 
+**Multi-tabling**
+- Play up to 4 tables at once: a strip of open tables follows you on every page, flashing with a countdown when it's your turn
+- Tabs mode (one table at a time, optional auto-switch to the table that needs you) or tile mode (tables side by side with chat for the focused one)
+- All open tables are refreshed with a single `get_tables` query per second; open tables and layout are remembered per browser
+
 **Tournaments**
 - Sit-and-go's that start as soon as they fill (chips and ICP, heads-up to 9-max), re-opening automatically
 - Scheduled multi-table tournaments (an hourly play-chip freeroll with a guaranteed prize pool, plus a nightly ICP event) with rising blinds, table balancing and merging down to a final table, and payouts that scale with the field

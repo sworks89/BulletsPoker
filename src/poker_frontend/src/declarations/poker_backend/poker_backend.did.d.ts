@@ -517,6 +517,11 @@ export interface _SERVICE {
   'get_my_profile' : ActorMethod<[], [] | [Profile]>,
   'get_profile' : ActorMethod<[Principal], [] | [PublicProfile]>,
   'get_table' : ActorMethod<[bigint], [] | [TableView]>,
+  /**
+   * `password` is only needed for password-protected player rooms.
+   * Views of several tables at once (for multi-tabling); unknown ids are skipped.
+   */
+  'get_tables' : ActorMethod<[BigUint64Array | bigint[]], Array<TableView>>,
   'get_tournament' : ActorMethod<[bigint], [] | [TournamentDetail]>,
   /**
    * `password` is only needed for password-protected player rooms.

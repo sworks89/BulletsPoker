@@ -2105,6 +2105,31 @@ mod tests {
     }
 
     #[test]
+    fn one_player_at_several_tables() {
+        let mut s = setup();
+        s.join_table(p(1), 1, 0, 1_000, None, 0).unwrap();
+        s.join_table(p(1), 2, 0, 1_000, None, 0).unwrap();
+        s.join_table(p(2), 1, 1, 1_000, None, 0).unwrap();
+        s.join_table(p(3), 2, 1, 1_000, None, 0).unwrap();
+        assert_eq!(s.public_profile(&p(1), 0).unwrap().tables, vec![1, 2]);
+        let now = run_until(&mut s, SEC, 1_000, |s| s.users[&p(1)].stats.hands_played >= 10);
+        let tables: BTreeSet<String> = s.hand_history(p(1), 50).into_iter().map(|h| h.table_name).collect();
+        assert_eq!(tables.len(), 2, "history covers both tables");
+        for t in [1, 2] {
+            if s.tables[&t].seat_of(&p(1)).is_some() {
+                s.leave_table(p(1), t, now).unwrap();
+            }
+        }
+        for (k, t) in [(2, 1), (3, 2)] {
+            if s.tables[&t].seat_of(&p(k)).is_some() {
+                s.leave_table(p(k), t, now).unwrap();
+            }
+        }
+        let chips: u64 = (1..=3).map(|k| s.users[&p(k)].chips).sum();
+        assert_eq!(chips, 3 * SIGNUP_CHIPS);
+    }
+
+    #[test]
     fn icp_formatting() {
         assert_eq!(fmt_icp(E8S), "1");
         assert_eq!(fmt_icp(150_000_000), "1.5");

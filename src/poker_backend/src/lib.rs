@@ -23,6 +23,8 @@ use tournament::{TournamentDetail, TournamentSummary, TournamentTemplate};
 /// Mainnet ICP ledger.
 const ICP_LEDGER: &str = "ryjl3-tyaaa-aaaaa-aaaba-cai";
 const ICP_FEE: u64 = 10_000;
+/// Most tables one client can fetch in a single `get_tables` call.
+const MAX_OPEN_TABLES: usize = 8;
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
@@ -348,6 +350,15 @@ fn list_tables() -> Vec<TableSummary> {
 fn get_table(id: u64) -> Option<TableView> {
     let p = ic_cdk::api::msg_caller();
     with(|s| s.table_view(id, Some(p), now()))
+}
+
+/// `password` is only needed for password-protected player rooms.
+/// Views of several tables at once (for multi-tabling); unknown ids are skipped.
+#[query]
+fn get_tables(ids: Vec<u64>) -> Vec<TableView> {
+    let p = ic_cdk::api::msg_caller();
+    let now = now();
+    with(|s| ids.iter().take(MAX_OPEN_TABLES).filter_map(|id| s.table_view(*id, Some(p), now)).collect())
 }
 
 /// `password` is only needed for password-protected player rooms.
