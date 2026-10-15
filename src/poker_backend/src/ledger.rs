@@ -1,7 +1,8 @@
 //! ICP ledger integration (ICRC-1 / ICRC-2) and deposit account helpers.
 
 use candid::{Nat, Principal};
-use ic_cdk::call::Call;
+use crate::wallet::{LedgerOp, Outcome};
+use ic_cdk::call::{Call, CallFailed, RejectCode};
 use icrc_ledger_types::icrc1::account::{Account, Subaccount};
 use icrc_ledger_types::icrc1::transfer::{Memo, TransferArg, TransferError};
 use icrc_ledger_types::icrc2::transfer_from::{TransferFromArgs, TransferFromError};
@@ -52,53 +53,78 @@ pub async fn balance_of(ledger: Principal, account: Account) -> Result<u64, Stri
     to_u64(&n)
 }
 
-pub async fn transfer(
-    ledger: Principal,
-    from_subaccount: Option<Subaccount>,
-    to: Account,
-    amount: u64,
-    fee: u64,
-    memo: &[u8],
-) -> Result<u64, String> {
-    let arg = TransferArg {
-        from_subaccount,
-        to,
-        fee: Some(Nat::from(fee)),
-        created_at_time: None,
-        memo: Some(Memo(memo.to_vec().into())),
-        amount: Nat::from(amount),
-    };
-    // Unbounded wait: we must learn the outcome to keep balances correct.
-    let res = Call::unbounded_wait(ledger, "icrc1_transfer")
-        .with_arg(arg)
-        .await
-        .map_err(|e| format!("Ledger call failed: {e}"))?;
-    let r: Result<Nat, TransferError> = res.candid().map_err(|e| e.to_string())?;
-    let block = r.map_err(|e| format!("Transfer failed: {e}"))?;
-    to_u64(&block)
+/// Classifies a failed inter-canister call. With unbounded waits, every reject
+/// except `SysUnknown` means the ledger never executed the request.
+fn call_error(e: CallFailed) -> Outcome {
+    match e {
+        CallFailed::CallRejected(r) => match r.reject_code() {
+            Ok(RejectCode::SysUnknown) | Err(_) => Outcome::Unknown(format!("Ledger reply unknown: {r}")),
+            Ok(_) => Outcome::Failed(format!("Ledger rejected the call: {r}")),
+        },
+        other => Outcome::Failed(format!("Ledger call could not be sent: {other}")),
+    }
 }
 
-pub async fn transfer_from(ledger: Principal, from: Account, to: Account, amount: u64, fee: u64) -> Result<u64, String> {
+fn block(n: &Nat) -> u64 {
+    to_u64(n).unwrap_or(u64::MAX)
+}
+
+/// Sends an ICRC-1 transfer for `op` (withdrawals, sweeps, treasury). Re-sending
+/// the same op is safe: the ledger deduplicates on `created_at_time` + memo.
+pub async fn transfer_op(ledger: Principal, op: &LedgerOp) -> Outcome {
+    let arg = TransferArg {
+        from_subaccount: op.from_subaccount,
+        to: op.to,
+        fee: Some(Nat::from(op.fee)),
+        created_at_time: Some(op.created_at_time),
+        memo: Some(Memo(op.memo().into())),
+        amount: Nat::from(op.amount),
+    };
+    let res = match Call::unbounded_wait(ledger, "icrc1_transfer").with_arg(arg).await {
+        Ok(r) => r,
+        Err(e) => return call_error(e),
+    };
+    match res.candid::<Result<Nat, TransferError>>() {
+        // The ledger answered but we can't read it: the transfer may have happened.
+        Err(e) => Outcome::Unknown(format!("Could not decode the ledger reply: {e}")),
+        Ok(Ok(n)) => Outcome::Ok(block(&n)),
+        // A retry of a transfer that already went through.
+        Ok(Err(TransferError::Duplicate { duplicate_of })) => Outcome::Ok(block(&duplicate_of)),
+        // Outside the dedup window the ledger can't tell us; an admin must check.
+        Ok(Err(TransferError::TooOld)) => Outcome::Unknown("Too old for the ledger to deduplicate".into()),
+        Ok(Err(e)) => Outcome::Failed(format!("Transfer failed: {e}")),
+    }
+}
+
+/// Pulls an ICRC-2 deposit for `op` from the player's wallet.
+pub async fn transfer_from_op(ledger: Principal, op: &LedgerOp) -> Outcome {
+    let Some(from) = op.from else {
+        return Outcome::Failed("Deposit has no source account".into());
+    };
     let arg = TransferFromArgs {
         spender_subaccount: None,
         from,
-        to,
-        amount: Nat::from(amount),
-        fee: Some(Nat::from(fee)),
-        memo: Some(Memo(b"deposit".to_vec().into())),
-        created_at_time: None,
+        to: op.to,
+        amount: Nat::from(op.amount),
+        fee: Some(Nat::from(op.fee)),
+        memo: Some(Memo(op.memo().into())),
+        created_at_time: Some(op.created_at_time),
     };
-    let res = Call::unbounded_wait(ledger, "icrc2_transfer_from")
-        .with_arg(arg)
-        .await
-        .map_err(|e| format!("Ledger call failed: {e}"))?;
-    let r: Result<Nat, TransferFromError> = res.candid().map_err(|e| e.to_string())?;
-    let block = r.map_err(|e| match e {
-        TransferFromError::InsufficientAllowance { .. } => "Approve the deposit in your wallet first".to_string(),
-        TransferFromError::InsufficientFunds { .. } => "Not enough ICP in your wallet".to_string(),
-        other => format!("Deposit failed: {other:?}"),
-    })?;
-    to_u64(&block)
+    let res = match Call::unbounded_wait(ledger, "icrc2_transfer_from").with_arg(arg).await {
+        Ok(r) => r,
+        Err(e) => return call_error(e),
+    };
+    match res.candid::<Result<Nat, TransferFromError>>() {
+        Err(e) => Outcome::Unknown(format!("Could not decode the ledger reply: {e}")),
+        Ok(Ok(n)) => Outcome::Ok(block(&n)),
+        Ok(Err(TransferFromError::Duplicate { duplicate_of })) => Outcome::Ok(block(&duplicate_of)),
+        Ok(Err(TransferFromError::TooOld)) => Outcome::Unknown("Too old for the ledger to deduplicate".into()),
+        Ok(Err(TransferFromError::InsufficientAllowance { .. })) => {
+            Outcome::Failed("Approve the deposit in your wallet first".into())
+        }
+        Ok(Err(TransferFromError::InsufficientFunds { .. })) => Outcome::Failed("Not enough ICP in your wallet".into()),
+        Ok(Err(e)) => Outcome::Failed(format!("Deposit failed: {e:?}")),
+    }
 }
 
 pub async fn raw_rand() -> Result<Vec<u8>, String> {

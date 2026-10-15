@@ -1,6 +1,8 @@
 import { AppProvider, useApp, type View } from './context';
 import { countdown, icp } from './format';
-import { unwrap } from './ic';
+import { unwrap, type ServiceStatus } from './ic';
+import { useState } from 'react';
+import { usePoll } from './context';
 import { History } from './components/History';
 import { Tournaments } from './components/Tournaments';
 import { Lobby } from './components/Lobby';
@@ -84,6 +86,7 @@ function Shell() {
         </div>
       </header>
 
+      <StatusBanner />
       <TableStrip />
 
       <main>
@@ -103,6 +106,22 @@ function Shell() {
       </footer>
 
       {principal && !profile && <Register />}
+    </div>
+  );
+}
+
+/** Shows a banner while any part of the service is paused for maintenance. */
+function StatusBanner() {
+  const { backend } = useApp();
+  const [status, setStatus] = useState<ServiceStatus | null>(null);
+  usePoll(async () => setStatus(await backend.get_status()), 30000, [backend]);
+  const p = status?.pause;
+  if (!p) return null;
+  const paused = [p.deposits && 'deposits', p.withdrawals && 'withdrawals', p.dealing && 'new hands', p.joins && 'new seats'].filter(Boolean);
+  if (paused.length === 0) return null;
+  return (
+    <div className="status-banner">
+      ⚠️ Temporarily paused: {paused.join(', ')}.{p.reason[0] ? ` ${p.reason[0]}` : ''} Your balance is safe.
     </div>
   );
 }

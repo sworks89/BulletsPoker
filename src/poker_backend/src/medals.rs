@@ -59,13 +59,15 @@ impl State {
     /// Awards a medal once. Announces it in `channel` when given.
     pub fn award(&mut self, p: &Principal, id: &str, channel: Option<Channel>, now: u64) {
         let Some((_, name, icon, _)) = medal(id) else { return };
-        let Some(u) = self.users.get_mut(p) else { return };
-        if u.medals.contains_key(id) {
-            return;
-        }
-        u.medals.insert(id.to_string(), now);
-        u.xp += MEDAL_XP;
-        let username = u.username.clone();
+        let username = {
+            let Some(mut u) = self.users.get_mut(p) else { return };
+            if u.medals.contains_key(id) {
+                return;
+            }
+            u.medals.insert(id.to_string(), now);
+            u.xp += MEDAL_XP;
+            u.username.clone()
+        };
         if let Some(ch) = channel {
             self.post(ch, None, String::new(), format!("🏅 {username} earned the {icon} {name} medal!"), MessageKind::System, now);
         }

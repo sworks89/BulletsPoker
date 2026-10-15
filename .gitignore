@@ -4,3 +4,4 @@ dist/
 .dfx/
 .env
 *.log
+.pocket-ic/

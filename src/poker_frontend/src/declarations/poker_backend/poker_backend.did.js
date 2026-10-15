@@ -52,6 +52,19 @@ export const idlFactory = ({ IDL }) => {
     'table_size' : IDL.Nat8,
     'late_reg_levels' : IDL.Nat32,
   });
+  const Result_2 = IDL.Variant({
+    'Ok' : IDL.Tuple(IDL.Nat64, IDL.Nat64),
+    'Err' : IDL.Text,
+  });
+  const SolvencyReport = IDL.Record({
+    'ok' : IDL.Bool,
+    'liabilities' : IDL.Nat64,
+    'ledger_balance' : IDL.Nat64,
+    'surplus' : IDL.Int,
+    'unresolved_ops' : IDL.Nat64,
+    'checked_at' : IDL.Nat64,
+  });
+  const Result_3 = IDL.Variant({ 'Ok' : SolvencyReport, 'Err' : IDL.Text });
   const TableConfig = IDL.Record({
     'small_blind' : IDL.Nat64,
     'action_timeout_secs' : IDL.Nat64,
@@ -66,7 +79,7 @@ export const idlFactory = ({ IDL }) => {
     'big_blind' : IDL.Nat64,
     'max_buy_in' : IDL.Nat64,
   });
-  const Result_2 = IDL.Variant({ 'Ok' : IDL.Nat64, 'Err' : IDL.Text });
+  const Result_4 = IDL.Variant({ 'Ok' : IDL.Nat64, 'Err' : IDL.Text });
   const HouseStats = IDL.Record({
     'liabilities_total' : IDL.Nat64,
     'chips_on_tables' : IDL.Nat64,
@@ -75,11 +88,45 @@ export const idlFactory = ({ IDL }) => {
     'users' : IDL.Nat64,
     'treasury' : IDL.Nat64,
   });
-  const Result_3 = IDL.Variant({ 'Ok' : HouseStats, 'Err' : IDL.Text });
+  const Result_5 = IDL.Variant({ 'Ok' : HouseStats, 'Err' : IDL.Text });
   const Account = IDL.Record({
     'owner' : IDL.Principal,
     'subaccount' : IDL.Opt(IDL.Vec(IDL.Nat8)),
   });
+  const OpStatus = IDL.Variant({
+    'Failed' : IDL.Record({ 'reason' : IDL.Text }),
+    'Unknown' : IDL.Record({ 'attempts' : IDL.Nat32, 'reason' : IDL.Text }),
+    'Completed' : IDL.Record({ 'block' : IDL.Nat64 }),
+    'Pending' : IDL.Null,
+  });
+  const OpKind = IDL.Variant({
+    'Withdraw' : IDL.Null,
+    'Sweep' : IDL.Null,
+    'Deposit' : IDL.Null,
+    'Treasury' : IDL.Null,
+  });
+  const LedgerOp = IDL.Record({
+    'id' : IDL.Nat64,
+    'to' : Account,
+    'fee' : IDL.Nat64,
+    'status' : OpStatus,
+    'updated_at' : IDL.Nat64,
+    'from' : IDL.Opt(Account),
+    'kind' : OpKind,
+    'user' : IDL.Principal,
+    'from_subaccount' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+    'created_at_time' : IDL.Nat64,
+    'amount' : IDL.Nat64,
+  });
+  const Result_6 = IDL.Variant({ 'Ok' : LedgerOp, 'Err' : IDL.Text });
+  const PauseFlags = IDL.Record({
+    'joins' : IDL.Bool,
+    'withdrawals' : IDL.Bool,
+    'deposits' : IDL.Bool,
+    'dealing' : IDL.Bool,
+    'reason' : IDL.Opt(IDL.Text),
+  });
+  const Result_7 = IDL.Variant({ 'Ok' : IDL.Vec(LedgerOp), 'Err' : IDL.Text });
   const RoomArgs = IDL.Record({
     'action_timeout_secs' : IDL.Nat64,
     'password' : IDL.Opt(IDL.Text),
@@ -270,6 +317,10 @@ export const idlFactory = ({ IDL }) => {
     'text' : IDL.Text,
     'avatar' : IDL.Text,
   });
+  const ServiceStatus = IDL.Record({
+    'solvency' : IDL.Opt(SolvencyReport),
+    'pause' : PauseFlags,
+  });
   const ShownHand = IDL.Record({
     'player' : IDL.Principal,
     'cards' : IDL.Vec(IDL.Nat8),
@@ -447,23 +498,33 @@ export const idlFactory = ({ IDL }) => {
     'room_owner' : IDL.Opt(IDL.Text),
     'max_buy_in' : IDL.Nat64,
   });
-  const Result_4 = IDL.Variant({ 'Ok' : Profile, 'Err' : IDL.Text });
+  const Result_8 = IDL.Variant({ 'Ok' : Profile, 'Err' : IDL.Text });
   return IDL.Service({
     'act' : IDL.Func([IDL.Nat64, Action], [Result], []),
     'addon_tournament' : IDL.Func([IDL.Nat64], [Result], []),
     'admin_add_item' : IDL.Func([StoreItem], [Result_1], []),
     'admin_add_tournament' : IDL.Func([TournamentTemplate], [Result_1], []),
-    'admin_create_table' : IDL.Func([TableConfig], [Result_2], []),
-    'admin_house_stats' : IDL.Func([], [Result_3], ['query']),
+    'admin_audit_wallet_total' : IDL.Func([], [Result_2], ['query']),
+    'admin_check_solvency' : IDL.Func([], [Result_3], []),
+    'admin_create_table' : IDL.Func([TableConfig], [Result_4], []),
+    'admin_house_stats' : IDL.Func([], [Result_5], ['query']),
+    'admin_resolve_op' : IDL.Func(
+        [IDL.Nat64, IDL.Bool, IDL.Opt(IDL.Nat64)],
+        [Result_6],
+        [],
+      ),
+    'admin_retry_op' : IDL.Func([IDL.Nat64], [Result_6], []),
     'admin_seed_jackpot' : IDL.Func([IDL.Nat64], [Result], []),
     'admin_set_item_available' : IDL.Func([IDL.Nat32, IDL.Bool], [Result], []),
-    'admin_withdraw_treasury' : IDL.Func([Account, IDL.Nat64], [Result_2], []),
+    'admin_set_pause' : IDL.Func([PauseFlags], [Result], []),
+    'admin_unresolved_ops' : IDL.Func([], [Result_7], ['query']),
+    'admin_withdraw_treasury' : IDL.Func([Account, IDL.Nat64], [Result_4], []),
     'buy_item' : IDL.Func([IDL.Nat32, Currency], [Result], []),
-    'claim_daily_chips' : IDL.Func([], [Result_2], []),
-    'claim_deposit' : IDL.Func([], [Result_2], []),
+    'claim_daily_chips' : IDL.Func([], [Result_4], []),
+    'claim_deposit' : IDL.Func([], [Result_4], []),
     'close_room' : IDL.Func([IDL.Nat64], [Result], []),
-    'create_room' : IDL.Func([RoomArgs], [Result_2], []),
-    'deposit' : IDL.Func([IDL.Nat64], [Result_2], []),
+    'create_room' : IDL.Func([RoomArgs], [Result_4], []),
+    'deposit' : IDL.Func([IDL.Nat64], [Result_4], []),
     'equip' : IDL.Func([IDL.Nat32], [Result], []),
     'find_user' : IDL.Func([IDL.Text], [IDL.Opt(PublicProfile)], ['query']),
     'get_chat' : IDL.Func(
@@ -486,6 +547,7 @@ export const idlFactory = ({ IDL }) => {
       ),
     'get_jackpots' : IDL.Func([], [JackpotInfo], ['query']),
     'get_leaderboard' : IDL.Func([], [IDL.Vec(LeaderboardEntry)], ['query']),
+    'get_my_ledger_ops' : IDL.Func([], [IDL.Vec(LedgerOp)], ['query']),
     'get_my_profile' : IDL.Func([], [IDL.Opt(Profile)], ['query']),
     'get_notes' : IDL.Func([], [IDL.Vec(NoteView)], ['query']),
     'get_profile' : IDL.Func(
@@ -493,6 +555,7 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Opt(PublicProfile)],
         ['query'],
       ),
+    'get_status' : IDL.Func([], [ServiceStatus], ['query']),
     'get_table' : IDL.Func([IDL.Nat64], [IDL.Opt(TableView)], ['query']),
     'get_tables' : IDL.Func(
         [IDL.Vec(IDL.Nat64)],
@@ -509,14 +572,14 @@ export const idlFactory = ({ IDL }) => {
         [Result],
         [],
       ),
-    'leave_table' : IDL.Func([IDL.Nat64], [Result_2], []),
+    'leave_table' : IDL.Func([IDL.Nat64], [Result_4], []),
     'list_medals' : IDL.Func([], [IDL.Vec(MedalDef)], ['query']),
     'list_store' : IDL.Func([], [IDL.Vec(StoreItem)], ['query']),
     'list_tables' : IDL.Func([], [IDL.Vec(TableSummary)], ['query']),
     'list_tournaments' : IDL.Func([], [IDL.Vec(TournamentSummary)], ['query']),
     'ping' : IDL.Func([], [], []),
     'rebuy_tournament' : IDL.Func([IDL.Nat64], [Result], []),
-    'register' : IDL.Func([IDL.Text], [Result_4], []),
+    'register' : IDL.Func([IDL.Text], [Result_8], []),
     'register_tournament' : IDL.Func([IDL.Nat64], [Result], []),
     'remove_friend' : IDL.Func([IDL.Principal], [Result], []),
     'respond_friend_request' : IDL.Func(
@@ -548,7 +611,7 @@ export const idlFactory = ({ IDL }) => {
     'unregister_tournament' : IDL.Func([IDL.Nat64], [Result], []),
     'update_settings' : IDL.Func([Settings], [Result], []),
     'whoami' : IDL.Func([], [IDL.Principal], ['query']),
-    'withdraw' : IDL.Func([Account, IDL.Nat64], [Result_2], []),
+    'withdraw' : IDL.Func([Account, IDL.Nat64], [Result_4], []),
   });
 };
 export const init = ({ IDL }) => {

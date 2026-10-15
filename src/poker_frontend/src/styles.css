@@ -382,3 +382,11 @@ main { padding: 18px 0; }
 .jp-payouts > div.me { background: rgba(245,158,11,.2); }
 .jp-mine { font-size: 18px; font-weight: 800; color: #86efac; }
 @media (max-width: 700px) { .jp-other { display: none; } }
+
+/* ---- wallet history & maintenance banner ---- */
+.op-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); }
+.tag.op-completed { background: #14301f; color: #86efac; }
+.tag.op-failed { background: #3f1d1d; color: #fecaca; }
+.tag.op-unknown, .tag.op-pending { background: #3a2c07; color: #fde047; }
+.status-banner { margin-top: 8px; background: #3a2c07; border: 1px solid #b45309; color: #fde68a; border-radius: 10px; padding: 8px 12px; font-size: 14px; }
+.strike { text-decoration: line-through; }

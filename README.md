@@ -121,6 +121,20 @@ dfx deploy --network ic poker_frontend
 
 Only controllers can call the `admin_*` methods (create tables, add recurring tournaments, add store items, view house stats, withdraw the treasury). Six tables, from micro to high stakes, and the default store catalogue are created at install time.
 
+## Operations
+
+**Storage and upgrades.** Users, usernames, notes, direct messages, hand histories and the ledger-operation log live directly in stable memory (`src/store.rs`), so upgrades never serialize them. Live game state (tables, tournaments, chats) is bounded and saved as a versioned snapshot in `pre_upgrade`. Rule for future changes: new fields on stored records must be `Option<T>`, or bump `SNAPSHOT_VERSION` and migrate in `State::restore`.
+
+**Money movements.** Every deposit, sweep and withdrawal is recorded before it is sent, and sent with `created_at_time` plus a memo carrying the operation id, so the ledger deduplicates retries. Outcomes are *completed*, *failed* (any debit is refunded) or *unknown* (money stays reserved). Unknown operations are re-sent every minute; the ledger either executes them or reports the original as a duplicate, so nothing is paid twice. After the ledger's 24-hour window an admin settles them with `admin_resolve_op`. Players see all of this in the wallet's transaction list.
+
+**Emergency stop.** `admin_set_pause` independently pauses deposits, withdrawals, dealing new hands, and new seats/tables, with a reason shown to players in a banner. Hands in progress always finish and players can always stand up.
+
+**Solvency.** Every 10 minutes (and on demand via `admin_check_solvency`) the canister compares its ICP ledger balance with everything it owes: wallet balances, chips on ICP tables, tournament pools, the jackpot and the treasury. A shortfall pauses withdrawals automatically. `get_status` exposes the latest report publicly. `admin_audit_wallet_total` re-adds every balance to verify the running total.
+
+**Upgrade runbook.** 1) `admin_set_pause` withdrawals and deposits. 2) Check `admin_unresolved_ops` is empty (or wait for the retry loop). 3) `dfx canister stop`, upgrade, `dfx canister start`. Ledger calls still in flight at upgrade time are marked unknown and retried automatically. 4) Unpause.
+
+**Testing.** `cargo test` runs the unit tests (game engine, state, wallet logic, an upgrade round-trip). `./scripts/integration-test.sh` runs the canister against the real ICP ledger on a PocketIC replica: deposits both ways, withdrawals, exact solvency, pause switches, and an upgrade in the middle of a hand. CI runs both.
+
 ## Before taking real money: read this
 
 - **Legal.** Real-money poker is regulated or prohibited in many jurisdictions. Get legal advice, and expect to need licensing, geo-blocking, age verification/KYC and responsible-gambling tooling before launching for real ICP. A play-chips mode is an easy addition if you want a free-to-play launch first.

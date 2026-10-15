@@ -1036,8 +1036,8 @@ impl State {
                 let u = self.users.get(&e.player);
                 Standing {
                     player: e.player,
-                    username: u.map(|u| u.username.clone()).unwrap_or_default(),
-                    avatar: u.map(|u| self.icon(u.avatar)).unwrap_or_default(),
+                    username: u.as_ref().map(|u| u.username.clone()).unwrap_or_default(),
+                    avatar: u.as_ref().map(|u| self.icon(u.avatar)).unwrap_or_default(),
                     chips: if e.place.is_some() { 0 } else { chips },
                     place: e.place,
                     prize: e.prize,

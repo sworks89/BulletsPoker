@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '../context';
-import { Principal, backendId, unwrap, type DepositInfo } from '../ic';
-import { icp, parseIcp } from '../format';
+import { Principal, backendId, unwrap, type DepositInfo, type LedgerOp } from '../ic';
+import { usePoll } from '../context';
+import { icp, parseIcp, timeAgo } from '../format';
 
 export function Wallet() {
   const { backend, ledger, principal, profile, run, refreshProfile } = useApp();
@@ -11,6 +12,8 @@ export function Wallet() {
   const [withdrawAmt, setWithdrawAmt] = useState('');
   const [withdrawTo, setWithdrawTo] = useState('');
   const [busy, setBusy] = useState(false);
+  const [ops, setOps] = useState<LedgerOp[]>([]);
+  usePoll(async () => setOps(await backend.get_my_ledger_ops()), 10000, [backend, principal?.toText()]);
 
   const loadWallet = async () => {
     if (!principal) return;
@@ -125,6 +128,50 @@ export function Wallet() {
         </div>
         <p className="muted small">A ledger fee of {icp(fee)} ICP is deducted from your poker balance on top of the amount.</p>
       </div>
+      <div className="panel">
+        <div className="panel-title">Transactions</div>
+        {ops.length === 0 && <p className="muted small">Deposits and withdrawals show up here.</p>}
+        {ops.map((op) => (
+          <OpRow key={String(op.id)} op={op} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const KIND_LABEL: Record<string, string> = { Deposit: 'Deposit', Sweep: 'Deposit (transfer)', Withdraw: 'Withdrawal', Treasury: 'Treasury' };
+
+function OpRow({ op }: { op: LedgerOp }) {
+  const kind = Object.keys(op.kind)[0];
+  const status = Object.keys(op.status)[0];
+  const incoming = kind === 'Deposit' || kind === 'Sweep';
+  const label: Record<string, string> = {
+    Completed: 'Done',
+    Failed: 'Failed',
+    Pending: 'Sending…',
+    Unknown: 'Confirming with the ledger',
+  };
+  const detail =
+    'Completed' in op.status
+      ? `block #${String(op.status.Completed.block)}`
+      : 'Failed' in op.status
+        ? op.status.Failed.reason
+        : 'Unknown' in op.status
+          ? 'Your balance is reserved until the ledger confirms. This settles automatically.'
+          : '';
+  return (
+    <div className="op-row">
+      <div className="grow">
+        <div className="small">
+          <b>{KIND_LABEL[kind] ?? kind}</b> <span className="muted">· {timeAgo(op.created_at_time)}</span>
+        </div>
+        <div className="muted small">{detail}</div>
+      </div>
+      <div className={status === 'Failed' ? 'muted strike' : incoming ? 'pos' : ''}>
+        {incoming ? '+' : '−'}
+        {icp(op.amount)} ICP
+      </div>
+      <span className={`tag op-${status.toLowerCase()}`}>{label[status] ?? status}</span>
     </div>
   );
 }

@@ -6,8 +6,10 @@ pub mod jackpot;
 pub mod ledger;
 pub mod medals;
 pub mod state;
+pub mod store;
 pub mod table;
 pub mod tournament;
+pub mod wallet;
 
 use candid::{CandidType, Deserialize, Principal};
 use ic_cdk::{init, post_upgrade, pre_upgrade, query, update};
@@ -20,6 +22,7 @@ use std::time::Duration;
 use jackpot::JackpotInfo;
 use medals::MedalDef;
 use table::{Action, Currency, TableConfig};
+use wallet::{LedgerOp, OpKind, OpStatus, PauseFlags, SolvencyReport};
 use tournament::{TournamentDetail, TournamentSummary, TournamentTemplate};
 
 /// Mainnet ICP ledger.
@@ -27,10 +30,12 @@ const ICP_LEDGER: &str = "ryjl3-tyaaa-aaaaa-aaaba-cai";
 const ICP_FEE: u64 = 10_000;
 /// Most tables one client can fetch in a single `get_tables` call.
 const MAX_OPEN_TABLES: usize = 8;
+const SOLVENCY_EVERY_SECS: u64 = 600;
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
     static DEALING: Cell<bool> = const { Cell::new(false) };
+    static RETRYING: Cell<bool> = const { Cell::new(false) };
     /// Users with a wallet operation in flight.
     static WALLET_LOCKS: RefCell<BTreeSet<Principal>> = const { RefCell::new(BTreeSet::new()) };
 }
@@ -103,24 +108,55 @@ fn init(args: Option<InitArgs>) {
     let ledger = args
         .ledger
         .unwrap_or_else(|| Principal::from_text(ICP_LEDGER).unwrap());
-    STATE.with(|s| *s.borrow_mut() = Some(State::new(ledger, args.ledger_fee.unwrap_or(ICP_FEE))));
+    let state = State::new_in(ic_stable_structures::DefaultMemoryImpl::default(), ledger, args.ledger_fee.unwrap_or(ICP_FEE));
+    STATE.with(|s| *s.borrow_mut() = Some(state));
     start_timers();
 }
 
 #[pre_upgrade]
 fn pre_upgrade() {
-    STATE.with(|s| ic_cdk::storage::stable_save((s.borrow().as_ref().unwrap(),)).expect("save state"));
+    // Users, hands and the ledger log already live in stable memory; only the
+    // bounded heap state is written here.
+    with(|s| s.save());
 }
 
 #[post_upgrade]
 fn post_upgrade() {
-    let (state,): (State,) = ic_cdk::storage::stable_restore().expect("restore state");
+    let mut state = State::restore(ic_stable_structures::DefaultMemoryImpl::default());
+    // Calls in flight during the upgrade never reported back: retry them.
+    state.mark_interrupted_ops(now());
     STATE.with(|s| *s.borrow_mut() = Some(state));
     start_timers();
 }
 
 fn start_timers() {
     ic_cdk_timers::set_timer_interval(Duration::from_secs(1), || async { tick().await });
+    ic_cdk_timers::set_timer_interval(Duration::from_secs(60), || async { retry_unknown_ops().await });
+    ic_cdk_timers::set_timer_interval(Duration::from_secs(SOLVENCY_EVERY_SECS), || async {
+        let _ = check_solvency().await;
+    });
+}
+
+/// Re-sends ledger ops whose outcome is unknown. The ledger either executes
+/// them now or reports them as duplicates of the original, so nothing runs twice.
+async fn retry_unknown_ops() {
+    if RETRYING.get() {
+        return;
+    }
+    RETRYING.set(true);
+    for op in with(|s| s.retryable_ops(now())) {
+        let _ = run_op(op).await;
+    }
+    RETRYING.set(false);
+}
+
+async fn check_solvency() -> R<SolvencyReport> {
+    let ledger = with(|s| s.ledger);
+    // Snapshot liabilities before reading the balance: anything settling during
+    // the call can only make the result look better, never trigger a false alarm.
+    let liabilities = with(|s| s.house_stats().liabilities_total);
+    let balance = ledger::balance_of(ledger, main_account()).await?;
+    Ok(with_mut(|s| s.record_solvency(balance, liabilities, now())))
 }
 
 /// Runs every second: enforces action clocks and deals new hands.
@@ -213,70 +249,97 @@ fn get_deposit_info() -> DepositInfo {
     }
 }
 
+fn main_account() -> Account {
+    Account {
+        owner: ic_cdk::api::canister_self(),
+        subaccount: None,
+    }
+}
+
+/// Sends a recorded ledger op and settles it. Deposits pull with ICRC-2;
+/// everything else is a plain ICRC-1 transfer.
+async fn run_op(op: LedgerOp) -> R<LedgerOp> {
+    let ledger = with(|s| s.ledger);
+    let outcome = match op.kind {
+        OpKind::Deposit => ledger::transfer_from_op(ledger, &op).await,
+        _ => ledger::transfer_op(ledger, &op).await,
+    };
+    with_mut(|s| s.finish_op(op.id, outcome, now()))
+}
+
+/// Turns a settled op into the endpoint's reply.
+fn op_reply(op: LedgerOp, ok: impl FnOnce(u64) -> u64) -> R<u64> {
+    match op.status {
+        OpStatus::Completed { block } => Ok(ok(block)),
+        OpStatus::Failed { reason } => Err(reason),
+        _ => Err(format!(
+            "The ledger hasn't confirmed this yet (operation #{}). It will be settled automatically; check your wallet history.",
+            op.id
+        )),
+    }
+}
+
 /// Deposit via ICRC-2: the caller first approves this canister for
-/// `amount + fee` on the ICP ledger, then calls this.
+/// `amount + fee` on the ICP ledger, then calls this. Returns the new balance.
 #[update]
 async fn deposit(amount: u64) -> R<u64> {
     let p = caller()?;
-    with(|s| s.profile(&p)).ok_or("Create a profile first")?;
     let _lock = WalletLock::acquire(p)?;
-    let (ledger, fee) = with(|s| (s.ledger, s.ledger_fee));
-    let from = Account {
-        owner: p,
-        subaccount: None,
-    };
-    let to = Account {
-        owner: ic_cdk::api::canister_self(),
-        subaccount: None,
-    };
-    ledger::transfer_from(ledger, from, to, amount, fee).await?;
-    with_mut(|s| s.credit(&p, amount))?;
-    Ok(with(|s| s.profile(&p).map_or(0, |u| u.balance)))
+    let from = Account { owner: p, subaccount: None };
+    let op = with_mut(|s| s.begin_deposit(p, from, main_account(), amount, now()))?;
+    let op = run_op(op).await?;
+    op_reply(op, |_| with(|s| s.users.get(&p).map_or(0, |u| u.balance)))
 }
 
 /// Deposit via plain transfer: send ICP to your deposit account (see
-/// `get_deposit_info`) from any wallet or exchange, then call this.
+/// `get_deposit_info`) from any wallet or exchange, then call this. Returns the amount credited.
 #[update]
 async fn claim_deposit() -> R<u64> {
     let p = caller()?;
     with(|s| s.profile(&p)).ok_or("Create a profile first")?;
     let _lock = WalletLock::acquire(p)?;
     let (ledger, fee) = with(|s| (s.ledger, s.ledger_fee));
-    let me = ic_cdk::api::canister_self();
     let sub = ledger::deposit_subaccount(&p);
-    let bal = ledger::balance_of(ledger, Account { owner: me, subaccount: Some(sub) }).await?;
+    let bal = ledger::balance_of(ledger, Account { owner: ic_cdk::api::canister_self(), subaccount: Some(sub) }).await?;
     if bal <= fee {
         return Err("No new deposit found".into());
     }
     let amount = bal - fee;
-    let main = Account {
-        owner: me,
-        subaccount: None,
-    };
-    ledger::transfer(ledger, Some(sub), main, amount, fee, b"sweep").await?;
-    with_mut(|s| s.credit(&p, amount))?;
-    Ok(amount)
+    let op = with_mut(|s| s.begin_sweep(p, sub, main_account(), amount, now()))?;
+    let op = run_op(op).await?;
+    op_reply(op, |_| amount)
 }
 
-/// Sends `amount` e8s to `to`. The ledger fee is charged on top.
+/// Sends `amount` e8s to `to`. The ledger fee is charged on top. Returns the block index.
 #[update]
 async fn withdraw(to: Account, amount: u64) -> R<u64> {
     let p = caller()?;
     let _lock = WalletLock::acquire(p)?;
-    let (ledger, fee) = with(|s| (s.ledger, s.ledger_fee));
-    if amount == 0 {
-        return Err("Enter an amount".into());
-    }
-    let total = amount.checked_add(fee).ok_or("Amount too large")?;
-    // Debit first so the balance can't be spent twice while the transfer is in flight.
-    with_mut(|s| s.debit(&p, total))?;
-    match ledger::transfer(ledger, None, to, amount, fee, b"withdraw").await {
-        Ok(block) => Ok(block),
-        Err(e) => {
-            with_mut(|s| s.credit(&p, total))?;
-            Err(e)
-        }
-    }
+    let op = with_mut(|s| s.begin_withdraw(p, to, amount, now()))?;
+    let op = run_op(op).await?;
+    op_reply(op, |block| block)
+}
+
+/// Your recent deposits and withdrawals, newest first.
+#[query]
+fn get_my_ledger_ops() -> Vec<LedgerOp> {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.my_ops(p, 20))
+}
+
+/// Public status: what's paused and the latest solvency check.
+#[derive(CandidType, Deserialize)]
+pub struct ServiceStatus {
+    pub pause: PauseFlags,
+    pub solvency: Option<SolvencyReport>,
+}
+
+#[query]
+fn get_status() -> ServiceStatus {
+    with(|s| ServiceStatus {
+        pause: s.pause.clone(),
+        solvency: s.last_solvency.clone(),
+    })
 }
 
 // ------------------------------------------------------------------- store
@@ -575,23 +638,58 @@ fn admin_house_stats() -> R<HouseStats> {
 /// Withdraws house revenue (rake and store sales) from the treasury.
 #[update]
 async fn admin_withdraw_treasury(to: Account, amount: u64) -> R<u64> {
+    let p = admin()?;
+    let op = with_mut(|s| s.begin_treasury_withdraw(p, to, amount, now()))?;
+    let op = run_op(op).await?;
+    op_reply(op, |block| block)
+}
+
+/// Emergency switches: pause deposits, withdrawals, dealing and/or new joins.
+#[update]
+fn admin_set_pause(flags: PauseFlags) -> R<()> {
     admin()?;
-    let (ledger, fee) = with(|s| (s.ledger, s.ledger_fee));
-    let total = amount.checked_add(fee).ok_or("Amount too large")?;
-    with_mut(|s| {
-        if s.treasury < total {
-            return Err("Treasury too small".to_string());
-        }
-        s.treasury -= total;
-        Ok(())
-    })?;
-    match ledger::transfer(ledger, None, to, amount, fee, b"treasury").await {
-        Ok(block) => Ok(block),
-        Err(e) => {
-            with_mut(|s| s.treasury += total);
-            Err(e)
-        }
+    with_mut(|s| s.set_pause(flags));
+    Ok(())
+}
+
+/// Compares the canister's ICP balance with everything it owes. A shortfall
+/// pauses withdrawals automatically. Also runs every 10 minutes on its own.
+#[update]
+async fn admin_check_solvency() -> R<SolvencyReport> {
+    admin()?;
+    check_solvency().await
+}
+
+/// Ledger operations whose outcome is unknown and need attention.
+#[query]
+fn admin_unresolved_ops() -> R<Vec<LedgerOp>> {
+    admin()?;
+    Ok(with(|s| s.unresolved_ops()))
+}
+
+/// Settles an unknown op after checking the ledger by hand (beyond the 24h retry window).
+#[update]
+fn admin_resolve_op(id: u64, executed: bool, block: Option<u64>) -> R<LedgerOp> {
+    admin()?;
+    with_mut(|s| s.resolve_op(id, executed, block, now()))
+}
+
+/// Re-sends an unknown op right away (it's deduplicated by the ledger).
+#[update]
+async fn admin_retry_op(id: u64) -> R<LedgerOp> {
+    admin()?;
+    let op = with(|s| s.stores.ledger_ops.get(&id)).ok_or("No such operation")?;
+    if !op.is_unknown() {
+        return Err("Only operations with an unknown outcome can be retried".into());
     }
+    run_op(op).await
+}
+
+/// Recomputes the sum of ICP balances by scanning every user, to verify the running total.
+#[query]
+fn admin_audit_wallet_total() -> R<(u64, u64)> {
+    admin()?;
+    Ok(with(|s| (s.wallet_total, s.recount_wallet_total())))
 }
 
 ic_cdk::export_candid!();

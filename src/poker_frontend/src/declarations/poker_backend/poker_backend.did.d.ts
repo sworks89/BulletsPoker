@@ -176,6 +176,25 @@ export interface LeaderboardEntry {
   'stats' : Stats,
   'avatar' : string,
 }
+export interface LedgerOp {
+  'id' : bigint,
+  'to' : Account,
+  'fee' : bigint,
+  'status' : OpStatus,
+  'updated_at' : bigint,
+  'from' : [] | [Account],
+  'kind' : OpKind,
+  /**
+   * The player (or the controller for treasury withdrawals).
+   */
+  'user' : Principal,
+  'from_subaccount' : [] | [Uint8Array | number[]],
+  'created_at_time' : bigint,
+  /**
+   * Amount moved on the ledger, excluding the fee.
+   */
+  'amount' : bigint,
+}
 /**
  * One line of a hand's action log, used for hand histories and replays.
  */
@@ -214,6 +233,47 @@ export interface NoteView {
   'color' : [] | [NoteColor],
   'text' : string,
   'avatar' : string,
+}
+export type OpKind = {
+    /**
+     * Player withdrawal from their poker balance.
+     */
+    'Withdraw' : null
+  } |
+  {
+    /**
+     * Sweep of a player's deposit subaccount into the main account.
+     */
+    'Sweep' : null
+  } |
+  {
+    /**
+     * ICRC-2 transfer_from the player's wallet into the canister.
+     */
+    'Deposit' : null
+  } |
+  {
+    /**
+     * Controller withdrawal from the house treasury.
+     */
+    'Treasury' : null
+  };
+export type OpStatus = { 'Failed' : { 'reason' : string } } |
+  { 'Unknown' : { 'attempts' : number, 'reason' : string } } |
+  { 'Completed' : { 'block' : bigint } } |
+  { 'Pending' : null };
+export interface PauseFlags {
+  /**
+   * No new seats, rooms or tournament entries.
+   */
+  'joins' : boolean,
+  'withdrawals' : boolean,
+  'deposits' : boolean,
+  /**
+   * No new hands are dealt (hands in progress finish).
+   */
+  'dealing' : boolean,
+  'reason' : [] | [string],
 }
 export type Phase = { 'Flop' : null } |
   { 'Turn' : null } |
@@ -276,11 +336,19 @@ export type Result = { 'Ok' : null } |
   { 'Err' : string };
 export type Result_1 = { 'Ok' : number } |
   { 'Err' : string };
-export type Result_2 = { 'Ok' : bigint } |
+export type Result_2 = { 'Ok' : [bigint, bigint] } |
   { 'Err' : string };
-export type Result_3 = { 'Ok' : HouseStats } |
+export type Result_3 = { 'Ok' : SolvencyReport } |
   { 'Err' : string };
-export type Result_4 = { 'Ok' : Profile } |
+export type Result_4 = { 'Ok' : bigint } |
+  { 'Err' : string };
+export type Result_5 = { 'Ok' : HouseStats } |
+  { 'Err' : string };
+export type Result_6 = { 'Ok' : LedgerOp } |
+  { 'Err' : string };
+export type Result_7 = { 'Ok' : Array<LedgerOp> } |
+  { 'Err' : string };
+export type Result_8 = { 'Ok' : Profile } |
   { 'Err' : string };
 export interface RoomArgs {
   'action_timeout_secs' : bigint,
@@ -312,6 +380,13 @@ export interface SeatView {
   'folded' : boolean,
   'avatar' : string,
 }
+/**
+ * Public status: what's paused and the latest solvency check.
+ */
+export interface ServiceStatus {
+  'solvency' : [] | [SolvencyReport],
+  'pause' : PauseFlags,
+}
 export interface Settings {
   /**
    * Refill your stack to the table maximum after each hand when it drops below half.
@@ -330,6 +405,17 @@ export interface ShownHand {
   'cards' : Uint8Array | number[],
   'hand' : string,
   'seat' : number,
+}
+export interface SolvencyReport {
+  'ok' : boolean,
+  'liabilities' : bigint,
+  'ledger_balance' : bigint,
+  /**
+   * Ledger balance minus liabilities (negative means insolvent).
+   */
+  'surplus' : bigint,
+  'unresolved_ops' : bigint,
+  'checked_at' : bigint,
 }
 export interface Standing {
   'table' : [] | [bigint],
@@ -610,37 +696,62 @@ export interface _SERVICE {
    * Adds a recurring tournament (a sit-and-go or a scheduled event).
    */
   'admin_add_tournament' : ActorMethod<[TournamentTemplate], Result_1>,
-  'admin_create_table' : ActorMethod<[TableConfig], Result_2>,
-  'admin_house_stats' : ActorMethod<[], Result_3>,
+  /**
+   * Recomputes the sum of ICP balances by scanning every user, to verify the running total.
+   */
+  'admin_audit_wallet_total' : ActorMethod<[], Result_2>,
+  /**
+   * Compares the canister's ICP balance with everything it owes. A shortfall
+   * pauses withdrawals automatically. Also runs every 10 minutes on its own.
+   */
+  'admin_check_solvency' : ActorMethod<[], Result_3>,
+  'admin_create_table' : ActorMethod<[TableConfig], Result_4>,
+  'admin_house_stats' : ActorMethod<[], Result_5>,
+  /**
+   * Settles an unknown op after checking the ledger by hand (beyond the 24h retry window).
+   */
+  'admin_resolve_op' : ActorMethod<[bigint, boolean, [] | [bigint]], Result_6>,
+  /**
+   * Re-sends an unknown op right away (it's deduplicated by the ledger).
+   */
+  'admin_retry_op' : ActorMethod<[bigint], Result_6>,
   /**
    * Moves ICP from the house treasury into the bad-beat jackpot.
    */
   'admin_seed_jackpot' : ActorMethod<[bigint], Result>,
   'admin_set_item_available' : ActorMethod<[number, boolean], Result>,
   /**
+   * Emergency switches: pause deposits, withdrawals, dealing and/or new joins.
+   */
+  'admin_set_pause' : ActorMethod<[PauseFlags], Result>,
+  /**
+   * Ledger operations whose outcome is unknown and need attention.
+   */
+  'admin_unresolved_ops' : ActorMethod<[], Result_7>,
+  /**
    * Withdraws house revenue (rake and store sales) from the treasury.
    */
-  'admin_withdraw_treasury' : ActorMethod<[Account, bigint], Result_2>,
+  'admin_withdraw_treasury' : ActorMethod<[Account, bigint], Result_4>,
   'buy_item' : ActorMethod<[number, Currency], Result>,
   /**
    * Claims the daily free play-chip bonus (bigger on consecutive days).
    */
-  'claim_daily_chips' : ActorMethod<[], Result_2>,
+  'claim_daily_chips' : ActorMethod<[], Result_4>,
   /**
    * Deposit via plain transfer: send ICP to your deposit account (see
-   * `get_deposit_info`) from any wallet or exchange, then call this.
+   * `get_deposit_info`) from any wallet or exchange, then call this. Returns the amount credited.
    */
-  'claim_deposit' : ActorMethod<[], Result_2>,
+  'claim_deposit' : ActorMethod<[], Result_4>,
   'close_room' : ActorMethod<[bigint], Result>,
   /**
    * Creates your own table. Hosts of ICP tables earn 20% of the rake it generates.
    */
-  'create_room' : ActorMethod<[RoomArgs], Result_2>,
+  'create_room' : ActorMethod<[RoomArgs], Result_4>,
   /**
    * Deposit via ICRC-2: the caller first approves this canister for
-   * `amount + fee` on the ICP ledger, then calls this.
+   * `amount + fee` on the ICP ledger, then calls this. Returns the new balance.
    */
-  'deposit' : ActorMethod<[bigint], Result_2>,
+  'deposit' : ActorMethod<[bigint], Result_4>,
   'equip' : ActorMethod<[number], Result>,
   'find_user' : ActorMethod<[string], [] | [PublicProfile]>,
   'get_chat' : ActorMethod<[Channel, bigint], Array<ChatMessage>>,
@@ -660,12 +771,17 @@ export interface _SERVICE {
    */
   'get_jackpots' : ActorMethod<[], JackpotInfo>,
   'get_leaderboard' : ActorMethod<[], Array<LeaderboardEntry>>,
+  /**
+   * Your recent deposits and withdrawals, newest first.
+   */
+  'get_my_ledger_ops' : ActorMethod<[], Array<LedgerOp>>,
   'get_my_profile' : ActorMethod<[], [] | [Profile]>,
   /**
    * All your notes, most recently updated first.
    */
   'get_notes' : ActorMethod<[], Array<NoteView>>,
   'get_profile' : ActorMethod<[Principal], [] | [PublicProfile]>,
+  'get_status' : ActorMethod<[], ServiceStatus>,
   'get_table' : ActorMethod<[bigint], [] | [TableView]>,
   /**
    * `password` is only needed for password-protected player rooms.
@@ -677,7 +793,7 @@ export interface _SERVICE {
    * `password` is only needed for password-protected player rooms.
    */
   'join_table' : ActorMethod<[bigint, number, bigint, [] | [string]], Result>,
-  'leave_table' : ActorMethod<[bigint], Result_2>,
+  'leave_table' : ActorMethod<[bigint], Result_4>,
   'list_medals' : ActorMethod<[], Array<MedalDef>>,
   'list_store' : ActorMethod<[], Array<StoreItem>>,
   'list_tables' : ActorMethod<[], Array<TableSummary>>,
@@ -687,7 +803,7 @@ export interface _SERVICE {
    * Buys a fresh starting stack during a tournament's rebuy period (buy-in only, no fee).
    */
   'rebuy_tournament' : ActorMethod<[bigint], Result>,
-  'register' : ActorMethod<[string], Result_4>,
+  'register' : ActorMethod<[string], Result_8>,
   'register_tournament' : ActorMethod<[bigint], Result>,
   'remove_friend' : ActorMethod<[Principal], Result>,
   'respond_friend_request' : ActorMethod<[Principal, boolean], Result>,
@@ -707,9 +823,9 @@ export interface _SERVICE {
   'update_settings' : ActorMethod<[Settings], Result>,
   'whoami' : ActorMethod<[], Principal>,
   /**
-   * Sends `amount` e8s to `to`. The ledger fee is charged on top.
+   * Sends `amount` e8s to `to`. The ledger fee is charged on top. Returns the block index.
    */
-  'withdraw' : ActorMethod<[Account, bigint], Result_2>,
+  'withdraw' : ActorMethod<[Account, bigint], Result_4>,
 }
 export declare const idlFactory: IDL.InterfaceFactory;
 export declare const init: (args: { IDL: typeof IDL }) => IDL.Type[];

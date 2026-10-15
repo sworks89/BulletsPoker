@@ -139,6 +139,21 @@ type LeaderboardEntry = record {
   stats : Stats;
   avatar : text;
 };
+type LedgerOp = record {
+  id : nat64;
+  to : Account;
+  fee : nat64;
+  status : OpStatus;
+  updated_at : nat64;
+  from : opt Account;
+  kind : OpKind;
+  // The player (or the controller for treasury withdrawals).
+  user : principal;
+  from_subaccount : opt blob;
+  created_at_time : nat64;
+  // Amount moved on the ledger, excluding the fee.
+  amount : nat64;
+};
 // One line of a hand's action log, used for hand histories and replays.
 type LogEntry = record {
   seat : opt nat8;
@@ -163,6 +178,31 @@ type NoteView = record {
   color : opt NoteColor;
   "text" : text;
   avatar : text;
+};
+type OpKind = variant {
+  // Player withdrawal from their poker balance.
+  Withdraw;
+  // Sweep of a player's deposit subaccount into the main account.
+  Sweep;
+  // ICRC-2 transfer_from the player's wallet into the canister.
+  Deposit;
+  // Controller withdrawal from the house treasury.
+  Treasury;
+};
+type OpStatus = variant {
+  Failed : record { reason : text };
+  Unknown : record { attempts : nat32; reason : text };
+  Completed : record { block : nat64 };
+  Pending;
+};
+type PauseFlags = record {
+  // No new seats, rooms or tournament entries.
+  joins : bool;
+  withdrawals : bool;
+  deposits : bool;
+  // No new hands are dealt (hands in progress finish).
+  dealing : bool;
+  reason : opt text;
 };
 type Phase = variant { Flop; Turn; River; HandOver; Waiting; PreFlop };
 // A private note one player keeps about another. Only its author can see it.
@@ -212,9 +252,13 @@ type PublicProfile = record {
 };
 type Result = variant { Ok; Err : text };
 type Result_1 = variant { Ok : nat32; Err : text };
-type Result_2 = variant { Ok : nat64; Err : text };
-type Result_3 = variant { Ok : HouseStats; Err : text };
-type Result_4 = variant { Ok : Profile; Err : text };
+type Result_2 = variant { Ok : record { nat64; nat64 }; Err : text };
+type Result_3 = variant { Ok : SolvencyReport; Err : text };
+type Result_4 = variant { Ok : nat64; Err : text };
+type Result_5 = variant { Ok : HouseStats; Err : text };
+type Result_6 = variant { Ok : LedgerOp; Err : text };
+type Result_7 = variant { Ok : vec LedgerOp; Err : text };
+type Result_8 = variant { Ok : Profile; Err : text };
 type RoomArgs = record {
   action_timeout_secs : nat64;
   password : opt text;
@@ -243,6 +287,11 @@ type SeatView = record {
   folded : bool;
   avatar : text;
 };
+// Public status: what's paused and the latest solvency check.
+type ServiceStatus = record {
+  solvency : opt SolvencyReport;
+  pause : PauseFlags;
+};
 type Settings = record {
   // Refill your stack to the table maximum after each hand when it drops below half.
   auto_top_up : bool;
@@ -257,6 +306,15 @@ type ShownHand = record {
   cards : blob;
   hand : text;
   seat : nat8;
+};
+type SolvencyReport = record {
+  ok : bool;
+  liabilities : nat64;
+  ledger_balance : nat64;
+  // Ledger balance minus liabilities (negative means insolvent).
+  surplus : int;
+  unresolved_ops : nat64;
+  checked_at : nat64;
 };
 type Standing = record {
   table : opt nat64;
@@ -470,25 +528,38 @@ service : (opt InitArgs) -> {
   admin_add_item : (StoreItem) -> (Result_1);
   // Adds a recurring tournament (a sit-and-go or a scheduled event).
   admin_add_tournament : (TournamentTemplate) -> (Result_1);
-  admin_create_table : (TableConfig) -> (Result_2);
-  admin_house_stats : () -> (Result_3) query;
+  // Recomputes the sum of ICP balances by scanning every user, to verify the running total.
+  admin_audit_wallet_total : () -> (Result_2) query;
+  // Compares the canister's ICP balance with everything it owes. A shortfall
+  // pauses withdrawals automatically. Also runs every 10 minutes on its own.
+  admin_check_solvency : () -> (Result_3);
+  admin_create_table : (TableConfig) -> (Result_4);
+  admin_house_stats : () -> (Result_5) query;
+  // Settles an unknown op after checking the ledger by hand (beyond the 24h retry window).
+  admin_resolve_op : (nat64, bool, opt nat64) -> (Result_6);
+  // Re-sends an unknown op right away (it's deduplicated by the ledger).
+  admin_retry_op : (nat64) -> (Result_6);
   // Moves ICP from the house treasury into the bad-beat jackpot.
   admin_seed_jackpot : (nat64) -> (Result);
   admin_set_item_available : (nat32, bool) -> (Result);
+  // Emergency switches: pause deposits, withdrawals, dealing and/or new joins.
+  admin_set_pause : (PauseFlags) -> (Result);
+  // Ledger operations whose outcome is unknown and need attention.
+  admin_unresolved_ops : () -> (Result_7) query;
   // Withdraws house revenue (rake and store sales) from the treasury.
-  admin_withdraw_treasury : (Account, nat64) -> (Result_2);
+  admin_withdraw_treasury : (Account, nat64) -> (Result_4);
   buy_item : (nat32, Currency) -> (Result);
   // Claims the daily free play-chip bonus (bigger on consecutive days).
-  claim_daily_chips : () -> (Result_2);
+  claim_daily_chips : () -> (Result_4);
   // Deposit via plain transfer: send ICP to your deposit account (see
-  // `get_deposit_info`) from any wallet or exchange, then call this.
-  claim_deposit : () -> (Result_2);
+  // `get_deposit_info`) from any wallet or exchange, then call this. Returns the amount credited.
+  claim_deposit : () -> (Result_4);
   close_room : (nat64) -> (Result);
   // Creates your own table. Hosts of ICP tables earn 20% of the rake it generates.
-  create_room : (RoomArgs) -> (Result_2);
+  create_room : (RoomArgs) -> (Result_4);
   // Deposit via ICRC-2: the caller first approves this canister for
-  // `amount + fee` on the ICP ledger, then calls this.
-  deposit : (nat64) -> (Result_2);
+  // `amount + fee` on the ICP ledger, then calls this. Returns the new balance.
+  deposit : (nat64) -> (Result_4);
   equip : (nat32) -> (Result);
   find_user : (text) -> (opt PublicProfile) query;
   get_chat : (Channel, nat64) -> (vec ChatMessage) query;
@@ -502,10 +573,13 @@ service : (opt InitArgs) -> {
   // Current bad-beat jackpots, the rules and recent hits.
   get_jackpots : () -> (JackpotInfo) query;
   get_leaderboard : () -> (vec LeaderboardEntry) query;
+  // Your recent deposits and withdrawals, newest first.
+  get_my_ledger_ops : () -> (vec LedgerOp) query;
   get_my_profile : () -> (opt Profile) query;
   // All your notes, most recently updated first.
   get_notes : () -> (vec NoteView) query;
   get_profile : (principal) -> (opt PublicProfile) query;
+  get_status : () -> (ServiceStatus) query;
   get_table : (nat64) -> (opt TableView) query;
   // `password` is only needed for password-protected player rooms.
   // Views of several tables at once (for multi-tabling); unknown ids are skipped.
@@ -513,7 +587,7 @@ service : (opt InitArgs) -> {
   get_tournament : (nat64) -> (opt TournamentDetail) query;
   // `password` is only needed for password-protected player rooms.
   join_table : (nat64, nat8, nat64, opt text) -> (Result);
-  leave_table : (nat64) -> (Result_2);
+  leave_table : (nat64) -> (Result_4);
   list_medals : () -> (vec MedalDef) query;
   list_store : () -> (vec StoreItem) query;
   list_tables : () -> (vec TableSummary) query;
@@ -521,7 +595,7 @@ service : (opt InitArgs) -> {
   ping : () -> ();
   // Buys a fresh starting stack during a tournament's rebuy period (buy-in only, no fee).
   rebuy_tournament : (nat64) -> (Result);
-  register : (text) -> (Result_4);
+  register : (text) -> (Result_8);
   register_tournament : (nat64) -> (Result);
   remove_friend : (principal) -> (Result);
   respond_friend_request : (principal, bool) -> (Result);
@@ -538,6 +612,6 @@ service : (opt InitArgs) -> {
   unregister_tournament : (nat64) -> (Result);
   update_settings : (Settings) -> (Result);
   whoami : () -> (principal) query;
-  // Sends `amount` e8s to `to`. The ledger fee is charged on top.
-  withdraw : (Account, nat64) -> (Result_2);
+  // Sends `amount` e8s to `to`. The ledger fee is charged on top. Returns the block index.
+  withdraw : (Account, nat64) -> (Result_4);
 }
