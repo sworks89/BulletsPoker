@@ -6,6 +6,7 @@ import { amount, amountWithUnit, bytes, cardRank, cardSuit, CHIPS, countdown, IC
 import { sounds } from '../sound';
 import { Chat } from './Chat';
 import { NoteEditor } from './Notes';
+import { SafetyActions } from './Safety';
 import { JackpotCelebration } from './Jackpot';
 
 export function Card({ c, back, small }: { c?: number; back?: string; small?: boolean }) {
@@ -545,6 +546,7 @@ function PlayerCard({ seat, view, canThrow, onClose }: { seat: SeatView; view: T
   const gifts = all.filter((i) => 'Gift' in i.kind);
   const throwables = all.filter((i) => 'Throwable' in i.kind);
   const isFriend = profile?.friends.some((f) => f.toText() === seat.player.toText());
+  const blocked = profile?.blocked.some((b) => b.toText() === seat.player.toText());
   const tableCurrency = view.config.currency;
 
   const use = async (item: StoreItem, kind: 'gift' | 'throw') => {
@@ -602,11 +604,12 @@ function PlayerCard({ seat, view, canThrow, onClose }: { seat: SeatView; view: T
             ))}
           </div>
         )}
-        {profile && !isFriend && (
+        {profile && !isFriend && !blocked && (
           <button className="btn" onClick={() => run(async () => unwrap(await backend.send_friend_request(seat.player)), 'Friend request sent')}>
             + Add friend
           </button>
         )}
+        <SafetyActions player={seat.player} username={seat.username} channel={{ Table: view.id }} onBlocked={onClose} />
         {profile && (
           <>
             {canThrow && (

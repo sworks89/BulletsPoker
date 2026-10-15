@@ -388,5 +388,11 @@ main { padding: 18px 0; }
 .tag.op-completed { background: #14301f; color: #86efac; }
 .tag.op-failed { background: #3f1d1d; color: #fecaca; }
 .tag.op-unknown, .tag.op-pending { background: #3a2c07; color: #fde047; }
+.status-banner.danger { background: #3b0d0d; border-color: #b91c1c; color: #fecaca; }
+.safety { margin-top: 8px; }
+.report-reasons { display: grid; gap: 6px; margin: 8px 0 12px; }
+.report-reasons label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.report-reasons input { width: auto; margin: 0; flex: none; }
+.modal textarea { width: 100%; box-sizing: border-box; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; resize: vertical; }
 .status-banner { margin-top: 8px; background: #3a2c07; border: 1px solid #b45309; color: #fde68a; border-radius: 10px; padding: 8px 12px; font-size: 14px; }
 .strike { text-decoration: line-through; }

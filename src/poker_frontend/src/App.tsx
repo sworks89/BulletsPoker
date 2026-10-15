@@ -12,6 +12,7 @@ import { Wallet } from './components/Wallet';
 import { Store } from './components/Store';
 import { Friends } from './components/Friends';
 import { Leaderboard, ProfilePage, Register } from './components/Profile';
+import { AccountNotice } from './components/Safety';
 
 const NAV: { name: View['name']; label: string }[] = [
   { name: 'lobby', label: 'Lobby' },
@@ -87,6 +88,7 @@ function Shell() {
       </header>
 
       <StatusBanner />
+      <AccountNotice />
       <TableStrip />
 
       <main>

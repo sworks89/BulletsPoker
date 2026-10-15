@@ -4,6 +4,7 @@ import { unwrap, type ChatMessage, type FriendInfo, type PublicProfile } from '.
 import type { Principal } from '@icp-sdk/core/principal';
 import { mergeMessages } from './Chat';
 import { NotesPanel } from './Notes';
+import { BlockedPanel } from './Safety';
 
 export function Friends() {
   const { backend, profile, run, refreshProfile, go } = useApp();
@@ -110,6 +111,7 @@ export function Friends() {
       {chatWith && <DirectMessages friend={chatWith} onClose={() => setChatWith(null)} />}
 
       <NotesPanel />
+      <BlockedPanel />
     </div>
   );
 }

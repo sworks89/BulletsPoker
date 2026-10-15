@@ -100,6 +100,8 @@ pub struct Seat {
     pub committed: u64,
     pub acted: bool,
     pub sitting_out: bool,
+    /// When the player started sitting out (cash tables stand them up after a while).
+    pub sitting_out_since: Option<u64>,
     /// Player stood up mid-hand; their stack was already paid out.
     pub left: bool,
     pub last_action: Option<String>,
@@ -118,6 +120,7 @@ impl Seat {
             committed: 0,
             acted: false,
             sitting_out: false,
+            sitting_out_since: None,
             left: false,
             last_action: None,
         }
@@ -367,10 +370,24 @@ impl Table {
         Ok(())
     }
 
-    pub fn set_sitting_out(&mut self, player: &Principal, out: bool) -> Result<(), String> {
+    pub fn set_sitting_out(&mut self, player: &Principal, out: bool, now: u64) -> Result<(), String> {
         let i = self.seat_of(player).ok_or("You are not seated")?;
-        self.seat_mut(i).sitting_out = out;
+        let s = self.seat_mut(i);
+        s.sitting_out = out;
+        s.sitting_out_since = if out { s.sitting_out_since.or(Some(now)) } else { None };
         Ok(())
+    }
+
+    /// Players who have been sitting out since before `cutoff` and aren't in a
+    /// live hand (so they can be stood up without affecting a pot).
+    pub fn idle_players(&self, cutoff: u64) -> Vec<Principal> {
+        self.seats
+            .iter()
+            .flatten()
+            .filter(|s| !s.left && s.sitting_out && s.sitting_out_since.is_some_and(|t| t <= cutoff))
+            .filter(|s| !(self.phase.is_betting() && s.live()))
+            .map(|s| s.player)
+            .collect()
     }
 
     /// Stands a player up. Returns the chips to credit back to their wallet.
@@ -940,7 +957,9 @@ impl Table {
         let s = self.seat(i);
         let p = s.player;
         let action = if s.bet >= self.current_bet { Action::Check } else { Action::Fold };
-        self.seat_mut(i).sitting_out = true;
+        let s = self.seat_mut(i);
+        s.sitting_out = true;
+        s.sitting_out_since = s.sitting_out_since.or(Some(now));
         self.act(&p, action, now).ok()?;
         Some(p)
     }
@@ -1114,7 +1133,7 @@ mod tests {
         t.tournament_mode = true;
         t.sit(p(1), 0, 100).unwrap();
         t.sit(p(2), 1, 100).unwrap();
-        t.set_sitting_out(&p(1), true).unwrap();
+        t.set_sitting_out(&p(1), true, 0).unwrap();
         let mut now = 0;
         let mut hands = 0;
         // p1 is away: they keep being dealt in and auto-folded until they bust.

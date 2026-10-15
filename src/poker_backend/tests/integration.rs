@@ -259,8 +259,8 @@ fn pause_switches_block_money_movement() {
     env.register(alice, "alice");
     env.approve_and_deposit(alice, 3 * E8S).unwrap();
 
-    let not_admin: R<()> = env.update(alice, "admin_set_pause", encode_one(PauseFlags::default()).unwrap());
-    assert!(not_admin.is_err());
+    // Refused by inspect_message before it ever runs.
+    assert!(env.pic.update_call(env.poker, alice, "admin_set_pause", encode_one(PauseFlags::default()).unwrap()).is_err());
 
     let flags = PauseFlags { withdrawals: true, deposits: true, reason: Some("maintenance".into()), ..Default::default() };
     let r: R<()> = env.update(env.admin, "admin_set_pause", encode_one(flags).unwrap());
@@ -324,4 +324,56 @@ fn icp_hands_and_an_upgrade_mid_game() {
     let report = env.solvency();
     assert!(report.ok, "{report:?}");
     assert_eq!(report.surplus, 0);
+}
+
+#[test]
+fn ingress_filter_moderation_and_metrics() {
+    let Some(env) = Env::new() else { return };
+    let (alice, bob, stranger) = (principal(1), principal(2), principal(9));
+    env.register(alice, "alice");
+    env.register(bob, "bob");
+
+    // Unregistered and anonymous callers can only register.
+    assert!(env.pic.update_call(env.poker, stranger, "claim_daily_chips", encode_args(()).unwrap()).is_err());
+    assert!(env.pic.update_call(env.poker, Principal::anonymous(), "register", encode_one("anon".to_string()).unwrap()).is_err());
+    // Oversized arguments are dropped.
+    assert!(env.pic.update_call(env.poker, alice, "set_status", encode_one("x".repeat(20_000)).unwrap()).is_err());
+    // Moderator methods need the role.
+    assert!(env.pic.update_call(env.poker, alice, "mod_mute", encode_args((bob, 1u32)).unwrap()).is_err());
+    let r: R<()> = env.update(env.admin, "admin_set_moderator", encode_args((alice, true)).unwrap());
+    r.unwrap();
+    let r: R<()> = env.update(alice, "mod_mute", encode_args((bob, 1u32)).unwrap());
+    r.unwrap();
+    let r: R<()> = env.update(bob, "send_chat", encode_args((poker_backend::state::Channel::Lobby, "hi".to_string())).unwrap());
+    assert!(r.unwrap_err().contains("muted"));
+
+    // Request budget: a burst of 20, then refused until it refills.
+    let mut refused = 0;
+    for _ in 0..30 {
+        if env.pic.update_call(env.poker, alice, "set_status", encode_one("spam".to_string()).unwrap()).is_err() {
+            refused += 1;
+        }
+    }
+    assert!(refused >= 5, "refused {refused}");
+    env.pic.advance_time(Duration::from_secs(5));
+    env.pic.tick(); // inspect_message sees the time of the last executed round
+    let r: R<()> = env.update(alice, "set_status", encode_one("back".to_string()).unwrap());
+    r.unwrap();
+
+    // Metrics over HTTP.
+    use poker_backend::metrics::{HttpRequest, HttpResponse};
+    let get = |url: &str| -> HttpResponse {
+        let req = HttpRequest { method: "GET".into(), url: url.into(), headers: vec![], body: Default::default() };
+        env.query(Principal::anonymous(), "http_request", encode_one(req).unwrap())
+    };
+    let m = get("/metrics");
+    assert_eq!(m.status_code, 200);
+    let text = String::from_utf8(m.body.into_vec()).unwrap();
+    assert!(text.contains("bp_users 2\n"), "{text}");
+    assert!(text.contains("bp_cycles "));
+    assert!(!text.contains("bp_heap_bytes 0\n"));
+    assert_eq!(get("/health").status_code, 200);
+    assert_eq!(get("/nope").status_code, 404);
+    let log: R<Vec<poker_backend::moderation::AuditEntry>> = env.query(env.admin, "admin_audit_log", encode_one(10u32).unwrap());
+    assert_eq!(log.unwrap().len(), 2, "moderator appointment and the mute");
 }

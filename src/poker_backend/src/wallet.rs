@@ -159,7 +159,7 @@ impl State {
         if self.pause.deposits {
             return Err(self.paused_msg("Deposits"));
         }
-        self.user(&user)?;
+        self.check_not_banned(&user, now)?;
         let mut op = self.new_op(OpKind::Deposit, user, amount, to, now);
         op.from = Some(from);
         self.stores.ledger_ops.insert(op.id, op.clone());
@@ -195,9 +195,13 @@ impl State {
             }
             Outcome::Failed(reason) => {
                 self.apply_failure(&op);
+                self.counters.ledger_ops_failed += 1;
                 OpStatus::Failed { reason }
             }
-            Outcome::Unknown(reason) => OpStatus::Unknown { reason, attempts: attempts + 1 },
+            Outcome::Unknown(reason) => {
+                self.counters.ledger_ops_unknown += 1;
+                OpStatus::Unknown { reason, attempts: attempts + 1 }
+            }
         };
         op.updated_at = now;
         if op.is_unknown() {

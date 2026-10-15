@@ -20,6 +20,18 @@ export type Action = { 'Call' : null } |
   } |
   { 'AllIn' : null } |
   { 'Check' : null };
+export interface AuditEntry {
+  'action' : string,
+  'actor' : Principal,
+  'time' : bigint,
+}
+export interface Ban {
+  /**
+   * 0 = permanent.
+   */
+  'until' : bigint,
+  'reason' : string,
+}
 export type Channel = { 'Lobby' : null } |
   { 'Table' : bigint };
 export interface ChatMessage {
@@ -123,6 +135,17 @@ export interface HouseStats {
   'users' : bigint,
   'treasury' : bigint,
 }
+export interface HttpRequest {
+  'url' : string,
+  'method' : string,
+  'body' : Uint8Array | number[],
+  'headers' : Array<[string, string]>,
+}
+export interface HttpResponse {
+  'body' : Uint8Array | number[],
+  'headers' : Array<[string, string]>,
+  'status_code' : number,
+}
 export interface InitArgs {
   'ledger' : [] | [Principal],
   'ledger_fee' : [] | [bigint],
@@ -217,6 +240,59 @@ export type MessageKind = { 'System' : null } |
   { 'Gift' : null } |
   { 'Text' : null } |
   { 'Throw' : null };
+export interface Metrics {
+  'running_tournaments' : bigint,
+  'last_solvency_surplus_e8s' : [] | [bigint],
+  'treasury_e8s' : bigint,
+  'jackpot_chips' : bigint,
+  'bans' : bigint,
+  'last_solvency_at' : [] | [bigint],
+  'last_solvency_ok' : [] | [boolean],
+  'idle_stand_ups' : bigint,
+  'reports_filed' : bigint,
+  'open_reports' : bigint,
+  'time' : bigint,
+  'seated_players' : bigint,
+  'ledger_ops_unknown' : bigint,
+  'paused_deposits' : boolean,
+  'paused_joins' : boolean,
+  'tables' : bigint,
+  'cycles' : bigint,
+  'liabilities_e8s' : bigint,
+  'paused_withdrawals' : boolean,
+  'users' : bigint,
+  'ledger_ops_failed' : bigint,
+  /**
+   * Players who made an update call in the last 5 minutes.
+   */
+  'active_players_5m' : bigint,
+  'unresolved_ledger_ops' : bigint,
+  'hands_dealt' : bigint,
+  'wallet_total_e8s' : bigint,
+  'paused_dealing' : boolean,
+  'stable_bytes' : bigint,
+  /**
+   * Tables with at least two players seated.
+   */
+  'active_tables' : bigint,
+  'jackpot_icp_e8s' : bigint,
+  'rate_limited_calls' : bigint,
+  'heap_bytes' : bigint,
+}
+export type ModAction = {
+    /**
+     * Suspension for this many hours (0 = permanent).
+     */
+    'Ban' : number
+  } |
+  { 'Warn' : null } |
+  { 'Dismiss' : null } |
+  {
+    /**
+     * Chat mute for this many hours.
+     */
+    'MuteChat' : number
+  };
 /**
  * Color label for a player note (a quick read on a player's style).
  */
@@ -297,10 +373,13 @@ export interface PlayerResult {
 export interface Profile {
   'id' : Principal,
   'xp' : bigint,
+  'ban' : [] | [Ban],
   'status' : string,
   'friend_requests' : Array<Principal>,
+  'chat_muted_until' : bigint,
   'username' : string,
   'balance' : bigint,
+  'blocked' : Array<Principal>,
   'chips' : bigint,
   'inventory' : Uint32Array | number[],
   /**
@@ -332,23 +411,62 @@ export interface PublicProfile {
   'medals' : Array<string>,
   'online' : boolean,
 }
+export interface Report {
+  'id' : bigint,
+  'status' : ReportStatus,
+  'created_at' : bigint,
+  'target' : Principal,
+  /**
+   * The target's recent messages in that channel, captured when reported.
+   */
+  'evidence' : Array<ChatMessage>,
+  'reporter_name' : string,
+  'details' : string,
+  'channel' : [] | [Channel],
+  'reporter' : Principal,
+  'target_name' : string,
+  'reason' : ReportReason,
+}
+export type ReportReason = { 'Spam' : null } |
+  { 'Cheating' : null } |
+  { 'Collusion' : null } |
+  { 'Other' : null } |
+  { 'OffensiveName' : null } |
+  { 'AbusiveChat' : null };
+export type ReportStatus = { 'Open' : null } |
+  {
+    'Resolved' : {
+      'at' : bigint,
+      'by' : Principal,
+      'action' : ModAction,
+      'note' : string,
+    }
+  };
 export type Result = { 'Ok' : null } |
   { 'Err' : string };
 export type Result_1 = { 'Ok' : number } |
   { 'Err' : string };
-export type Result_2 = { 'Ok' : [bigint, bigint] } |
+export type Result_10 = { 'Ok' : Array<LedgerOp> } |
   { 'Err' : string };
-export type Result_3 = { 'Ok' : SolvencyReport } |
+export type Result_11 = { 'Ok' : Array<Report> } |
   { 'Err' : string };
-export type Result_4 = { 'Ok' : bigint } |
+export type Result_12 = { 'Ok' : Profile } |
   { 'Err' : string };
-export type Result_5 = { 'Ok' : HouseStats } |
+export type Result_2 = { 'Ok' : Array<AuditEntry> } |
   { 'Err' : string };
-export type Result_6 = { 'Ok' : LedgerOp } |
+export type Result_3 = { 'Ok' : [bigint, bigint] } |
   { 'Err' : string };
-export type Result_7 = { 'Ok' : Array<LedgerOp> } |
+export type Result_4 = { 'Ok' : SolvencyReport } |
   { 'Err' : string };
-export type Result_8 = { 'Ok' : Profile } |
+export type Result_5 = { 'Ok' : bigint } |
+  { 'Err' : string };
+export type Result_6 = { 'Ok' : Metrics } |
+  { 'Err' : string };
+export type Result_7 = { 'Ok' : HouseStats } |
+  { 'Err' : string };
+export type Result_8 = { 'Ok' : Array<Principal> } |
+  { 'Err' : string };
+export type Result_9 = { 'Ok' : LedgerOp } |
   { 'Err' : string };
 export interface RoomArgs {
   'action_timeout_secs' : bigint,
@@ -697,61 +815,81 @@ export interface _SERVICE {
    */
   'admin_add_tournament' : ActorMethod<[TournamentTemplate], Result_1>,
   /**
+   * Privileged actions (admins and moderators), newest first.
+   */
+  'admin_audit_log' : ActorMethod<[number], Result_2>,
+  /**
    * Recomputes the sum of ICP balances by scanning every user, to verify the running total.
    */
-  'admin_audit_wallet_total' : ActorMethod<[], Result_2>,
+  'admin_audit_wallet_total' : ActorMethod<[], Result_3>,
   /**
    * Compares the canister's ICP balance with everything it owes. A shortfall
    * pauses withdrawals automatically. Also runs every 10 minutes on its own.
    */
-  'admin_check_solvency' : ActorMethod<[], Result_3>,
-  'admin_create_table' : ActorMethod<[TableConfig], Result_4>,
-  'admin_house_stats' : ActorMethod<[], Result_5>,
+  'admin_check_solvency' : ActorMethod<[], Result_4>,
+  'admin_create_table' : ActorMethod<[TableConfig], Result_5>,
+  'admin_get_metrics' : ActorMethod<[], Result_6>,
+  'admin_house_stats' : ActorMethod<[], Result_7>,
+  'admin_list_moderators' : ActorMethod<[], Result_8>,
   /**
    * Settles an unknown op after checking the ledger by hand (beyond the 24h retry window).
    */
-  'admin_resolve_op' : ActorMethod<[bigint, boolean, [] | [bigint]], Result_6>,
+  'admin_resolve_op' : ActorMethod<[bigint, boolean, [] | [bigint]], Result_9>,
   /**
    * Re-sends an unknown op right away (it's deduplicated by the ledger).
    */
-  'admin_retry_op' : ActorMethod<[bigint], Result_6>,
+  'admin_retry_op' : ActorMethod<[bigint], Result_9>,
   /**
    * Moves ICP from the house treasury into the bad-beat jackpot.
    */
   'admin_seed_jackpot' : ActorMethod<[bigint], Result>,
+  /**
+   * Replaces the chat/username word filter (whole words, case-insensitive).
+   */
+  'admin_set_banned_words' : ActorMethod<[Array<string>], Result>,
   'admin_set_item_available' : ActorMethod<[number, boolean], Result>,
+  'admin_set_moderator' : ActorMethod<[Principal, boolean], Result>,
   /**
    * Emergency switches: pause deposits, withdrawals, dealing and/or new joins.
    */
   'admin_set_pause' : ActorMethod<[PauseFlags], Result>,
   /**
+   * Most new accounts per hour (sign-up throttle against bulk account creation).
+   */
+  'admin_set_signup_limit' : ActorMethod<[number], Result>,
+  /**
    * Ledger operations whose outcome is unknown and need attention.
    */
-  'admin_unresolved_ops' : ActorMethod<[], Result_7>,
+  'admin_unresolved_ops' : ActorMethod<[], Result_10>,
   /**
    * Withdraws house revenue (rake and store sales) from the treasury.
    */
-  'admin_withdraw_treasury' : ActorMethod<[Account, bigint], Result_4>,
+  'admin_withdraw_treasury' : ActorMethod<[Account, bigint], Result_5>,
+  /**
+   * Blocks (or unblocks) a player: hides their chat and stops DMs, friend
+   * requests, gifts and throws between you.
+   */
+  'block_player' : ActorMethod<[Principal, boolean], Result>,
   'buy_item' : ActorMethod<[number, Currency], Result>,
   /**
    * Claims the daily free play-chip bonus (bigger on consecutive days).
    */
-  'claim_daily_chips' : ActorMethod<[], Result_4>,
+  'claim_daily_chips' : ActorMethod<[], Result_5>,
   /**
    * Deposit via plain transfer: send ICP to your deposit account (see
    * `get_deposit_info`) from any wallet or exchange, then call this. Returns the amount credited.
    */
-  'claim_deposit' : ActorMethod<[], Result_4>,
+  'claim_deposit' : ActorMethod<[], Result_5>,
   'close_room' : ActorMethod<[bigint], Result>,
   /**
    * Creates your own table. Hosts of ICP tables earn 20% of the rake it generates.
    */
-  'create_room' : ActorMethod<[RoomArgs], Result_4>,
+  'create_room' : ActorMethod<[RoomArgs], Result_5>,
   /**
    * Deposit via ICRC-2: the caller first approves this canister for
    * `amount + fee` on the ICP ledger, then calls this. Returns the new balance.
    */
-  'deposit' : ActorMethod<[bigint], Result_4>,
+  'deposit' : ActorMethod<[bigint], Result_5>,
   'equip' : ActorMethod<[number], Result>,
   'find_user' : ActorMethod<[string], [] | [PublicProfile]>,
   'get_chat' : ActorMethod<[Channel, bigint], Array<ChatMessage>>,
@@ -790,22 +928,45 @@ export interface _SERVICE {
   'get_tables' : ActorMethod<[BigUint64Array | bigint[]], Array<TableView>>,
   'get_tournament' : ActorMethod<[bigint], [] | [TournamentDetail]>,
   /**
+   * `GET /metrics` (Prometheus text) and `GET /health` on the canister's raw
+   * domain. Responses are not certified, so they're for monitoring only.
+   */
+  'http_request' : ActorMethod<[HttpRequest], HttpResponse>,
+  /**
    * `password` is only needed for password-protected player rooms.
    */
   'join_table' : ActorMethod<[bigint, number, bigint, [] | [string]], Result>,
-  'leave_table' : ActorMethod<[bigint], Result_4>,
+  'leave_table' : ActorMethod<[bigint], Result_5>,
   'list_medals' : ActorMethod<[], Array<MedalDef>>,
   'list_store' : ActorMethod<[], Array<StoreItem>>,
   'list_tables' : ActorMethod<[], Array<TableSummary>>,
   'list_tournaments' : ActorMethod<[], Array<TournamentSummary>>,
-  'ping' : ActorMethod<[], undefined>,
+  /**
+   * Suspends a player for `hours` (0 = permanent). They keep access to withdrawals.
+   */
+  'mod_ban' : ActorMethod<[Principal, number, string], Result>,
+  /**
+   * Mutes a player in every chat for `hours` (0 lifts the mute).
+   */
+  'mod_mute' : ActorMethod<[Principal, number], Result>,
+  'mod_open_reports' : ActorMethod<[], Result_11>,
+  'mod_resolve_report' : ActorMethod<[bigint, ModAction, string], Result>,
+  'mod_unban' : ActorMethod<[Principal], Result>,
   /**
    * Buys a fresh starting stack during a tournament's rebuy period (buy-in only, no fee).
    */
   'rebuy_tournament' : ActorMethod<[bigint], Result>,
-  'register' : ActorMethod<[string], Result_8>,
+  'register' : ActorMethod<[string], Result_12>,
   'register_tournament' : ActorMethod<[bigint], Result>,
   'remove_friend' : ActorMethod<[Principal], Result>,
+  /**
+   * Reports a player to the moderators. With a channel, their recent messages
+   * there are attached as evidence. Returns the report id.
+   */
+  'report_player' : ActorMethod<
+    [Principal, ReportReason, string, [] | [Channel]],
+    Result_5
+  >,
   'respond_friend_request' : ActorMethod<[Principal, boolean], Result>,
   'send_chat' : ActorMethod<[Channel, string], Result>,
   'send_dm' : ActorMethod<[Principal, string], Result>,
@@ -825,7 +986,7 @@ export interface _SERVICE {
   /**
    * Sends `amount` e8s to `to`. The ledger fee is charged on top. Returns the block index.
    */
-  'withdraw' : ActorMethod<[Account, bigint], Result_4>,
+  'withdraw' : ActorMethod<[Account, bigint], Result_5>,
 }
 export declare const idlFactory: IDL.InterfaceFactory;
 export declare const init: (args: { IDL: typeof IDL }) => IDL.Type[];

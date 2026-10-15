@@ -5,6 +5,9 @@ pub mod cards;
 pub mod jackpot;
 pub mod ledger;
 pub mod medals;
+pub mod metrics;
+pub mod moderation;
+pub mod ratelimit;
 pub mod state;
 pub mod store;
 pub mod table;
@@ -12,7 +15,7 @@ pub mod tournament;
 pub mod wallet;
 
 use candid::{CandidType, Deserialize, Principal};
-use ic_cdk::{init, post_upgrade, pre_upgrade, query, update};
+use ic_cdk::{init, inspect_message, post_upgrade, pre_upgrade, query, update};
 use icrc_ledger_types::icrc1::account::Account;
 use sha2::{Digest, Sha256};
 use state::*;
@@ -21,6 +24,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 use jackpot::JackpotInfo;
 use medals::MedalDef;
+use moderation::{AuditEntry, ModAction, Report, ReportReason};
 use table::{Action, Currency, TableConfig};
 use wallet::{LedgerOp, OpKind, OpStatus, PauseFlags, SolvencyReport};
 use tournament::{TournamentDetail, TournamentSummary, TournamentTemplate};
@@ -38,6 +42,8 @@ thread_local! {
     static RETRYING: Cell<bool> = const { Cell::new(false) };
     /// Users with a wallet operation in flight.
     static WALLET_LOCKS: RefCell<BTreeSet<Principal>> = const { RefCell::new(BTreeSet::new()) };
+    /// Per-caller request budgets (not persisted: they refill in seconds anyway).
+    static LIMITER: RefCell<ratelimit::Limiter> = RefCell::new(ratelimit::Limiter::default());
 }
 
 fn with<T>(f: impl FnOnce(&State) -> T) -> T {
@@ -52,11 +58,15 @@ fn now() -> u64 {
     ic_cdk::api::time()
 }
 
-/// The signed-in caller; anonymous callers may only use queries.
+/// The signed-in caller; anonymous callers may only use queries. Every
+/// update spends from the caller's request budget.
 fn caller() -> R<Principal> {
     let p = ic_cdk::api::msg_caller();
     if p == Principal::anonymous() {
         return Err("Please sign in first".into());
+    }
+    if !LIMITER.with(|l| l.borrow_mut().take(p, now())) {
+        return Err("Too many requests. Please slow down.".into());
     }
     with_mut(|s| s.touch(&p, now()));
     Ok(p)
@@ -68,6 +78,43 @@ fn admin() -> R<Principal> {
         return Err("Admins only".into());
     }
     Ok(p)
+}
+
+/// Controllers and appointed moderators.
+fn moderator() -> R<Principal> {
+    let p = ic_cdk::api::msg_caller();
+    if ic_cdk::api::is_controller(&p) || with(|s| s.is_moderator(&p)) {
+        Ok(p)
+    } else {
+        Err("Moderators only".into())
+    }
+}
+
+/// Largest argument any public method needs (chat, notes and reports are a few KB).
+const MAX_ARG_BYTES: usize = 16 * 1024;
+
+/// Drops obviously bad update calls before they cost the canister cycles:
+/// anonymous or unregistered callers, oversized arguments, privileged methods
+/// from the wrong principal, and callers who are over their request budget.
+/// This only runs for ingress messages (replicas may skip it), so every
+/// endpoint still checks for itself.
+#[inspect_message]
+fn inspect_message() {
+    let p = ic_cdk::api::msg_caller();
+    let method = ic_cdk::api::msg_method_name();
+    if p == Principal::anonymous() || ic_cdk::api::msg_arg_data().len() > MAX_ARG_BYTES {
+        return;
+    }
+    let allowed = if method.starts_with("admin_") {
+        ic_cdk::api::is_controller(&p)
+    } else if method.starts_with("mod_") {
+        ic_cdk::api::is_controller(&p) || with(|s| s.is_moderator(&p))
+    } else {
+        (method == "register" || with(|s| s.users.contains_key(&p))) && LIMITER.with(|l| l.borrow().has_budget(&p, now()))
+    };
+    if allowed {
+        ic_cdk::api::accept_message();
+    }
 }
 
 /// Releases a wallet lock when dropped (including when a call traps).
@@ -161,6 +208,7 @@ async fn check_solvency() -> R<SolvencyReport> {
 
 /// Runs every second: enforces action clocks and deals new hands.
 async fn tick() {
+    LIMITER.with(|l| l.borrow_mut().prune(now()));
     let ready = with_mut(|s| s.tick(now()));
     if ready.is_empty() || DEALING.get() {
         return;
@@ -214,11 +262,6 @@ fn find_user(username: String) -> Option<PublicProfile> {
 fn set_status(status: String) -> R<()> {
     let p = caller()?;
     with_mut(|s| s.set_status(p, status))
-}
-
-#[update]
-fn ping() {
-    let _ = caller();
 }
 
 // ------------------------------------------------------------------ wallet
@@ -528,7 +571,7 @@ fn top_up(id: u64, amount: u64) -> R<()> {
 #[update]
 fn sit_out(id: u64, out: bool) -> R<()> {
     let p = caller()?;
-    with_mut(|s| s.sit_out(p, id, out))
+    with_mut(|s| s.sit_out(p, id, out, now()))
 }
 
 #[update]
@@ -547,7 +590,8 @@ fn send_chat(channel: Channel, text: String) -> R<()> {
 
 #[query]
 fn get_chat(channel: Channel, since: u64) -> Vec<ChatMessage> {
-    with(|s| s.chat_since(channel, since))
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.chat_for(p, channel, since))
 }
 
 #[update]
@@ -595,29 +639,45 @@ fn get_leaderboard() -> Vec<LeaderboardEntry> {
 
 #[update]
 fn admin_create_table(cfg: TableConfig) -> R<u64> {
-    admin()?;
-    with_mut(|s| s.create_table(cfg))
+    let p = admin()?;
+    with_mut(|s| {
+        let name = cfg.name.clone();
+        let id = s.create_table(cfg)?;
+        s.audit(p, format!("Created table #{id} ({name})"), now());
+        Ok(id)
+    })
 }
 
 /// Adds a recurring tournament (a sit-and-go or a scheduled event).
 #[update]
 fn admin_add_tournament(template: TournamentTemplate) -> R<u32> {
-    admin()?;
-    with_mut(|s| s.add_template(template))
+    let p = admin()?;
+    with_mut(|s| {
+        let name = template.name.clone();
+        let id = s.add_template(template)?;
+        s.audit(p, format!("Added tournament template {id} ({name})"), now());
+        Ok(id)
+    })
 }
 
 #[update]
 fn admin_add_item(item: StoreItem) -> R<u32> {
-    admin()?;
-    Ok(with_mut(|s| s.add_item(item)))
+    let p = admin()?;
+    Ok(with_mut(|s| {
+        let name = item.name.clone();
+        let id = s.add_item(item);
+        s.audit(p, format!("Added store item {id} ({name})"), now());
+        id
+    }))
 }
 
 #[update]
 fn admin_set_item_available(id: u32, available: bool) -> R<()> {
-    admin()?;
+    let p = admin()?;
     with_mut(|s| {
         let item = s.items.get_mut(&id).ok_or("No such item")?;
         item.available = available;
+        s.audit(p, format!("Store item {id} available: {available}"), now());
         Ok(())
     })
 }
@@ -625,8 +685,12 @@ fn admin_set_item_available(id: u32, available: bool) -> R<()> {
 /// Moves ICP from the house treasury into the bad-beat jackpot.
 #[update]
 fn admin_seed_jackpot(amount: u64) -> R<()> {
-    admin()?;
-    with_mut(|s| s.seed_jackpot(amount))
+    let p = admin()?;
+    with_mut(|s| {
+        s.seed_jackpot(amount)?;
+        s.audit(p, format!("Seeded the ICP jackpot with {amount} e8s"), now());
+        Ok(())
+    })
 }
 
 #[query]
@@ -639,7 +703,11 @@ fn admin_house_stats() -> R<HouseStats> {
 #[update]
 async fn admin_withdraw_treasury(to: Account, amount: u64) -> R<u64> {
     let p = admin()?;
-    let op = with_mut(|s| s.begin_treasury_withdraw(p, to, amount, now()))?;
+    let op = with_mut(|s| {
+        let op = s.begin_treasury_withdraw(p, to, amount, now())?;
+        s.audit(p, format!("Treasury withdrawal of {amount} e8s to {} (op #{})", to.owner.to_text(), op.id), now());
+        Ok::<_, String>(op)
+    })?;
     let op = run_op(op).await?;
     op_reply(op, |block| block)
 }
@@ -647,8 +715,11 @@ async fn admin_withdraw_treasury(to: Account, amount: u64) -> R<u64> {
 /// Emergency switches: pause deposits, withdrawals, dealing and/or new joins.
 #[update]
 fn admin_set_pause(flags: PauseFlags) -> R<()> {
-    admin()?;
-    with_mut(|s| s.set_pause(flags));
+    let p = admin()?;
+    with_mut(|s| {
+        s.audit(p, format!("Set pause flags: {flags:?}"), now());
+        s.set_pause(flags)
+    });
     Ok(())
 }
 
@@ -670,14 +741,19 @@ fn admin_unresolved_ops() -> R<Vec<LedgerOp>> {
 /// Settles an unknown op after checking the ledger by hand (beyond the 24h retry window).
 #[update]
 fn admin_resolve_op(id: u64, executed: bool, block: Option<u64>) -> R<LedgerOp> {
-    admin()?;
-    with_mut(|s| s.resolve_op(id, executed, block, now()))
+    let p = admin()?;
+    with_mut(|s| {
+        let op = s.resolve_op(id, executed, block, now())?;
+        s.audit(p, format!("Resolved ledger op #{id}: executed={executed}, block={block:?}"), now());
+        Ok(op)
+    })
 }
 
 /// Re-sends an unknown op right away (it's deduplicated by the ledger).
 #[update]
 async fn admin_retry_op(id: u64) -> R<LedgerOp> {
-    admin()?;
+    let p = admin()?;
+    with_mut(|s| s.audit(p, format!("Retried ledger op #{id}"), now()));
     let op = with(|s| s.stores.ledger_ops.get(&id)).ok_or("No such operation")?;
     if !op.is_unknown() {
         return Err("Only operations with an unknown outcome can be retried".into());
@@ -690,6 +766,148 @@ async fn admin_retry_op(id: u64) -> R<LedgerOp> {
 fn admin_audit_wallet_total() -> R<(u64, u64)> {
     admin()?;
     Ok(with(|s| (s.wallet_total, s.recount_wallet_total())))
+}
+
+// -------------------------------------------------------------- moderation
+
+/// Blocks (or unblocks) a player: hides their chat and stops DMs, friend
+/// requests, gifts and throws between you.
+#[update]
+fn block_player(other: Principal, block: bool) -> R<()> {
+    let p = caller()?;
+    with_mut(|s| s.block(p, other, block))
+}
+
+/// Reports a player to the moderators. With a channel, their recent messages
+/// there are attached as evidence. Returns the report id.
+#[update]
+fn report_player(target: Principal, reason: ReportReason, details: String, channel: Option<Channel>) -> R<u64> {
+    let p = caller()?;
+    with_mut(|s| s.report(p, target, reason, details, channel, now()))
+}
+
+#[query]
+fn mod_open_reports() -> R<Vec<Report>> {
+    moderator()?;
+    Ok(with(|s| s.open_reports()))
+}
+
+#[update]
+fn mod_resolve_report(id: u64, action: ModAction, note: String) -> R<()> {
+    let p = moderator()?;
+    with_mut(|s| s.resolve_report(p, id, action, note, now()))
+}
+
+/// Mutes a player in every chat for `hours` (0 lifts the mute).
+#[update]
+fn mod_mute(target: Principal, hours: u32) -> R<()> {
+    let p = moderator()?;
+    with_mut(|s| s.mute(p, target, hours, now()))
+}
+
+/// Suspends a player for `hours` (0 = permanent). They keep access to withdrawals.
+#[update]
+fn mod_ban(target: Principal, hours: u32, reason: String) -> R<()> {
+    let p = moderator()?;
+    with_mut(|s| s.ban(p, target, hours, &reason, now()))
+}
+
+#[update]
+fn mod_unban(target: Principal) -> R<()> {
+    let p = moderator()?;
+    with_mut(|s| s.unban(p, target, now()))
+}
+
+#[update]
+fn admin_set_moderator(p: Principal, enabled: bool) -> R<()> {
+    let a = admin()?;
+    with_mut(|s| {
+        if enabled {
+            s.moderators.insert(p);
+        } else {
+            s.moderators.remove(&p);
+        }
+        s.audit(a, format!("Moderator {}: {enabled}", p.to_text()), now());
+    });
+    Ok(())
+}
+
+#[query]
+fn admin_list_moderators() -> R<Vec<Principal>> {
+    admin()?;
+    Ok(with(|s| s.moderators.iter().copied().collect()))
+}
+
+/// Replaces the chat/username word filter (whole words, case-insensitive).
+#[update]
+fn admin_set_banned_words(words: Vec<String>) -> R<()> {
+    let a = admin()?;
+    if words.len() > 1_000 {
+        return Err("At most 1000 words".into());
+    }
+    with_mut(|s| {
+        s.banned_words = words.into_iter().map(|w| w.trim().to_lowercase()).filter(|w| !w.is_empty()).collect();
+        s.audit(a, format!("Set {} banned words", s.banned_words.len()), now());
+    });
+    Ok(())
+}
+
+/// Most new accounts per hour (sign-up throttle against bulk account creation).
+#[update]
+fn admin_set_signup_limit(per_hour: u32) -> R<()> {
+    let a = admin()?;
+    with_mut(|s| {
+        s.signups_per_hour = per_hour;
+        s.audit(a, format!("Sign-up limit: {per_hour}/hour"), now());
+    });
+    Ok(())
+}
+
+/// Privileged actions (admins and moderators), newest first.
+#[query]
+fn admin_audit_log(limit: u32) -> R<Vec<AuditEntry>> {
+    admin()?;
+    Ok(with(|s| s.audit_log.iter().take(limit as usize).cloned().collect()))
+}
+
+// ---------------------------------------------------------------- metrics
+
+#[query]
+fn admin_get_metrics() -> R<metrics::Metrics> {
+    admin()?;
+    Ok(collect_metrics())
+}
+
+fn collect_metrics() -> metrics::Metrics {
+    let now = now();
+    let (active, limited) = LIMITER.with(|l| {
+        let l = l.borrow();
+        (l.active_since(now.saturating_sub(5 * 60 * 1_000_000_000)), l.rejected)
+    });
+    with(|s| {
+        let mut m = metrics::Metrics::from_state(s, now);
+        m.active_players_5m = active as u64;
+        m.rate_limited_calls = limited;
+        m.cycles = ic_cdk::api::canister_cycle_balance() as u64;
+        m.heap_bytes = metrics::heap_bytes();
+        m.stable_bytes = ic_cdk::stable::stable_size() * 65_536;
+        m
+    })
+}
+
+/// `GET /metrics` (Prometheus text) and `GET /health` on the canister's raw
+/// domain. Responses are not certified, so they're for monitoring only.
+#[query]
+fn http_request(req: metrics::HttpRequest) -> metrics::HttpResponse {
+    let path = req.url.split('?').next().unwrap_or_default();
+    match path {
+        "/metrics" => metrics::HttpResponse::text(200, "text/plain; version=0.0.4", collect_metrics().to_prometheus()),
+        "/health" => {
+            let paused = with(|s| s.pause.withdrawals || s.pause.deposits || s.pause.dealing || s.pause.joins);
+            metrics::HttpResponse::text(200, "text/plain", if paused { "ok (partially paused)".into() } else { "ok".into() })
+        }
+        _ => metrics::HttpResponse::text(404, "text/plain", "not found".into()),
+    }
 }
 
 ic_cdk::export_candid!();

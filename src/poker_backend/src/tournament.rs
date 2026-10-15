@@ -445,6 +445,10 @@ impl State {
 
     pub fn register_tournament(&mut self, caller: Principal, id: u64, now: u64) -> R<()> {
         self.user(&caller)?;
+        self.check_not_banned(&caller, now)?;
+        if self.pause.joins {
+            return Err(self.paused_msg("Tournament registrations"));
+        }
         let t = self.tournaments.get(&id).ok_or("No such tournament")?;
         let late = t.late_reg_open();
         if t.status != TournamentStatus::Registering && !late {
@@ -955,7 +959,7 @@ impl State {
         let seat = dest.free_seats()[0];
         dest.seat_player(*p, seat, stack).unwrap();
         if away {
-            let _ = dest.set_sitting_out(p, true);
+            let _ = dest.set_sitting_out(p, true, 0);
         }
     }
 

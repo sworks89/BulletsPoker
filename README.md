@@ -31,7 +31,7 @@ A social Texas Hold'em poker room that runs entirely on the [Internet Computer](
 - Absent players keep getting dealt in and blind off, so every event finishes; tournament chips can't be cashed out, and prizes go straight to your wallet
 
 **Host your own table**
-- Any player can open a table (chips or ICP) with their choice of stakes, seats and clock, optionally password protected
+- Players from level 2 can open a table (chips or ICP) with their choice of stakes, seats and clock, optionally password protected
 - Hosts of ICP tables earn 20% of the rake their table generates; empty tables close after 30 minutes
 
 **Bad-beat jackpot** (cash tables only)
@@ -44,6 +44,16 @@ A social Texas Hold'em poker room that runs entirely on the [Internet Computer](
 - Private notes on any player: free text plus a color label (maniac, loose, fish, nit…). Seats show the color as a ring around the avatar so you can read a table at a glance
 - Edit from the player card at the table; search and manage all your notes on the Friends & Notes page
 
+**Player safety**
+- Block anyone from their player card: their chat disappears for you, and they can't message, befriend, gift or throw things at you. Manage blocks on the Friends & Notes page
+- Report players (abusive chat, cheating, collusion, offensive names, spam) with their recent chat attached as evidence; up to 10 reports a day
+- Moderators work a report queue and can warn, mute in chat, or suspend (timed or permanent). Suspended players are stood up from cash tables with their chips returned and can always withdraw
+- Usernames with offensive words are refused, and chat masks them
+
+**Fair seats**
+- Players sitting out at a cash table for 10 minutes are stood up automatically, chips back to their wallet
+- At most 4 cash seats at once per player (tournament tables don't count)
+
 **Medals**
 - 19 medals for milestones (first pot, 1,000 hands), big hands (quads, royal flush, bad beats), social play (gifts, throwables, friends) and tournament results, shown on profiles and in player cards
 
@@ -52,7 +62,7 @@ A social Texas Hold'em poker room that runs entirely on the [Internet Computer](
 - Settings saved to your profile: four-color deck, auto-muck losing hands, auto top-up, sounds, show/hide throwables
 
 **Social**
-- Lobby chat and per-table chat with quick emotes, plus rate limiting
+- Lobby chat and per-table chat with quick emotes, plus rate limiting and a word filter
 - Friends: search by username, friend requests, online status, "join their table", direct messages
 - Table gifts (beer, roses, champagne, trophies…) shown on the recipient's seat
 - Throwables (tomatoes, pies, fish, bombs…) animated flying from your seat to another player's
@@ -78,6 +88,10 @@ src/
     src/medals.rs           medal definitions and awarding
     src/jackpot.rs          bad-beat jackpot: qualifying hands and payouts
     src/ledger.rs           ICP ledger calls (ICRC-1 transfer, ICRC-2 transfer_from), deposit accounts
+    src/wallet.rs           recorded ledger operations, pause switches, solvency checks
+    src/moderation.rs       blocking, reports, mutes, bans, word filter, audit log
+    src/ratelimit.rs        per-caller request budgets
+    src/metrics.rs          /metrics (Prometheus) and /health
     src/lib.rs              canister endpoints, timers, upgrade persistence
     poker_backend.did       Candid interface (generated from the Rust code)
   poker_frontend/           React + Vite + @icp-sdk/core / @icp-sdk/auth
@@ -133,16 +147,24 @@ Only controllers can call the `admin_*` methods (create tables, add recurring to
 
 **Upgrade runbook.** 1) `admin_set_pause` withdrawals and deposits. 2) Check `admin_unresolved_ops` is empty (or wait for the retry loop). 3) `dfx canister stop`, upgrade, `dfx canister start`. Ledger calls still in flight at upgrade time are marked unknown and retried automatically. 4) Unpause.
 
-**Testing.** `cargo test` runs the unit tests (game engine, state, wallet logic, an upgrade round-trip). `./scripts/integration-test.sh` runs the canister against the real ICP ledger on a PocketIC replica: deposits both ways, withdrawals, exact solvency, pause switches, and an upgrade in the middle of a hand. CI runs both.
+**Abuse protection.** `inspect_message` drops ingress calls before they cost cycles: anonymous or unregistered callers (except `register`), arguments over 16 KB, `admin_*` from non-controllers, `mod_*` from non-moderators, and callers over budget. Each player gets a burst of 20 update calls, refilling at 5 per second; every endpoint checks again, since `inspect_message` isn't guaranteed to run. Sign-ups are capped per hour (`admin_set_signup_limit`, default 1,000), hosted tables are capped at 200 overall, and friend lists, friend requests and block lists are bounded.
+
+**Moderation.** `admin_set_moderator` appoints moderators. They use `mod_open_reports`, `mod_resolve_report` (dismiss, warn, mute or suspend), `mod_mute`, `mod_ban` and `mod_unban`. `admin_set_banned_words` replaces the word filter. Every admin and moderator action lands in the audit log (`admin_audit_log`).
+
+**Monitoring.** `https://<backend-id>.raw.icp0.io/metrics` serves Prometheus text: players (registered, active in the last 5 minutes, seated), tables, hands dealt, cycles, heap and stable memory, treasury, liabilities, jackpots, unresolved and failed ledger ops, the last solvency check, pause switches, reports, bans and rate-limited calls. `/health` returns `ok`. Responses are uncertified and contain nothing private, so use them for dashboards and alerts only. Controllers can also call `admin_get_metrics`. Suggested alerts: `bp_solvency_ok == 0`, `bp_unresolved_ledger_ops > 0` for 30 minutes, `bp_cycles` below 2T, and no increase in `bp_hands_dealt_total` while `bp_seated_players > 1`.
+
+**Frontend headers.** `.ic-assets.json5` sets a strict Content-Security-Policy (own scripts only, API calls only to IC boundary nodes), Permissions-Policy, HSTS and anti-framing headers. If you add an external host (analytics, fonts), add it to the CSP.
+
+**Testing.** `cargo test` runs the unit tests (game engine, state, wallet logic, an upgrade round-trip). `./scripts/integration-test.sh` runs the canister against the real ICP ledger on a PocketIC replica: deposits both ways, withdrawals, exact solvency, pause switches, an upgrade in the middle of a hand, the ingress filter and rate limits, moderation and the metrics endpoint. CI runs both.
 
 ## Before taking real money: read this
 
 - **Legal.** Real-money poker is regulated or prohibited in many jurisdictions. Get legal advice, and expect to need licensing, geo-blocking, age verification/KYC and responsible-gambling tooling before launching for real ICP. A play-chips mode is an easy addition if you want a free-to-play launch first.
 - **Card secrecy.** Hole cards are returned by query calls, which a single replica answers. A malicious node could see them. The planned fix is to encrypt each player's hole cards with [vetKeys](https://internetcomputer.org/docs/building-apps/network-features/vetkeys/introduction) so only the player's browser can decrypt them.
-- **Collusion and bots.** There is no anti-collusion or bot detection yet.
+- **Collusion and bots.** Players can report collusion, but there is no automated collusion or bot detection yet.
 - **Scale.** All state is in one canister and serialized on upgrade. That is fine to start with. For growth, move to `ic-stable-structures` and shard tables across canisters.
 - **Audit.** Have the wallet and ledger code professionally audited before holding meaningful funds.
 
 ## Roadmap ideas
 
-vetKeys-encrypted hole cards · Omaha and Crazy Pineapple · bounty tournaments · animated avatars as images/NFTs · moderators and mute/report · auto-stand for players sitting out too long.
+vetKeys-encrypted hole cards · Omaha and Crazy Pineapple · bounty tournaments · animated avatars as images/NFTs · automated collusion detection · a moderator dashboard in the frontend.

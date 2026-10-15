@@ -6,6 +6,7 @@
 use crate::table::{Action, Currency, HandResult, LogEntry, Phase, Table, TableConfig};
 use crate::jackpot::JackpotHit;
 use crate::store::{load_blob, save_blob, DmThread, Stores, UserMut, Users};
+use crate::moderation::{AuditEntry, Ban};
 use crate::wallet::{PauseFlags, SolvencyReport};
 use ic_stable_structures::DefaultMemoryImpl;
 use crate::tournament::{Tournament, TournamentBadge, TournamentTemplate};
@@ -35,6 +36,16 @@ const ROOM_IDLE_CLOSE_NS: u64 = 30 * 60 * 1_000_000_000;
 const MAX_ROOMS_PER_USER: usize = 2;
 const MAX_NOTE_LEN: usize = 500;
 const LEADERS: usize = 100;
+/// Cash-table seats one player may hold at once.
+pub const MAX_CASH_SEATS: usize = 4;
+/// Players sitting out this long at a cash table are stood up.
+pub const IDLE_STAND_NS: u64 = 10 * 60 * 1_000_000_000;
+/// Hosting a table needs this level, and only this many rooms can exist at once.
+pub const HOST_MIN_LEVEL: u32 = 2;
+const MAX_ROOMS: usize = 200;
+const MAX_FRIENDS: usize = 500;
+const MAX_FRIEND_REQUESTS: usize = 100;
+pub const DEFAULT_SIGNUPS_PER_HOUR: u32 = 1_000;
 /// Bad-beat jackpot drop on cash tables: 1% of the pot after rake, capped at one big blind.
 pub const JACKPOT_DROP_BPS: u16 = 100;
 const MAX_NOTES: usize = 2_000;
@@ -132,6 +143,12 @@ pub struct User {
     pub throws_made: u64,
     /// Recent ledger operation ids (deposits, withdrawals), oldest first.
     pub ops: Vec<u64>,
+    /// Players this user has blocked.
+    pub blocked: BTreeSet<Principal>,
+    pub ban: Option<Ban>,
+    pub chat_muted_until: u64,
+    pub reports_day: u64,
+    pub reports_today: u32,
     pub avatar: u32,
     pub card_back: u32,
     pub inventory: Vec<u32>,
@@ -315,6 +332,28 @@ heap_state! {
     wallet_total: u64,
     /// Top players by ICP net winnings, kept up to date as hands finish.
     leaders: Vec<(Principal, i64)>,
+    moderators: BTreeSet<Principal>,
+    banned_words: Vec<String>,
+    /// Privileged actions, newest first.
+    audit_log: VecDeque<AuditEntry>,
+    open_reports: BTreeSet<u64>,
+    next_report_id: u64,
+    counters: Counters,
+    /// Sign-up throttle: current hour and how many signed up in it.
+    signup_hour: u64,
+    signup_count: u32,
+    signups_per_hour: u32,
+}
+
+/// Monotonic counters exported as metrics.
+#[derive(CandidType, Deserialize, Clone, Debug, Default)]
+pub struct Counters {
+    pub hands_dealt: u64,
+    pub ledger_ops_failed: u64,
+    pub ledger_ops_unknown: u64,
+    pub reports_filed: u64,
+    pub bans: u64,
+    pub idle_stand_ups: u64,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -361,6 +400,9 @@ pub struct Profile {
     pub level: u32,
     pub created_at: u64,
     pub medals: Vec<EarnedMedal>,
+    pub blocked: Vec<Principal>,
+    pub ban: Option<Ban>,
+    pub chat_muted_until: u64,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -633,6 +675,15 @@ impl State {
             last_solvency: None,
             wallet_total: 0,
             leaders: vec![],
+            moderators: BTreeSet::new(),
+            banned_words: crate::moderation::default_banned_words(),
+            audit_log: VecDeque::new(),
+            open_reports: BTreeSet::new(),
+            next_report_id: 1,
+            counters: Counters::default(),
+            signup_hour: 0,
+            signup_count: 0,
+            signups_per_hour: DEFAULT_SIGNUPS_PER_HOUR,
         };
         let mut s = State::from_snapshot(users, stores, snap);
         for (kind, name, price, chip_price, icon, description) in default_items() {
@@ -691,6 +742,17 @@ impl State {
             return Err("Profile already exists".into());
         }
         validate_username(&username)?;
+        if crate::moderation::name_is_offensive(&username, &self.banned_words) {
+            return Err("Please pick a different username".into());
+        }
+        let hour = now / (60 * 60 * 1_000_000_000);
+        if self.signup_hour != hour {
+            self.signup_hour = hour;
+            self.signup_count = 0;
+        }
+        if self.signup_count >= self.signups_per_hour {
+            return Err("Lots of people are signing up right now. Please try again in a few minutes.".into());
+        }
         let key = username.to_lowercase();
         if self.stores.usernames.contains_key(&key) {
             return Err("Username is taken".into());
@@ -698,6 +760,7 @@ impl State {
         let avatar = self.first_free(ItemKind::Avatar);
         let card_back = self.first_free(ItemKind::CardBack);
         self.stores.usernames.insert(key, caller);
+        self.signup_count += 1;
         self.users.insert(
             caller,
             User {
@@ -714,6 +777,11 @@ impl State {
                 gifts_sent: 0,
                 throws_made: 0,
                 ops: vec![],
+                blocked: BTreeSet::new(),
+                ban: None,
+                chat_muted_until: 0,
+                reports_day: 0,
+                reports_today: 0,
                 avatar,
                 card_back,
                 inventory: vec![],
@@ -752,6 +820,9 @@ impl State {
             level: level_for_xp(u.xp),
             created_at: u.created_at,
             medals: u.medals.iter().map(|(id, t)| EarnedMedal { id: id.clone(), earned_at: *t }).collect(),
+            blocked: u.blocked.iter().copied().collect(),
+            ban: u.ban.clone(),
+            chat_muted_until: u.chat_muted_until,
         })
     }
 
@@ -874,6 +945,9 @@ impl State {
         let item = self.items.get(&item_id).cloned().ok_or("No such item")?;
         if item.kind != kind || !item.available {
             return Err("That item can't be used here".into());
+        }
+        if self.either_blocked(caller, to) {
+            return Err("You can't send that to this player".into());
         }
         let t = self.tables.get(&table_id).ok_or("No such table")?;
         let to_seat = t.seat_of(to).ok_or("That player is not at this table")?;
@@ -1156,9 +1230,21 @@ impl State {
                 return Err("No such table".into());
             }
         }
+        self.check_can_chat(&caller, now)?;
         let name = self.check_chat(&caller, &text, now)?;
-        self.post(ch, Some(caller), name, text.trim().to_string(), MessageKind::Text, now);
+        let text = self.filter_text(text.trim());
+        self.post(ch, Some(caller), name, text, MessageKind::Text, now);
         Ok(())
+    }
+
+    /// Chat as `viewer` sees it: messages from players they've blocked are hidden.
+    pub fn chat_for(&self, viewer: Principal, ch: Channel, since: u64) -> Vec<ChatMessage> {
+        let blocked = self.users.get(&viewer).map(|u| u.blocked).unwrap_or_default();
+        let mut msgs = self.chat_since(ch, since);
+        if !blocked.is_empty() {
+            msgs.retain(|m| m.from.is_none_or(|f| !blocked.contains(&f)));
+        }
+        msgs
     }
 
     pub fn chat_since(&self, ch: Channel, since: u64) -> Vec<ChatMessage> {
@@ -1169,10 +1255,12 @@ impl State {
     }
 
     pub fn send_dm(&mut self, caller: Principal, to: Principal, text: String, now: u64) -> R<()> {
-        if !self.user(&caller)?.friends.contains(&to) {
+        if !self.user(&caller)?.friends.contains(&to) || self.either_blocked(&caller, &to) {
             return Err("You can only message friends".into());
         }
+        self.check_can_chat(&caller, now)?;
         let name = self.check_chat(&caller, &text, now)?;
+        let text = self.filter_text(&text);
         let id = self.next_msg_id;
         self.next_msg_id += 1;
         let key = dm_key(caller, to);
@@ -1210,9 +1298,18 @@ impl State {
         if theirs.friends.contains(&caller) {
             return Err("Already friends".into());
         }
+        if self.either_blocked(&caller, &to) {
+            return Err("You can't send a friend request to this player".into());
+        }
+        if self.user(&caller)?.friends.len() >= MAX_FRIENDS || theirs.friends.len() >= MAX_FRIENDS {
+            return Err(format!("Friend lists are limited to {MAX_FRIENDS} players"));
+        }
         // If they already asked us, accept straight away.
         if self.user(&caller)?.friend_requests.contains(&to) {
             return self.respond_friend(caller, to, true);
+        }
+        if theirs.friend_requests.len() >= MAX_FRIEND_REQUESTS {
+            return Err("That player has too many pending friend requests".into());
         }
         self.user_mut(&to)?.friend_requests.insert(caller);
         Ok(())
@@ -1301,7 +1398,13 @@ impl State {
         if self.pause.joins {
             return Err(self.paused_msg("New tables"));
         }
-        self.user(&caller)?;
+        self.check_not_banned(&caller, now)?;
+        if level_for_xp(self.user(&caller)?.xp) < HOST_MIN_LEVEL {
+            return Err(format!("Reach level {HOST_MIN_LEVEL} to host your own table"));
+        }
+        if self.rooms.len() >= MAX_ROOMS {
+            return Err("All hosted tables are in use. Please try again later.".into());
+        }
         let owned = self.rooms.values().filter(|r| r.owner == caller).count();
         if owned >= MAX_ROOMS_PER_USER {
             return Err(format!("You can have at most {MAX_ROOMS_PER_USER} open tables"));
@@ -1400,6 +1503,15 @@ impl State {
         if self.pause.joins {
             return Err(self.paused_msg("New seats"));
         }
+        self.check_not_banned(&caller, now)?;
+        let cash_seats = self
+            .tables
+            .values()
+            .filter(|t| !self.table_tournament.contains_key(&t.id) && t.seat_of(&caller).is_some())
+            .count();
+        if cash_seats >= MAX_CASH_SEATS {
+            return Err(format!("You can play at most {MAX_CASH_SEATS} cash tables at once"));
+        }
         let name = self.user(&caller)?.username.clone();
         let currency = self.table_currency(id)?;
         if let Some(room) = self.rooms.get(&id) {
@@ -1440,8 +1552,8 @@ impl State {
         Ok(())
     }
 
-    pub fn sit_out(&mut self, caller: Principal, id: u64, out: bool) -> R<()> {
-        self.table_mut(id)?.set_sitting_out(&caller, out)
+    pub fn sit_out(&mut self, caller: Principal, id: u64, out: bool, now: u64) -> R<()> {
+        self.table_mut(id)?.set_sitting_out(&caller, out, now)
     }
 
     pub fn act(&mut self, caller: Principal, id: u64, action: Action, now: u64) -> R<()> {
@@ -1681,6 +1793,7 @@ impl State {
     pub fn tick(&mut self, now: u64) -> Vec<u64> {
         self.tournament_tick(now);
         self.close_idle_rooms(now);
+        self.stand_up_idle(now);
         let ids: Vec<u64> = self.tables.keys().copied().collect();
         let mut ready = vec![];
         for id in ids {
@@ -1705,9 +1818,27 @@ impl State {
         ready
     }
 
+    /// Stands up players who have been sitting out at a cash table for
+    /// `IDLE_STAND_NS`, returning their chips to their wallet.
+    fn stand_up_idle(&mut self, now: u64) {
+        let cutoff = now.saturating_sub(IDLE_STAND_NS);
+        let idle: Vec<(u64, Principal)> = self
+            .tables
+            .values()
+            .filter(|t| !self.table_tournament.contains_key(&t.id))
+            .flat_map(|t| t.idle_players(cutoff).into_iter().map(move |p| (t.id, p)))
+            .collect();
+        for (id, p) in idle {
+            if self.leave_table(p, id, now).is_ok() {
+                self.counters.idle_stand_ups += 1;
+            }
+        }
+    }
+
     pub fn start_hand(&mut self, id: u64, seed: [u8; 32], now: u64) {
         if let Some(t) = self.tables.get_mut(&id) {
             if t.ready_for_next_hand(now) && t.start_hand(seed, now).is_ok() {
+                self.counters.hands_dealt += 1;
                 // Blinds can put players all-in and end the hand immediately.
                 self.after_table_change(id, now);
             }
@@ -2291,6 +2422,8 @@ mod tests {
             password: pw.map(String::from),
             action_timeout_secs: 30,
         };
+        assert!(s.create_room(p(1), args(None), 0).unwrap_err().contains("level"), "new players can't host");
+        s.user_mut(&p(1)).unwrap().xp = 50; // level 2
         let id = s.create_room(p(1), args(Some("aces")), 0).unwrap();
         assert!(s.users.get(&p(1)).unwrap().medals.contains_key("host"));
         let summary = s.list_tables().into_iter().find(|t| t.id == id).unwrap();
@@ -2805,6 +2938,122 @@ mod tests {
         assert_eq!(s.notes(p(1))[0].text, "");
         s.set_note(p(1), p(2), "  ".into(), None, 10).unwrap();
         assert!(s.notes(p(1)).is_empty());
+    }
+
+    #[test]
+    fn blocking_hides_chat_and_cuts_contact() {
+        let mut s = setup();
+        s.friend_request(p(1), p(2)).unwrap();
+        s.respond_friend(p(2), p(1), true).unwrap();
+        s.send_chat(p(2), Channel::Lobby, "hello".into(), 10 * SEC).unwrap();
+        s.block(p(1), p(2), true).unwrap();
+        assert!(s.block(p(1), p(1), true).is_err());
+        assert!(s.chat_for(p(1), Channel::Lobby, 0).is_empty(), "blocked player's chat hidden");
+        assert_eq!(s.chat_for(p(3), Channel::Lobby, 0).len(), 1, "others still see it");
+        assert!(s.friends(p(1), 0).is_empty() && s.friends(p(2), 0).is_empty(), "friendship ended");
+        assert!(s.friend_request(p(2), p(1)).is_err());
+        assert!(s.send_dm(p(2), p(1), "hi".into(), 20 * SEC).is_err());
+        assert_eq!(s.profile(&p(1)).unwrap().blocked, vec![p(2)]);
+        s.block(p(1), p(2), false).unwrap();
+        assert_eq!(s.chat_for(p(1), Channel::Lobby, 0).len(), 1);
+        s.friend_request(p(2), p(1)).unwrap();
+    }
+
+    #[test]
+    fn reports_and_moderation() {
+        let mut s = setup();
+        let admin = p(200);
+        s.send_chat(p(2), Channel::Lobby, "you all suck".into(), 10 * SEC).unwrap();
+        s.send_chat(p(3), Channel::Lobby, "gl".into(), 10 * SEC).unwrap();
+        let id = s.report(p(1), p(2), crate::moderation::ReportReason::AbusiveChat, "rude".into(), Some(Channel::Lobby), 11 * SEC).unwrap();
+        assert!(s.report(p(1), p(1), crate::moderation::ReportReason::Spam, String::new(), None, 0).is_err());
+        let open = s.open_reports();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].evidence.len(), 1, "only the target's messages are captured");
+        assert_eq!(open[0].evidence[0].text, "you all suck");
+        for _ in 0..10 {
+            s.report(p(3), p(2), crate::moderation::ReportReason::Spam, String::new(), None, 12 * SEC).unwrap();
+        }
+        assert!(s.report(p(3), p(2), crate::moderation::ReportReason::Spam, String::new(), None, 12 * SEC).is_err(), "daily cap");
+
+        // A chat mute from a report.
+        s.resolve_report(admin, id, crate::moderation::ModAction::MuteChat(1), "cool off".into(), 20 * SEC).unwrap();
+        assert!(s.resolve_report(admin, id, crate::moderation::ModAction::Dismiss, String::new(), 20 * SEC).is_err());
+        assert!(s.send_chat(p(2), Channel::Lobby, "still here".into(), 30 * SEC).unwrap_err().contains("muted"));
+        s.send_chat(p(2), Channel::Lobby, "sorry".into(), 20 * SEC + 3600 * SEC).unwrap();
+        assert_eq!(s.audit_log.len(), 2, "mute and resolution are audited");
+        assert_eq!(s.open_reports().len(), 10);
+    }
+
+    #[test]
+    fn bans_stand_players_up_but_allow_withdrawals() {
+        let mut s = setup();
+        let table = 7;
+        let buy = s.tables[&table].config.max_buy_in;
+        s.join_table(p(1), table, 0, buy, None, 0).unwrap();
+        s.join_table(p(2), table, 1, buy, None, 0).unwrap();
+        let before = s.users.get(&p(1)).unwrap().balance;
+        s.ban(p(200), p(1), 24, "collusion", SEC).unwrap();
+        assert!(s.tables[&table].seat_of(&p(1)).is_none(), "stood up");
+        assert_eq!(s.users.get(&p(1)).unwrap().balance, before + buy, "chips returned");
+        assert!(s.join_table(p(1), table, 0, buy, None, 2 * SEC).unwrap_err().contains("suspended"));
+        assert!(s.send_chat(p(1), Channel::Lobby, "hey".into(), 20 * SEC).is_err());
+        let to = icrc_ledger_types::icrc1::account::Account { owner: p(1), subaccount: None };
+        s.begin_withdraw(p(1), to, E8S, 3 * SEC).unwrap();
+        // Temporary bans expire; unban lifts early.
+        s.join_table(p(1), table, 0, buy, None, 25 * 3600 * SEC).unwrap();
+        s.ban(p(200), p(3), 0, "", 0).unwrap();
+        assert!(s.join_table(p(3), 1, 0, 1_000, None, u64::MAX / 2).is_err(), "permanent");
+        s.unban(p(200), p(3), 0).unwrap();
+        s.join_table(p(3), 1, 0, 1_000, None, 0).unwrap();
+    }
+
+    #[test]
+    fn word_filter_and_offensive_names() {
+        let mut s = setup();
+        s.send_chat(p(1), Channel::Lobby, "what the fuck".into(), 10 * SEC).unwrap();
+        assert_eq!(s.chat_since(Channel::Lobby, 0)[0].text, "what the ****");
+        assert!(s.register(p(9), "shithead".into(), 0).is_err());
+    }
+
+    #[test]
+    fn signup_throttle() {
+        let mut s = setup();
+        s.signups_per_hour = 4; // setup() already used 3
+        s.register(p(10), "fourth".into(), 0).unwrap();
+        assert!(s.register(p(11), "fifth".into(), 0).unwrap_err().contains("try again"));
+        s.register(p(11), "fifth".into(), 3600 * SEC).unwrap();
+    }
+
+    #[test]
+    fn caps_on_cash_seats_and_friends() {
+        let mut s = setup();
+        s.credit(&p(1), 100 * E8S).unwrap();
+        let chip_tables: Vec<u64> = s.tables.keys().copied().collect();
+        assert!(chip_tables.len() > MAX_CASH_SEATS);
+        for &t in &chip_tables[..MAX_CASH_SEATS] {
+            s.join_table(p(1), t, 0, s.tables[&t].config.min_buy_in, None, 0).unwrap();
+        }
+        let t = chip_tables[MAX_CASH_SEATS];
+        assert!(s.join_table(p(1), t, 0, s.tables[&t].config.min_buy_in, None, 0).unwrap_err().contains("at most"));
+
+        s.user_mut(&p(1)).unwrap().friends = (0..MAX_FRIENDS as u32).map(|i| Principal::from_slice(&i.to_le_bytes())).collect();
+        assert!(s.friend_request(p(2), p(1)).is_err(), "their friend list is full");
+    }
+
+    #[test]
+    fn idle_players_are_stood_up() {
+        let mut s = setup();
+        let table = 1;
+        s.join_table(p(1), table, 0, 1_000, None, 0).unwrap();
+        s.join_table(p(2), table, 1, 1_000, None, 0).unwrap();
+        s.sit_out(p(1), table, true, SEC).unwrap();
+        s.tick(SEC + IDLE_STAND_NS - 1);
+        assert!(s.tables[&table].seat_of(&p(1)).is_some());
+        s.tick(SEC + IDLE_STAND_NS);
+        assert!(s.tables[&table].seat_of(&p(1)).is_none(), "stood up after 10 minutes");
+        assert_eq!(s.counters.idle_stand_ups, 1);
+        assert!(s.tables[&table].seat_of(&p(2)).is_some());
     }
 
     #[test]

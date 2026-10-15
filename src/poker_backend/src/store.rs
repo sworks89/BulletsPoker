@@ -10,6 +10,7 @@
 //! written as a versioned snapshot in `pre_upgrade`; its size is bounded.
 
 use crate::state::{ChatMessage, HandRecord, PlayerNote, User};
+use crate::moderation::Report;
 use crate::wallet::LedgerOp;
 use candid::{CandidType, Deserialize, Principal};
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
@@ -27,6 +28,7 @@ const NOTES: MemoryId = MemoryId::new(3);
 const DMS: MemoryId = MemoryId::new(4);
 const HANDS: MemoryId = MemoryId::new(5);
 const LEDGER_OPS: MemoryId = MemoryId::new(6);
+const REPORTS: MemoryId = MemoryId::new(7);
 
 macro_rules! candid_storable {
     ($($t:ty),*) => {$(
@@ -49,7 +51,7 @@ macro_rules! candid_storable {
 #[derive(CandidType, Deserialize, Clone, Debug, Default)]
 pub struct DmThread(pub Vec<ChatMessage>);
 
-candid_storable!(User, PlayerNote, DmThread, HandRecord, LedgerOp);
+candid_storable!(User, PlayerNote, DmThread, HandRecord, LedgerOp, Report);
 
 /// Stable structures other than users, carved out of one stable memory by a memory manager.
 pub struct Stores {
@@ -60,6 +62,7 @@ pub struct Stores {
     pub dms: StableBTreeMap<(Principal, Principal), DmThread, Mem>,
     pub hands: StableBTreeMap<u64, HandRecord, Mem>,
     pub ledger_ops: StableBTreeMap<u64, LedgerOp, Mem>,
+    pub reports: StableBTreeMap<u64, Report, Mem>,
 }
 
 impl Stores {
@@ -75,6 +78,7 @@ impl Stores {
             dms: StableBTreeMap::init(mm.get(DMS)),
             hands: StableBTreeMap::init(mm.get(HANDS)),
             ledger_ops: StableBTreeMap::init(mm.get(LEDGER_OPS)),
+            reports: StableBTreeMap::init(mm.get(REPORTS)),
         };
         (stores, users)
     }
