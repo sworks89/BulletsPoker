@@ -26,6 +26,7 @@ const MEDALS: &[(&str, &str, &str, &str)] = &[
     ("straight_flush", "Straight Flush", "🌈", "Win a pot with a straight flush"),
     ("royal_flush", "Royal Flush", "👑", "Win a pot with a royal flush"),
     ("bad_beat", "Bad Beat", "💔", "Lose a showdown holding a full house or better"),
+    ("jackpot", "Jackpot!", "💥", "Be the loser or winner of a bad-beat jackpot hand"),
     ("chip_leader", "Chip Leader", "🎲", "Win a play-chip pot of 25,000 chips or more"),
     ("whale", "Whale", "🐋", "Win an ICP pot of 1 ICP or more"),
     ("generous", "Generous", "🎁", "Send 10 gifts"),

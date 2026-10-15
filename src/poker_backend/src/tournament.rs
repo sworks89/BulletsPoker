@@ -577,6 +577,9 @@ impl State {
             max_seats: tpl.table_size,
             rake_bps: 0,
             rake_cap: 0,
+            // Tournaments don't feed (or win) the cash-game jackpot.
+            jackpot_bps: 0,
+            jackpot_cap: 0,
             action_timeout_secs: 20,
         };
         let mut table = Table::new(tid, cfg);

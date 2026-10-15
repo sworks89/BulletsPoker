@@ -360,3 +360,25 @@ main { padding: 18px 0; }
 .note-row { border-top: 1px solid var(--line); padding: 8px 0; display: flex; flex-direction: column; gap: 6px; }
 .note-text { margin: 0; white-space: pre-wrap; color: #cbd5e1; }
 .modal { max-height: 92vh; overflow-y: auto; }
+
+/* ---- bad beat jackpot ---- */
+.jackpot-banner { background: linear-gradient(90deg, #3b0d0d, #4a1d05 60%, #3b2a05); border: 1px solid #b45309; border-radius: 12px; padding: 10px 14px; }
+.jp-icon { font-size: 30px; animation: pop 0.6s ease; }
+.jp-label { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: #fdba74; font-weight: 700; }
+.jp-amount { font-size: 26px; font-weight: 900; color: #fde047; text-shadow: 0 0 12px rgba(253,224,71,.4); }
+.jp-rules { margin-top: 8px; color: #fed7aa; }
+.jp-rules p { margin: 4px 0; }
+.jp-recent { color: #fde68a; padding: 2px 0; }
+.tag.jp-tag { background: #4a1d05; color: #fde047; }
+.jp-celebrate { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; background: radial-gradient(circle, rgba(120,53,15,.65), rgba(0,0,0,.8)); padding: 16px; animation: fadein .3s ease; }
+@keyframes fadein { from { opacity: 0; } }
+.jp-card { background: #1c1208; border: 2px solid #f59e0b; border-radius: 18px; padding: 22px; width: min(520px, 100%); display: flex; flex-direction: column; align-items: center; gap: 12px; box-shadow: 0 0 60px rgba(245,158,11,.45); animation: pop .4s ease; }
+.jp-title { font-size: 24px; font-weight: 900; color: #fde047; letter-spacing: 1px; text-align: center; }
+.jp-total { font-size: 38px; font-weight: 900; color: #fff; text-shadow: 0 0 18px #f59e0b; }
+.jp-hands { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; justify-content: center; text-align: center; }
+.jp-vs { color: #fdba74; font-weight: 700; }
+.jp-payouts { width: 100%; display: flex; flex-direction: column; gap: 4px; }
+.jp-payouts > div { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; padding: 4px 8px; border-radius: 6px; background: rgba(255,255,255,.04); }
+.jp-payouts > div.me { background: rgba(245,158,11,.2); }
+.jp-mine { font-size: 18px; font-weight: 800; color: #86efac; }
+@media (max-width: 700px) { .jp-other { display: none; } }

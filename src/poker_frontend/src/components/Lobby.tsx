@@ -4,6 +4,8 @@ import type { FriendInfo, TableSummary } from '../ic';
 import { amount, isChips } from '../format';
 import { Chat } from './Chat';
 import { CreateRoom } from './CreateRoom';
+import { JackpotBanner } from './Jackpot';
+import { CHIPS, ICP } from '../format';
 
 export function Lobby() {
   const { backend, go, profile } = useApp();
@@ -51,6 +53,7 @@ export function Lobby() {
         ) : (
           <p className="muted small">Real ICP tables. Deposit from the Wallet page; 2.5% rake (capped) applies only when there's a flop.</p>
         )}
+        <JackpotBanner currency={mode === 'chips' ? CHIPS : ICP} />
         <table className="grid">
           <thead>
             <tr>

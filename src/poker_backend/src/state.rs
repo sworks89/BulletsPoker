@@ -4,6 +4,7 @@
 //! natively; `lib.rs` wraps it in canister endpoints.
 
 use crate::table::{Action, Currency, HandResult, LogEntry, Phase, Table, TableConfig};
+use crate::jackpot::JackpotHit;
 use crate::tournament::{Tournament, TournamentBadge, TournamentTemplate};
 use sha2::{Digest, Sha256};
 use candid::{CandidType, Deserialize, Principal};
@@ -30,6 +31,8 @@ pub const HOST_RAKE_SHARE_BPS: u64 = 2_000;
 const ROOM_IDLE_CLOSE_NS: u64 = 30 * 60 * 1_000_000_000;
 const MAX_ROOMS_PER_USER: usize = 2;
 const MAX_NOTE_LEN: usize = 500;
+/// Bad-beat jackpot drop on cash tables: 1% of the pot after rake, capped at one big blind.
+pub const JACKPOT_DROP_BPS: u16 = 100;
 const MAX_NOTES: usize = 2_000;
 
 pub type R<T> = Result<T, String>;
@@ -266,6 +269,12 @@ pub struct State {
     pub table_tournament: BTreeMap<u64, u64>,
     /// Recurring tournaments; a fresh instance opens whenever the previous one starts.
     pub templates: Vec<TournamentTemplate>,
+    /// Bad-beat jackpot pool per currency.
+    pub jackpots: BTreeMap<Currency, u64>,
+    /// Most recent jackpot hits, newest first.
+    pub jackpot_hits: VecDeque<JackpotHit>,
+    /// Latest hit per table, shown while that hand is on screen.
+    pub table_jackpot_hit: BTreeMap<u64, JackpotHit>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -381,6 +390,10 @@ pub struct TableView {
     pub room_owner: Option<Principal>,
     /// Joining needs a password.
     pub locked: bool,
+    /// Bad-beat jackpot for this table's currency (0 at tournament tables).
+    pub jackpot: u64,
+    /// A jackpot hit in the hand on screen, for the celebration.
+    pub jackpot_hit: Option<JackpotHit>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -425,6 +438,8 @@ pub struct HouseStats {
     pub wallet_balances: u64,
     pub chips_on_tables: u64,
     pub treasury: u64,
+    /// ICP bad-beat jackpot.
+    pub jackpot: u64,
     /// What the canister's main ledger account must hold to cover everything.
     pub liabilities_total: u64,
 }
@@ -502,6 +517,8 @@ pub fn default_tables() -> Vec<TableConfig> {
         // Play-chip tables are rake free; the house only earns on real ICP.
         rake_bps: if currency == Currency::Icp { 250 } else { 0 },
         rake_cap: if currency == Currency::Icp { sb * 2 * 3 } else { 0 },
+        jackpot_bps: JACKPOT_DROP_BPS,
+        jackpot_cap: sb * 2,
         action_timeout_secs: 25,
     };
     use Currency::*;
@@ -549,6 +566,9 @@ impl State {
             next_tournament_id: 1,
             table_tournament: BTreeMap::new(),
             templates: crate::tournament::default_templates(),
+            jackpots: BTreeMap::from([(Currency::Chips, crate::jackpot::CHIP_JACKPOT_SEED)]),
+            jackpot_hits: VecDeque::new(),
+            table_jackpot_hit: BTreeMap::new(),
         };
         for (kind, name, price, chip_price, icon, description) in default_items() {
             s.add_item(StoreItem {
@@ -974,14 +994,19 @@ impl State {
             .tables
             .values()
             .filter(|t| t.config.currency == Currency::Icp)
-            .map(|t| t.chips_in_play() + t.rake_accrued)
+            .map(|t| t.chips_in_play() + t.rake_accrued + t.jackpot_accrued)
             .sum();
         HouseStats {
             users: self.users.len() as u64,
             wallet_balances,
             chips_on_tables,
             treasury: self.treasury,
-            liabilities_total: wallet_balances + chips_on_tables + self.treasury + self.icp_in_tournaments(),
+            jackpot: self.jackpot(Currency::Icp),
+            liabilities_total: wallet_balances
+                + chips_on_tables
+                + self.treasury
+                + self.icp_in_tournaments()
+                + self.jackpot(Currency::Icp),
         }
     }
 
@@ -1185,6 +1210,8 @@ impl State {
             max_seats: args.max_seats,
             rake_bps: if icp { 250 } else { 0 },
             rake_cap: if icp { bb * 3 } else { 0 },
+            jackpot_bps: JACKPOT_DROP_BPS,
+            jackpot_cap: bb,
             action_timeout_secs: args.action_timeout_secs,
         };
         let id = self.create_table(cfg)?;
@@ -1216,6 +1243,7 @@ impl State {
 
     fn remove_table(&mut self, id: u64) {
         self.rooms.remove(&id);
+        self.table_jackpot_hit.remove(&id);
         self.tables.remove(&id);
         self.applied_hand.remove(&id);
         self.throws.remove(&id);
@@ -1307,6 +1335,8 @@ impl State {
         };
         let currency = t.config.currency;
         let rake = std::mem::take(&mut t.rake_accrued);
+        let drop = std::mem::take(&mut t.jackpot_accrued);
+        *self.jackpots.entry(currency).or_default() += drop;
         if currency == Currency::Icp && rake > 0 {
             // Room hosts earn a share of the rake their table generates.
             let host = self.rooms.get(&id).map(|r| r.owner);
@@ -1385,6 +1415,9 @@ impl State {
             self.post(Channel::Table(id), None, String::new(), text, MessageKind::System, now);
         }
         self.award_hand_medals(id, (!in_tournament).then_some(currency), &result, now);
+        if !in_tournament {
+            self.check_bad_beat(id, &result, now);
+        }
         if in_tournament {
             self.after_tournament_hand(id, now);
         } else {
@@ -1644,6 +1677,8 @@ impl State {
             tournament: self.table_tournament.get(&id).and_then(|tid| self.tournament_badge(*tid, viewer)),
             room_owner: self.rooms.get(&id).map(|r| r.owner),
             locked: self.rooms.get(&id).is_some_and(|r| r.password_hash.is_some()),
+            jackpot: if t.config.jackpot_bps > 0 { self.jackpot(t.config.currency) } else { 0 },
+            jackpot_hit: self.current_hit(id),
         })
     }
 }
@@ -1787,7 +1822,9 @@ mod tests {
         let played: u64 = (1..=3).map(|k| s.users[&p(k)].stats.hands_played).sum();
         assert_eq!(played, 60);
         let net: i64 = (1..=3).map(|k| s.users[&p(k)].stats.net_winnings).sum();
-        assert_eq!(net, -(s.treasury as i64));
+        // Players' combined losses are exactly the rake plus the jackpot drop.
+        assert_eq!(net, -((s.treasury + s.jackpot(Currency::Icp)) as i64));
+        assert!(s.jackpot(Currency::Icp) > 0, "cash pots feed the jackpot");
 
         // Hole cards are private until showdown.
         let v = s.table_view(table, Some(p(1)), now).unwrap();
@@ -1803,7 +1840,7 @@ mod tests {
         assert_eq!(s.tables[&table].player_count(), 0);
         assert_eq!(total_value(&s), before);
         let wallets: u64 = (1..=3).map(|k| s.users[&p(k)].balance).sum();
-        assert_eq!(wallets + s.treasury, 30 * E8S);
+        assert_eq!(wallets + s.treasury + s.jackpot(Currency::Icp), 30 * E8S);
     }
 
     fn play_hands(s: &mut State, table: u64, hands: u8, start: u64) -> u64 {
@@ -2140,7 +2177,9 @@ mod tests {
         let host_cut: u64 = rakes.iter().map(|r| r * HOST_RAKE_SHARE_BPS / 10_000).sum();
         assert_eq!(s.treasury, rakes.iter().sum::<u64>() - host_cut);
         let net_play: i64 = (1..=2).map(|k| s.users[&p(k)].stats.net_winnings).sum();
-        assert_eq!(net_play, -(rakes.iter().sum::<u64>() as i64));
+        // This room is the only ICP table in play, so it fed the whole ICP jackpot.
+        let drops = s.jackpot(Currency::Icp);
+        assert_eq!(net_play, -((rakes.iter().sum::<u64>() + drops) as i64));
         assert!(s.close_room(p(1), id).is_err(), "players still seated");
         assert!(s.close_room(p(2), id).is_err());
         s.leave_table(p(1), id, now).unwrap();
@@ -2178,6 +2217,7 @@ mod tests {
             players: vec![],
             pot: 100,
             rake: 0,
+            jackpot_drop: 0,
         };
         s.award_hand_medals(table, Some(Currency::Chips), &result, 0);
         for m in ["royal_flush", "straight_flush", "quads", "full_house"] {
@@ -2209,7 +2249,8 @@ mod tests {
             }
         }
         let chips: u64 = (1..=3).map(|k| s.users[&p(k)].chips).sum();
-        assert_eq!(chips, 3 * SIGNUP_CHIPS);
+        let dropped = s.jackpot(Currency::Chips) - crate::jackpot::CHIP_JACKPOT_SEED;
+        assert_eq!(chips + dropped, 3 * SIGNUP_CHIPS);
     }
 
     fn start_scheduled(s: &mut State, name: &str, players: std::ops::Range<u8>) -> (u64, u64) {
@@ -2414,6 +2455,128 @@ mod tests {
         // A busted player has to rebuy before they can add on.
         s.tournaments.get_mut(&id).unwrap().entrants.iter_mut().find(|e| e.player == p(11)).unwrap().rebuy_deadline = now + 30 * SEC;
         assert!(s.addon(p(11), id, now + 7 * SEC).is_err());
+    }
+
+    fn card(s: &str) -> u8 {
+        let b = s.as_bytes();
+        let r = b"23456789TJQKA".iter().position(|&x| x == b[0]).unwrap() as u8;
+        let su = b"cdhs".iter().position(|&x| x == b[1]).unwrap() as u8;
+        r * 4 + su
+    }
+
+    fn cards(s: &str) -> Vec<u8> {
+        s.split_whitespace().map(card).collect()
+    }
+
+    /// Seats players 1-3 plus `extra` at Penny Lane and fabricates a finished hand.
+    fn bad_beat_hand(s: &mut State, n_players: u8, loser_hole: &str, board: &str) -> (u64, HandResult) {
+        let table = 5; // Penny Lane (ICP)
+        for k in 1..=n_players {
+            if !s.users.contains_key(&p(k)) {
+                s.register(p(k), format!("player{k}"), 0).unwrap();
+                s.credit(&p(k), 10 * E8S).unwrap();
+            }
+            s.join_table(p(k), table, k - 1, 1_000_000, None, 0).unwrap();
+        }
+        let t = s.tables.get_mut(&table).unwrap();
+        t.hand_no = 7;
+        let result = HandResult {
+            hand_no: 7,
+            board: cards(board),
+            winners: vec![crate::table::Winner { seat: 1, player: p(2), amount: 500_000, hand: "Straight Flush".into() }],
+            shown: vec![
+                crate::table::ShownHand { seat: 0, player: p(1), cards: cards(loser_hole), hand: String::new() },
+                crate::table::ShownHand { seat: 1, player: p(2), cards: cards("9h Th"), hand: String::new() },
+            ],
+            players: (1..=n_players).map(|k| crate::table::PlayerResult { player: p(k), committed: 100_000, won: 0 }).collect(),
+            pot: 500_000,
+            rake: 0,
+            jackpot_drop: 0,
+        };
+        (table, result)
+    }
+
+    #[test]
+    fn bad_beat_jackpot_pays_the_table() {
+        let mut s = setup();
+        s.jackpots.insert(Currency::Icp, E8S);
+        // Pocket sevens make quads; the board also lets 9h-Th make a straight flush.
+        let (table, result) = bad_beat_hand(&mut s, 4, "7c 7d", "7h 7s Jh Qh Kh");
+        let before = s.house_stats().liabilities_total;
+        let balances: Vec<u64> = (1..=4).map(|k| s.users[&p(k)].balance).collect();
+        s.check_bad_beat(table, &result, 3);
+
+        let paid = E8S * 9 / 10;
+        assert_eq!(s.jackpot(Currency::Icp), E8S - paid, "10% seeds the next jackpot");
+        assert_eq!(s.users[&p(1)].balance - balances[0], paid / 2, "loser gets half");
+        assert_eq!(s.users[&p(2)].balance - balances[1], paid / 4, "winner a quarter");
+        assert_eq!(s.users[&p(3)].balance - balances[2], paid / 8, "table splits the rest");
+        assert_eq!(s.users[&p(4)].balance - balances[3], paid / 8);
+        assert_eq!(s.house_stats().liabilities_total, before);
+
+        let hit = s.table_view(table, Some(p(3)), 4).unwrap().jackpot_hit.unwrap();
+        assert_eq!((hit.loser, hit.winner), (p(1), p(2)));
+        assert_eq!(hit.loser_hand, "Four of a Kind");
+        assert_eq!(hit.winner_hand, "Straight Flush");
+        assert!(s.users[&p(1)].medals.contains_key("jackpot"));
+        assert_eq!(s.jackpot_info().recent.len(), 1);
+        assert!(s.chat_since(Channel::Lobby, 0).iter().any(|m| m.text.contains("BAD BEAT JACKPOT")));
+        // Once the next hand starts, the celebration is gone.
+        s.tables.get_mut(&table).unwrap().hand_no = 8;
+        assert!(s.table_view(table, None, 5).unwrap().jackpot_hit.is_none());
+    }
+
+    #[test]
+    fn bad_beat_jackpot_rules() {
+        // Fewer than four players dealt in.
+        let mut s = setup();
+        s.jackpots.insert(Currency::Icp, E8S);
+        let (table, result) = bad_beat_hand(&mut s, 3, "7c 7d", "7h 7s Jh Qh Kh");
+        s.check_bad_beat(table, &result, 3);
+        assert_eq!(s.jackpot(Currency::Icp), E8S);
+
+        // Quads on the board: the loser's hole cards don't both play.
+        let mut s = setup();
+        s.jackpots.insert(Currency::Icp, E8S);
+        let (table, result) = bad_beat_hand(&mut s, 4, "Ac 2d", "7c 7d 7h 7s Kh");
+        s.check_bad_beat(table, &result, 3);
+        assert_eq!(s.jackpot(Currency::Icp), E8S);
+
+        // A losing full house isn't bad enough.
+        let mut s = setup();
+        s.jackpots.insert(Currency::Icp, E8S);
+        let (table, result) = bad_beat_hand(&mut s, 4, "Jc Jd", "7h 7s Jh Qh Kh");
+        s.check_bad_beat(table, &result, 3);
+        assert_eq!(s.jackpot(Currency::Icp), E8S);
+    }
+
+    #[test]
+    fn jackpot_is_fed_by_cash_tables_only() {
+        let mut s = setup();
+        assert_eq!(s.jackpot(Currency::Chips), crate::jackpot::CHIP_JACKPOT_SEED);
+        for k in 1..=3 {
+            s.join_table(p(k), 1, k - 1, 1_000, None, 0).unwrap();
+        }
+        let now = run_until(&mut s, SEC, 1_000, |s| s.jackpot(Currency::Chips) > crate::jackpot::CHIP_JACKPOT_SEED);
+        assert!(s.jackpot(Currency::Chips) > crate::jackpot::CHIP_JACKPOT_SEED);
+        let chips: u64 = (1..=3).map(|k| s.users[&p(k)].chips + s.tables[&1].seats.iter().flatten().find(|x| x.player == p(k)).map_or(0, |x| x.stack)).sum();
+        assert_eq!(chips + s.jackpot(Currency::Chips) - crate::jackpot::CHIP_JACKPOT_SEED, 3 * SIGNUP_CHIPS, "every dropped chip is in the jackpot");
+        // Tournament tables never feed it (stop the cash game first).
+        for k in 1..=3 {
+            if s.tables[&1].seat_of(&p(k)).is_some() {
+                s.leave_table(p(k), 1, now).unwrap();
+            }
+        }
+        many_players(&mut s, 2);
+        let chips_jackpot = s.jackpot(Currency::Chips);
+        let id = open_tournament(&mut s, "Chip Heads-Up Duel");
+        s.register_tournament(p(10), id, now).unwrap();
+        s.register_tournament(p(11), id, now).unwrap();
+        let tid = s.tournaments[&id].tables[0];
+        assert_eq!(s.tables[&tid].config.jackpot_bps, 0);
+        run_until(&mut s, now + SEC, 5_000, |s| s.tournaments[&id].status == crate::tournament::TournamentStatus::Finished);
+        assert_eq!(s.jackpot(Currency::Chips), chips_jackpot);
+        assert_eq!(s.table_view(tid, None, now).map_or(0, |v| v.jackpot), 0);
     }
 
     #[test]

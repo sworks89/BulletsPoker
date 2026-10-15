@@ -57,6 +57,8 @@ export const idlFactory = ({ IDL }) => {
     'action_timeout_secs' : IDL.Nat64,
     'min_buy_in' : IDL.Nat64,
     'name' : IDL.Text,
+    'jackpot_bps' : IDL.Nat16,
+    'jackpot_cap' : IDL.Nat64,
     'rake_bps' : IDL.Nat16,
     'rake_cap' : IDL.Nat64,
     'max_seats' : IDL.Nat8,
@@ -68,6 +70,7 @@ export const idlFactory = ({ IDL }) => {
   const HouseStats = IDL.Record({
     'liabilities_total' : IDL.Nat64,
     'chips_on_tables' : IDL.Nat64,
+    'jackpot' : IDL.Nat64,
     'wallet_balances' : IDL.Nat64,
     'users' : IDL.Nat64,
     'treasury' : IDL.Nat64,
@@ -180,6 +183,41 @@ export const idlFactory = ({ IDL }) => {
     'board' : IDL.Vec(IDL.Nat8),
     'table_name' : IDL.Text,
   });
+  const JackpotPayout = IDL.Record({
+    'username' : IDL.Text,
+    'player' : IDL.Principal,
+    'share' : IDL.Text,
+    'amount' : IDL.Nat64,
+  });
+  const JackpotHit = IDL.Record({
+    'winner_cards' : IDL.Vec(IDL.Nat8),
+    'total' : IDL.Nat64,
+    'loser_hand' : IDL.Text,
+    'loser_name' : IDL.Text,
+    'hand_no' : IDL.Nat64,
+    'time' : IDL.Nat64,
+    'table_id' : IDL.Nat64,
+    'winner' : IDL.Principal,
+    'loser' : IDL.Principal,
+    'currency' : Currency,
+    'board' : IDL.Vec(IDL.Nat8),
+    'loser_cards' : IDL.Vec(IDL.Nat8),
+    'table_name' : IDL.Text,
+    'payouts' : IDL.Vec(JackpotPayout),
+    'winner_hand' : IDL.Text,
+    'winner_name' : IDL.Text,
+  });
+  const JackpotInfo = IDL.Record({
+    'icp' : IDL.Nat64,
+    'min_players' : IDL.Nat8,
+    'chips' : IDL.Nat64,
+    'qualifying_hand' : IDL.Text,
+    'winner_bps' : IDL.Nat64,
+    'loser_bps' : IDL.Nat64,
+    'payout_bps' : IDL.Nat64,
+    'drop_bps' : IDL.Nat16,
+    'recent' : IDL.Vec(JackpotHit),
+  });
   const LeaderboardEntry = IDL.Record({
     'id' : IDL.Principal,
     'username' : IDL.Text,
@@ -257,6 +295,7 @@ export const idlFactory = ({ IDL }) => {
     'players' : IDL.Vec(PlayerResult),
     'board' : IDL.Vec(IDL.Nat8),
     'winners' : IDL.Vec(Winner),
+    'jackpot_drop' : IDL.Nat64,
   });
   const TournamentBadge = IDL.Record({
     'id' : IDL.Nat64,
@@ -317,6 +356,8 @@ export const idlFactory = ({ IDL }) => {
     'my_seat' : IDL.Opt(IDL.Nat8),
     'to_call' : IDL.Nat64,
     'hand_no' : IDL.Nat64,
+    'jackpot' : IDL.Nat64,
+    'jackpot_hit' : IDL.Opt(JackpotHit),
     'locked' : IDL.Bool,
     'last_result' : IDL.Opt(HandResult),
     'tournament' : IDL.Opt(TournamentBadge),
@@ -414,6 +455,7 @@ export const idlFactory = ({ IDL }) => {
     'admin_add_tournament' : IDL.Func([TournamentTemplate], [Result_1], []),
     'admin_create_table' : IDL.Func([TableConfig], [Result_2], []),
     'admin_house_stats' : IDL.Func([], [Result_3], ['query']),
+    'admin_seed_jackpot' : IDL.Func([IDL.Nat64], [Result], []),
     'admin_set_item_available' : IDL.Func([IDL.Nat32, IDL.Bool], [Result], []),
     'admin_withdraw_treasury' : IDL.Func([Account, IDL.Nat64], [Result_2], []),
     'buy_item' : IDL.Func([IDL.Nat32, Currency], [Result], []),
@@ -442,6 +484,7 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Vec(HandSummary)],
         ['query'],
       ),
+    'get_jackpots' : IDL.Func([], [JackpotInfo], ['query']),
     'get_leaderboard' : IDL.Func([], [IDL.Vec(LeaderboardEntry)], ['query']),
     'get_my_profile' : IDL.Func([], [IDL.Opt(Profile)], ['query']),
     'get_notes' : IDL.Func([], [IDL.Vec(NoteView)], ['query']),

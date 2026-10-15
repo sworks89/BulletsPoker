@@ -2,6 +2,7 @@
 //! item store, table gifts, chat and friends.
 
 pub mod cards;
+pub mod jackpot;
 pub mod ledger;
 pub mod medals;
 pub mod state;
@@ -16,6 +17,7 @@ use state::*;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::time::Duration;
+use jackpot::JackpotInfo;
 use medals::MedalDef;
 use table::{Action, Currency, TableConfig};
 use tournament::{TournamentDetail, TournamentSummary, TournamentTemplate};
@@ -437,6 +439,12 @@ fn get_notes() -> Vec<NoteView> {
     with(|s| s.notes(p))
 }
 
+/// Current bad-beat jackpots, the rules and recent hits.
+#[query]
+fn get_jackpots() -> JackpotInfo {
+    with(|s| s.jackpot_info())
+}
+
 #[query]
 fn list_medals() -> Vec<MedalDef> {
     medals::medal_defs()
@@ -549,6 +557,13 @@ fn admin_set_item_available(id: u32, available: bool) -> R<()> {
         item.available = available;
         Ok(())
     })
+}
+
+/// Moves ICP from the house treasury into the bad-beat jackpot.
+#[update]
+fn admin_seed_jackpot(amount: u64) -> R<()> {
+    admin()?;
+    with_mut(|s| s.seed_jackpot(amount))
 }
 
 #[query]

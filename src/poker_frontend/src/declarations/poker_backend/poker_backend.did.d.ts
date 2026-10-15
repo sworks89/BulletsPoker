@@ -91,6 +91,10 @@ export interface HandResult {
   'players' : Array<PlayerResult>,
   'board' : Uint8Array | number[],
   'winners' : Array<Winner>,
+  /**
+   * Taken from the pot for the bad-beat jackpot.
+   */
+  'jackpot_drop' : bigint,
 }
 export interface HandSummary {
   'id' : bigint,
@@ -111,6 +115,10 @@ export interface HouseStats {
    */
   'liabilities_total' : bigint,
   'chips_on_tables' : bigint,
+  /**
+   * ICP bad-beat jackpot.
+   */
+  'jackpot' : bigint,
   'wallet_balances' : bigint,
   'users' : bigint,
   'treasury' : bigint,
@@ -123,6 +131,44 @@ export type ItemKind = { 'CardBack' : null } |
   { 'Throwable' : null } |
   { 'Avatar' : null } |
   { 'Gift' : null };
+export interface JackpotHit {
+  'winner_cards' : Uint8Array | number[],
+  'total' : bigint,
+  'loser_hand' : string,
+  'loser_name' : string,
+  'hand_no' : bigint,
+  'time' : bigint,
+  'table_id' : bigint,
+  'winner' : Principal,
+  'loser' : Principal,
+  'currency' : Currency,
+  'board' : Uint8Array | number[],
+  'loser_cards' : Uint8Array | number[],
+  'table_name' : string,
+  'payouts' : Array<JackpotPayout>,
+  'winner_hand' : string,
+  'winner_name' : string,
+}
+export interface JackpotInfo {
+  'icp' : bigint,
+  'min_players' : number,
+  'chips' : bigint,
+  'qualifying_hand' : string,
+  'winner_bps' : bigint,
+  'loser_bps' : bigint,
+  'payout_bps' : bigint,
+  'drop_bps' : number,
+  'recent' : Array<JackpotHit>,
+}
+export interface JackpotPayout {
+  'username' : string,
+  'player' : Principal,
+  /**
+   * "loser", "winner" or "table".
+   */
+  'share' : string,
+  'amount' : bigint,
+}
 export interface LeaderboardEntry {
   'id' : Principal,
   'username' : string,
@@ -335,6 +381,11 @@ export interface TableConfig {
   'min_buy_in' : bigint,
   'name' : string,
   /**
+   * Bad-beat jackpot drop in basis points of the pot after rake (flop only). 0 = no jackpot.
+   */
+  'jackpot_bps' : number,
+  'jackpot_cap' : bigint,
+  /**
    * Rake in basis points of the pot (250 = 2.5%). Only taken when a flop is dealt.
    */
   'rake_bps' : number,
@@ -369,6 +420,14 @@ export interface TableView {
   'my_seat' : [] | [number],
   'to_call' : bigint,
   'hand_no' : bigint,
+  /**
+   * Bad-beat jackpot for this table's currency (0 at tournament tables).
+   */
+  'jackpot' : bigint,
+  /**
+   * A jackpot hit in the hand on screen, for the celebration.
+   */
+  'jackpot_hit' : [] | [JackpotHit],
   /**
    * Joining needs a password.
    */
@@ -553,6 +612,10 @@ export interface _SERVICE {
   'admin_add_tournament' : ActorMethod<[TournamentTemplate], Result_1>,
   'admin_create_table' : ActorMethod<[TableConfig], Result_2>,
   'admin_house_stats' : ActorMethod<[], Result_3>,
+  /**
+   * Moves ICP from the house treasury into the bad-beat jackpot.
+   */
+  'admin_seed_jackpot' : ActorMethod<[bigint], Result>,
   'admin_set_item_available' : ActorMethod<[number, boolean], Result>,
   /**
    * Withdraws house revenue (rake and store sales) from the treasury.
@@ -592,6 +655,10 @@ export interface _SERVICE {
    * Your most recent hands, newest first.
    */
   'get_hand_history' : ActorMethod<[number], Array<HandSummary>>,
+  /**
+   * Current bad-beat jackpots, the rules and recent hits.
+   */
+  'get_jackpots' : ActorMethod<[], JackpotInfo>,
   'get_leaderboard' : ActorMethod<[], Array<LeaderboardEntry>>,
   'get_my_profile' : ActorMethod<[], [] | [Profile]>,
   /**

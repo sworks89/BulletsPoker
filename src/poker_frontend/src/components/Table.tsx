@@ -6,6 +6,7 @@ import { amount, amountWithUnit, bytes, cardRank, cardSuit, CHIPS, countdown, IC
 import { sounds } from '../sound';
 import { Chat } from './Chat';
 import { NoteEditor } from './Notes';
+import { JackpotCelebration } from './Jackpot';
 
 export function Card({ c, back, small }: { c?: number; back?: string; small?: boolean }) {
   const { profile } = useApp();
@@ -61,6 +62,7 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
   const [raiseTo, setRaiseTo] = useState<bigint>(0n);
   const [busy, setBusy] = useState(false);
   const [flying, setFlying] = useState<Flying[]>([]);
+  const [dismissedHit, setDismissedHit] = useState<string>('');
   const seenThrows = useRef<Set<bigint> | null>(null);
   const settings = profile?.settings;
 
@@ -92,6 +94,12 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
     if (view.hand_no !== lastHand.current) {
       if (lastHand.current !== 0n && view.my_seat.length) sounds.deal();
       lastHand.current = view.hand_no;
+    }
+    const hit = view.jackpot_hit[0];
+    if (hit && hit.hand_no !== lastWin.current) {
+      lastWin.current = hit.hand_no;
+      sounds.win();
+      setTimeout(sounds.win, 450);
     }
     const r = view.last_result[0];
     if (r && r.hand_no !== lastWin.current && r.winners.some((w) => w.player.toText() === profile?.id.toText())) {
@@ -177,6 +185,11 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
               <span className={`tag ${isChips(currency) ? 'chips' : ''}`}>{isChips(currency) ? 'Play chips' : 'ICP'}</span>
             )}
             {view.locked && <span className="tag">🔒</span>}
+            {view.jackpot > 0n && (
+              <span className="tag jp-tag" title="Bad Beat Jackpot: quads or better losing at showdown">
+                💥 {amount(view.jackpot, currency)}
+              </span>
+            )}
             <span className="muted">
               {' '}
               · NLHE {amount(view.config.small_blind, currency)}/{amount(view.config.big_blind, currency)} · Hand #{String(view.hand_no)}
@@ -437,6 +450,9 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
         </aside>
       )}
 
+      {view.jackpot_hit[0] && visible && dismissedHit !== `${id}-${view.jackpot_hit[0].hand_no}` && (
+        <JackpotCelebration hit={view.jackpot_hit[0]} onClose={() => setDismissedHit(`${id}-${view.jackpot_hit[0]!.hand_no}`)} />
+      )}
       {buyInSeat !== null && <BuyIn view={view} seat={buyInSeat} onClose={() => setBuyInSeat(null)} onDone={load} />}
       {selected && <PlayerCard seat={selected} view={view} canThrow={mySeat !== undefined} onClose={() => setSelected(null)} />}
     </div>

@@ -70,6 +70,8 @@ type HandResult = record {
   players : vec PlayerResult;
   board : blob;
   winners : vec Winner;
+  // Taken from the pot for the bad-beat jackpot.
+  jackpot_drop : nat64;
 };
 type HandSummary = record {
   id : nat64;
@@ -86,12 +88,50 @@ type HouseStats = record {
   // What the canister's main ledger account must hold to cover everything.
   liabilities_total : nat64;
   chips_on_tables : nat64;
+  // ICP bad-beat jackpot.
+  jackpot : nat64;
   wallet_balances : nat64;
   users : nat64;
   treasury : nat64;
 };
 type InitArgs = record { ledger : opt principal; ledger_fee : opt nat64 };
 type ItemKind = variant { CardBack; Throwable; Avatar; Gift };
+type JackpotHit = record {
+  winner_cards : blob;
+  total : nat64;
+  loser_hand : text;
+  loser_name : text;
+  hand_no : nat64;
+  time : nat64;
+  table_id : nat64;
+  winner : principal;
+  loser : principal;
+  currency : Currency;
+  board : blob;
+  loser_cards : blob;
+  table_name : text;
+  payouts : vec JackpotPayout;
+  winner_hand : text;
+  winner_name : text;
+};
+type JackpotInfo = record {
+  icp : nat64;
+  min_players : nat8;
+  chips : nat64;
+  qualifying_hand : text;
+  winner_bps : nat64;
+  loser_bps : nat64;
+  payout_bps : nat64;
+  drop_bps : nat16;
+  recent : vec JackpotHit;
+};
+type JackpotPayout = record {
+  username : text;
+  player : principal;
+  // "loser", "winner" or "table".
+  share : text;
+  amount : nat64;
+};
 type LeaderboardEntry = record {
   id : principal;
   username : text;
@@ -255,6 +295,9 @@ type TableConfig = record {
   action_timeout_secs : nat64;
   min_buy_in : nat64;
   name : text;
+  // Bad-beat jackpot drop in basis points of the pot after rake (flop only). 0 = no jackpot.
+  jackpot_bps : nat16;
+  jackpot_cap : nat64;
   // Rake in basis points of the pot (250 = 2.5%). Only taken when a flop is dealt.
   rake_bps : nat16;
   rake_cap : nat64;
@@ -286,6 +329,10 @@ type TableView = record {
   my_seat : opt nat8;
   to_call : nat64;
   hand_no : nat64;
+  // Bad-beat jackpot for this table's currency (0 at tournament tables).
+  jackpot : nat64;
+  // A jackpot hit in the hand on screen, for the celebration.
+  jackpot_hit : opt JackpotHit;
   // Joining needs a password.
   locked : bool;
   last_result : opt HandResult;
@@ -425,6 +472,8 @@ service : (opt InitArgs) -> {
   admin_add_tournament : (TournamentTemplate) -> (Result_1);
   admin_create_table : (TableConfig) -> (Result_2);
   admin_house_stats : () -> (Result_3) query;
+  // Moves ICP from the house treasury into the bad-beat jackpot.
+  admin_seed_jackpot : (nat64) -> (Result);
   admin_set_item_available : (nat32, bool) -> (Result);
   // Withdraws house revenue (rake and store sales) from the treasury.
   admin_withdraw_treasury : (Account, nat64) -> (Result_2);
@@ -450,6 +499,8 @@ service : (opt InitArgs) -> {
   get_hand : (nat64) -> (opt HandRecord) query;
   // Your most recent hands, newest first.
   get_hand_history : (nat32) -> (vec HandSummary) query;
+  // Current bad-beat jackpots, the rules and recent hits.
+  get_jackpots : () -> (JackpotInfo) query;
   get_leaderboard : () -> (vec LeaderboardEntry) query;
   get_my_profile : () -> (opt Profile) query;
   // All your notes, most recently updated first.

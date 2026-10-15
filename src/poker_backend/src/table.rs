@@ -27,6 +27,9 @@ pub struct TableConfig {
     /// Rake in basis points of the pot (250 = 2.5%). Only taken when a flop is dealt.
     pub rake_bps: u16,
     pub rake_cap: u64,
+    /// Bad-beat jackpot drop in basis points of the pot after rake (flop only). 0 = no jackpot.
+    pub jackpot_bps: u16,
+    pub jackpot_cap: u64,
     pub action_timeout_secs: u64,
 }
 
@@ -46,6 +49,9 @@ impl TableConfig {
         }
         if self.rake_bps > 1000 {
             return Err("Rake may not exceed 10%".into());
+        }
+        if self.jackpot_bps > 300 {
+            return Err("The jackpot drop may not exceed 3%".into());
         }
         if !(5..=120).contains(&self.action_timeout_secs) {
             return Err("Action timeout must be 5-120 seconds".into());
@@ -180,6 +186,8 @@ pub struct HandResult {
     pub players: Vec<PlayerResult>,
     pub pot: u64,
     pub rake: u64,
+    /// Taken from the pot for the bad-beat jackpot.
+    pub jackpot_drop: u64,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -201,6 +209,8 @@ pub struct Table {
     pub last_result: Option<HandResult>,
     /// Rake collected but not yet swept into the house treasury.
     pub rake_accrued: u64,
+    /// Jackpot drop collected but not yet swept into the jackpot.
+    pub jackpot_accrued: u64,
     /// Action log of the current (or just finished) hand.
     pub log: Vec<LogEntry>,
     /// Tournament tables deal in players who are sitting out (they post blinds
@@ -229,6 +239,7 @@ impl Table {
             phase_changed_at: 0,
             last_result: None,
             rake_accrued: 0,
+            jackpot_accrued: 0,
             log: vec![],
             tournament_mode: false,
         }
@@ -635,14 +646,17 @@ impl Table {
         }
     }
 
-    fn take_rake(&mut self, pot: u64) -> u64 {
-        if self.board.len() < 3 || self.config.rake_bps == 0 {
-            return 0; // no flop, no drop
+    /// House rake and bad-beat jackpot drop for a pot: (rake, drop). No flop, no drop.
+    fn take_rake(&mut self, pot: u64) -> (u64, u64) {
+        if self.board.len() < 3 {
+            return (0, 0);
         }
-        let rake = (pot as u128 * self.config.rake_bps as u128 / 10_000) as u64;
-        let rake = rake.min(self.config.rake_cap);
+        let pct = |amount: u64, bps: u16, cap: u64| ((amount as u128 * bps as u128 / 10_000) as u64).min(cap);
+        let rake = pct(pot, self.config.rake_bps, self.config.rake_cap);
+        let drop = pct(pot - rake, self.config.jackpot_bps, self.config.jackpot_cap);
         self.rake_accrued += rake;
-        rake
+        self.jackpot_accrued += drop;
+        (rake, drop)
     }
 
     fn player_results(&self, won: &[u64]) -> Vec<PlayerResult> {
@@ -662,13 +676,13 @@ impl Table {
     fn finish_uncontested(&mut self, now: u64) {
         self.return_uncalled();
         let pot = self.pot();
-        let rake = self.take_rake(pot);
+        let (rake, jackpot_drop) = self.take_rake(pot);
         let w = self
             .seats
             .iter()
             .position(|s| s.as_ref().is_some_and(|s| s.live()))
             .expect("one live player");
-        let amount = pot - rake;
+        let amount = pot - rake - jackpot_drop;
         self.seat_mut(w).stack += amount;
         let mut won = vec![0; self.n()];
         won[w] = amount;
@@ -687,6 +701,7 @@ impl Table {
             players: self.player_results(&won),
             pot,
             rake,
+            jackpot_drop,
         });
         self.end_hand(now);
     }
@@ -733,8 +748,8 @@ impl Table {
             last.0 += total - assigned;
         }
 
-        let rake_total = self.take_rake(total);
-        let mut rake = rake_total;
+        let (rake_total, jackpot_drop) = self.take_rake(total);
+        let mut rake = rake_total + jackpot_drop;
         for pot in pots.iter_mut() {
             let r = rake.min(pot.0);
             pot.0 -= r;
@@ -809,6 +824,7 @@ impl Table {
             players: self.player_results(&won),
             pot: total,
             rake: rake_total,
+            jackpot_drop,
         });
         self.end_hand(now);
     }
@@ -988,6 +1004,8 @@ mod tests {
             max_seats: 6,
             rake_bps: 0,
             rake_cap: 0,
+            jackpot_bps: 0,
+            jackpot_cap: 0,
             action_timeout_secs: 20,
         }
     }
@@ -1168,6 +1186,40 @@ mod tests {
         assert_eq!(t.rake_accrued, 1); // 5% of 20
         let stacks: u64 = t.seats.iter().flatten().map(|s| s.stack).sum();
         assert_eq!(stacks + t.rake_accrued, 1000);
+    }
+
+    #[test]
+    fn jackpot_drop_after_rake() {
+        let mut cfg = config();
+        cfg.rake_bps = 500;
+        cfg.rake_cap = 1_000;
+        cfg.jackpot_bps = 100;
+        cfg.jackpot_cap = 10;
+        let mut t = Table::new(1, cfg);
+        t.sit(p(1), 0, 1_000).unwrap();
+        t.sit(p(2), 1, 1_000).unwrap();
+        t.start_hand([2; 32], 0).unwrap();
+        // Preflop fold: no flop, no drop.
+        let pl = to_act_player(&t);
+        t.act(&pl, Action::Fold, 1).unwrap();
+        assert_eq!((t.rake_accrued, t.jackpot_accrued), (0, 0));
+
+        t.start_hand([4; 32], 10 * NANOS).unwrap();
+        let first = to_act_player(&t);
+        t.act(&first, Action::Raise(500), 1).unwrap();
+        let second = to_act_player(&t);
+        t.act(&second, Action::Call, 1).unwrap();
+        while t.phase.is_betting() {
+            let pl = to_act_player(&t);
+            t.act(&pl, Action::Check, 1).unwrap();
+        }
+        // Pot 1,000: rake 50, then 1% of 950 = 9 (under the cap of 10).
+        assert_eq!(t.rake_accrued, 50);
+        assert_eq!(t.jackpot_accrued, 9);
+        let r = t.last_result.as_ref().unwrap();
+        assert_eq!((r.rake, r.jackpot_drop), (50, 9));
+        let stacks: u64 = t.seats.iter().flatten().map(|s| s.stack).sum();
+        assert_eq!(stacks + 59, 2_000);
     }
 
     #[test]

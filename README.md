@@ -34,6 +34,12 @@ A social Texas Hold'em poker room that runs entirely on the [Internet Computer](
 - Any player can open a table (chips or ICP) with their choice of stakes, seats and clock, optionally password protected
 - Hosts of ICP tables earn 20% of the rake their table generates; empty tables close after 30 minutes
 
+**Bad-beat jackpot** (cash tables only)
+- Every cash pot that sees a flop drops 1% (after rake, capped at one big blind) into a jackpot: one in ICP, one in play chips (seeded with 100,000 chips). Tournament tables don't feed it and can't win it
+- Hits when four of a kind or better loses at showdown, with both of the loser's hole cards playing and at least 4 players dealt in
+- Pays 90% of the jackpot: half to the player with the losing hand, a quarter to the winner, and the rest split by everyone else dealt in; 10% seeds the next one
+- Lobby banner with rules and recent hits, jackpot amount at every cash table, and a celebration overlay for everyone at the table; the ICP jackpot is part of the canister's accounted liabilities, and admins can top it up from the treasury
+
 **Player notes**
 - Private notes on any player: free text plus a color label (maniac, loose, fish, nit…). Seats show the color as a ring around the avatar so you can read a table at a glance
 - Edit from the player card at the table; search and manage all your notes on the Friends & Notes page
@@ -70,6 +76,7 @@ src/
     src/state.rs            users, wallet balances, store, gifts, chat, friends, tables, player rooms
     src/tournament.rs       sit-and-go's and scheduled tournaments: blinds, payouts, balancing
     src/medals.rs           medal definitions and awarding
+    src/jackpot.rs          bad-beat jackpot: qualifying hands and payouts
     src/ledger.rs           ICP ledger calls (ICRC-1 transfer, ICRC-2 transfer_from), deposit accounts
     src/lib.rs              canister endpoints, timers, upgrade persistence
     poker_backend.did       Candid interface (generated from the Rust code)
@@ -124,4 +131,4 @@ Only controllers can call the `admin_*` methods (create tables, add recurring to
 
 ## Roadmap ideas
 
-vetKeys-encrypted hole cards · Omaha and Crazy Pineapple · bad-beat jackpot · bounty tournaments · animated avatars as images/NFTs · moderators and mute/report · auto-stand for players sitting out too long.
+vetKeys-encrypted hole cards · Omaha and Crazy Pineapple · bounty tournaments · animated avatars as images/NFTs · moderators and mute/report · auto-stand for players sitting out too long.
