@@ -318,8 +318,12 @@ type TournamentBadge = record {
   can_rebuy : bool;
   small_blind : nat64;
   rebuy_cost : nat64;
+  // The viewer may take the add-on right now.
+  can_addon : bool;
+  addon_chips : nat64;
   name : text;
   level : nat32;
+  addon_cost : nat64;
   finished : bool;
   currency : Currency;
   big_blind : nat64;
@@ -359,6 +363,7 @@ type TournamentSummary = record {
   min_players : nat32;
   rebuy_levels : nat32;
   start_at : nat64;
+  addon_chips : nat64;
   kind : TournamentKind;
   name : text;
   level_secs : nat64;
@@ -366,6 +371,7 @@ type TournamentSummary = record {
   level : nat32;
   // Total buy-ins: registrations plus rebuys.
   entries : nat32;
+  addon_cost : nat64;
   currency : Currency;
   prize_pool : nat64;
   players_left : nat32;
@@ -384,6 +390,7 @@ type TournamentTemplate = record {
   min_players : nat32;
   // Rebuys are allowed while the level (0-based) is below this. 0 = freezeout.
   rebuy_levels : nat32;
+  addon_chips : nat64;
   kind : TournamentKind;
   name : text;
   level_secs : nat64;
@@ -392,6 +399,9 @@ type TournamentTemplate = record {
   max_players : nat32;
   // Minimum prize pool, only for play-chip events (the house mints chips).
   guarantee : nat64;
+  // One-time add-on at the end of the rebuy period: price (into the pool, no fee)
+  // and the chips it buys. 0 = no add-on.
+  addon_cost : nat64;
   currency : Currency;
   starting_stack : nat64;
   // Goes into the prize pool.
@@ -408,6 +418,8 @@ type Winner = record {
 };
 service : (opt InitArgs) -> {
   act : (nat64, Action) -> (Result);
+  // Takes the one-time add-on at the end of a tournament's rebuy period.
+  addon_tournament : (nat64) -> (Result);
   admin_add_item : (StoreItem) -> (Result_1);
   // Adds a recurring tournament (a sit-and-go or a scheduled event).
   admin_add_tournament : (TournamentTemplate) -> (Result_1);
@@ -456,7 +468,7 @@ service : (opt InitArgs) -> {
   list_tables : () -> (vec TableSummary) query;
   list_tournaments : () -> (vec TournamentSummary) query;
   ping : () -> ();
-  // Buys a fresh starting stack during a tournament's rebuy period.
+  // Buys a fresh starting stack during a tournament's rebuy period (buy-in only, no fee).
   rebuy_tournament : (nat64) -> (Result);
   register : (text) -> (Result_4);
   register_tournament : (nat64) -> (Result);

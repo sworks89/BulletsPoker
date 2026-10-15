@@ -54,6 +54,10 @@ pub struct TournamentTemplate {
     /// Rebuys are allowed while the level (0-based) is below this. 0 = freezeout.
     pub rebuy_levels: u32,
     pub max_rebuys: u32,
+    /// One-time add-on at the end of the rebuy period: price (into the pool, no fee)
+    /// and the chips it buys. 0 = no add-on.
+    pub addon_cost: u64,
+    pub addon_chips: u64,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -62,6 +66,7 @@ pub struct Entrant {
     pub place: Option<u32>,
     pub prize: u64,
     pub rebuys: u32,
+    pub addon: bool,
     /// Busted during the rebuy period: knocked out at this time unless they rebuy.
     pub rebuy_deadline: u64,
 }
@@ -116,6 +121,8 @@ pub struct TournamentSummary {
     pub late_reg_levels: u32,
     pub rebuy_levels: u32,
     pub max_rebuys: u32,
+    pub addon_cost: u64,
+    pub addon_chips: u64,
     /// Total buy-ins: registrations plus rebuys.
     pub entries: u32,
     pub level: u32,
@@ -164,6 +171,10 @@ pub struct TournamentBadge {
     pub rebuy_cost: u64,
     pub rebuys_left: u32,
     pub currency: Currency,
+    /// The viewer may take the add-on right now.
+    pub can_addon: bool,
+    pub addon_cost: u64,
+    pub addon_chips: u64,
 }
 
 // ----------------------------------------------------------------- structure
@@ -215,6 +226,8 @@ pub fn default_templates() -> Vec<TournamentTemplate> {
         late_reg_levels: 0,
         rebuy_levels: 0,
         max_rebuys: 0,
+        addon_cost: 0,
+        addon_chips: 0,
         name: name.into(),
         kind: SitAndGo,
         currency,
@@ -250,6 +263,8 @@ pub fn default_templates() -> Vec<TournamentTemplate> {
             late_reg_levels: 3,
             rebuy_levels: 0,
             max_rebuys: 0,
+            addon_cost: 0,
+            addon_chips: 0,
         },
         TournamentTemplate {
             name: "Chip Rebuy Madness".into(),
@@ -267,6 +282,8 @@ pub fn default_templates() -> Vec<TournamentTemplate> {
             late_reg_levels: 4,
             rebuy_levels: 4,
             max_rebuys: 3,
+            addon_cost: 2_000,
+            addon_chips: 4_500,
         },
         TournamentTemplate {
             name: "ICP Nightly".into(),
@@ -284,6 +301,8 @@ pub fn default_templates() -> Vec<TournamentTemplate> {
             late_reg_levels: 4,
             rebuy_levels: 3,
             max_rebuys: 2,
+            addon_cost: E8S / 2,
+            addon_chips: 7_500,
         },
     ]
 }
@@ -310,6 +329,9 @@ pub fn validate_template(t: &TournamentTemplate) -> R<()> {
     if t.late_reg_levels > 20 || t.rebuy_levels > 20 || t.max_rebuys > 10 || (t.rebuy_levels > 0) != (t.max_rebuys > 0) {
         return Err("Invalid late registration or rebuy settings".into());
     }
+    if (t.addon_cost > 0) != (t.addon_chips > 0) || (t.addon_cost > 0 && t.rebuy_levels == 0) {
+        return Err("An add-on needs a price, a chip amount and a rebuy period".into());
+    }
     if t.starting_stack < 150 || !(30..=3_600).contains(&t.level_secs) {
         return Err("Invalid structure".into());
     }
@@ -335,6 +357,12 @@ impl Tournament {
 
     fn rebuys_open(&self) -> bool {
         self.status == TournamentStatus::Running && self.level < self.template.rebuy_levels
+    }
+
+    /// Add-ons are sold during the last rebuy level and the level after it.
+    fn addon_open(&self) -> bool {
+        let r = self.template.rebuy_levels;
+        self.status == TournamentStatus::Running && self.template.addon_cost > 0 && self.level + 1 >= r && self.level <= r
     }
 
     pub fn entries(&self) -> u32 {
@@ -441,6 +469,7 @@ impl State {
             place: None,
             prize: 0,
             rebuys: 0,
+            addon: false,
             rebuy_deadline: 0,
         });
         if late {
@@ -605,22 +634,9 @@ impl State {
         if e.rebuy_deadline == 0 && chips > stack {
             return Err("You can rebuy when you're at or below the starting stack".into());
         }
-        let (currency, buy_in, fee) = (t.template.currency, t.template.buy_in, t.template.fee);
-        // Add the chips first so nothing is charged if the player is mid-hand.
-        if let Some(tid) = table {
-            self.tables.get_mut(&tid).unwrap().add_chips(&caller, stack)?;
-        }
-        if let Err(e) = self.debit_in(&caller, currency, buy_in + fee) {
-            if let Some(tid) = table {
-                let s = self.tables.get_mut(&tid).unwrap();
-                let i = s.seat_of(&caller).unwrap();
-                s.seats[i].as_mut().unwrap().stack -= stack;
-            }
-            return Err(e);
-        }
-        if currency == Currency::Icp {
-            self.treasury += fee;
-        }
+        // Rebuys cost the buy-in only: the house fee is charged once, on entry.
+        let (currency, buy_in) = (t.template.currency, t.template.buy_in);
+        self.buy_chips(&caller, table, stack, currency, buy_in)?;
         let t = self.tournaments.get_mut(&id).unwrap();
         t.collected += buy_in;
         let e = t.entrants.iter_mut().find(|e| e.player == caller).unwrap();
@@ -633,6 +649,55 @@ impl State {
         };
         let name = self.users.get(&caller).map(|u| u.username.clone()).unwrap_or_default();
         self.post(Channel::Table(tid), None, String::new(), format!("{name} rebuys"), MessageKind::System, now);
+        Ok(())
+    }
+
+    /// Adds `chips` to the caller's seat (if seated) and charges `cost`, undoing
+    /// the chips if the charge fails. Chips go on first so a mid-hand player
+    /// is refused before anything is charged.
+    fn buy_chips(&mut self, caller: &Principal, table: Option<u64>, chips: u64, currency: Currency, cost: u64) -> R<()> {
+        if let Some(tid) = table {
+            self.tables.get_mut(&tid).unwrap().add_chips(caller, chips)?;
+        }
+        if let Err(e) = self.debit_in(caller, currency, cost) {
+            if let Some(tid) = table {
+                let tb = self.tables.get_mut(&tid).unwrap();
+                let i = tb.seat_of(caller).unwrap();
+                tb.seats[i].as_mut().unwrap().stack -= chips;
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// One-time add-on at the end of the rebuy period. The whole price goes into the pool.
+    pub fn addon(&mut self, caller: Principal, id: u64, now: u64) -> R<()> {
+        let t = self.tournaments.get(&id).ok_or("No such tournament")?;
+        if t.template.addon_cost == 0 {
+            return Err("This tournament has no add-on".into());
+        }
+        if !t.addon_open() {
+            return Err(format!("The add-on is available in levels {} and {}", t.template.rebuy_levels, t.template.rebuy_levels + 1));
+        }
+        let e = t.entrants.iter().find(|e| e.player == caller).ok_or("You are not in this tournament")?;
+        if e.place.is_some() {
+            return Err("You are out of this tournament".into());
+        }
+        if e.addon {
+            return Err("You already took the add-on".into());
+        }
+        if e.rebuy_deadline != 0 {
+            return Err("You're busted: rebuy first, then take the add-on".into());
+        }
+        let table = self.seat_table_of(t, &caller).ok_or("You are not seated")?;
+        let (currency, cost, chips) = (t.template.currency, t.template.addon_cost, t.template.addon_chips);
+        self.buy_chips(&caller, Some(table), chips, currency, cost)?;
+        let t = self.tournaments.get_mut(&id).unwrap();
+        t.collected += cost;
+        t.entrants.iter_mut().find(|e| e.player == caller).unwrap().addon = true;
+        t.recompute_payouts();
+        let name = self.users.get(&caller).map(|u| u.username.clone()).unwrap_or_default();
+        self.post(Channel::Table(table), None, String::new(), format!("{name} takes the add-on (+{chips} chips)"), MessageKind::System, now);
         Ok(())
     }
 
@@ -699,11 +764,25 @@ impl State {
                         }
                         let (sb, bb) = t.blinds();
                         let tables = t.tables.clone();
+                        let notice = if t.template.addon_cost > 0 && t.level + 1 == t.template.rebuy_levels {
+                            Some(format!("Last rebuy level: the add-on (+{} chips) is now available", t.template.addon_chips))
+                        } else if t.template.rebuy_levels > 0 && t.level == t.template.rebuy_levels {
+                            Some(if t.template.addon_cost > 0 {
+                                "Rebuys are closed. The add-on is available until the end of this level".to_string()
+                            } else {
+                                "Rebuys are closed".to_string()
+                            })
+                        } else {
+                            None
+                        };
                         for tid in tables {
                             if let Some(tb) = self.tables.get_mut(&tid) {
                                 tb.config.small_blind = sb;
                                 tb.config.big_blind = bb;
                                 self.post(Channel::Table(tid), None, String::new(), format!("Blinds are now {sb}/{bb}"), MessageKind::System, now);
+                                if let Some(n) = &notice {
+                                    self.post(Channel::Table(tid), None, String::new(), n.clone(), MessageKind::System, now);
+                                }
                             }
                         }
                     }
@@ -907,6 +986,8 @@ impl State {
             late_reg_levels: t.template.late_reg_levels,
             rebuy_levels: t.template.rebuy_levels,
             max_rebuys: t.template.max_rebuys,
+            addon_cost: t.template.addon_cost,
+            addon_chips: t.template.addon_chips,
             entries: t.entries(),
             level: t.level + 1,
         }
@@ -1002,9 +1083,12 @@ impl State {
                     && (e.rebuy_deadline != 0 || self.tournament_chips(t, &e.player) <= t.template.starting_stack)
             }),
             rebuy_deadline: me.map_or(0, |e| e.rebuy_deadline),
-            rebuy_cost: t.template.buy_in + t.template.fee,
+            rebuy_cost: t.template.buy_in,
             rebuys_left: me.map_or(0, |e| t.template.max_rebuys.saturating_sub(e.rebuys)),
             currency: t.template.currency,
+            can_addon: me.is_some_and(|e| t.addon_open() && e.place.is_none() && !e.addon && e.rebuy_deadline == 0),
+            addon_cost: t.template.addon_cost,
+            addon_chips: t.template.addon_chips,
         })
     }
 

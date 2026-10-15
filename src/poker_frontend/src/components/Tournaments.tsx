@@ -21,6 +21,7 @@ export function formatLabel(t: TournamentSummary): string {
   const parts: string[] = [];
   if (t.late_reg_levels > 0) parts.push(`Late reg to level ${t.late_reg_levels}`);
   if (t.rebuy_levels > 0) parts.push(`Rebuys ×${t.max_rebuys} to level ${t.rebuy_levels}`);
+  if (t.addon_cost > 0) parts.push('Add-on');
   return parts.join(' · ');
 }
 
@@ -191,7 +192,10 @@ function Detail({ d }: { d: TournamentDetail }) {
         <p className="small">
           {formatLabel(t)}. {t.entries} entries
           {t.entries > t.registered ? ` (${t.entries - t.registered} rebuys)` : ''}.
-          {t.rebuy_levels > 0 && ' Rebuy when busted (30s to decide) or when at or below the starting stack.'}
+          {t.rebuy_levels > 0 &&
+            ` Rebuys cost ${amountWithUnit(t.buy_in, t.currency)} (no fee) for ${t.starting_stack.toLocaleString()} chips: when busted (30s to decide) or at or below the starting stack.`}
+          {t.addon_cost > 0 &&
+            ` One add-on of ${t.addon_chips.toLocaleString()} chips for ${amountWithUnit(t.addon_cost, t.currency)} during levels ${t.rebuy_levels}–${t.rebuy_levels + 1}.`}
         </p>
       )}
       <h4>Payouts</h4>

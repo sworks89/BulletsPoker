@@ -2298,6 +2298,10 @@ mod tests {
             if s.tournaments[&id].status == Finished {
                 return;
             }
+            let everyone: Vec<Principal> = s.tournaments[&id].entrants.iter().map(|e| e.player).collect();
+            for p in everyone {
+                let _ = s.addon(p, id, now);
+            }
             let waiting: Vec<Principal> =
                 s.tournaments[&id].entrants.iter().filter(|e| e.rebuy_deadline != 0).map(|e| e.player).collect();
             for w in waiting {
@@ -2324,7 +2328,8 @@ mod tests {
         places.sort();
         assert_eq!(places, (1..=12).collect::<Vec<_>>());
         assert_eq!(t.paid, t.prize_pool);
-        assert_eq!(t.collected, 2_000 * t.entries() as u64);
+        let addons = t.entrants.iter().filter(|e| e.addon).count() as u64;
+        assert_eq!(t.collected, 2_000 * t.entries() as u64 + 2_000 * addons);
         let chips_after: u64 = s.users.values().map(|u| u.chips).sum();
         assert_eq!(chips_after, chips_before - t.collected + t.prize_pool);
     }
@@ -2339,8 +2344,76 @@ mod tests {
         play_rebuy_event(&mut s, id, start_at + SEC);
         let t = &s.tournaments[&id];
         assert_eq!(s.house_stats().liabilities_total, before);
-        assert_eq!(s.treasury, t.entries() as u64 * (E8S / 40));
+        // The fee is charged once per player: rebuys and add-ons go entirely into the pool.
+        assert_eq!(s.treasury, 4 * (E8S / 40));
+        let addons = t.entrants.iter().filter(|e| e.addon).count() as u64;
+        assert_eq!(t.collected, t.entries() as u64 * (E8S / 2) + addons * (E8S / 2));
         assert_eq!(t.paid, t.prize_pool);
+    }
+
+    #[test]
+    fn rebuys_charge_no_fee() {
+        let mut s = setup();
+        many_players(&mut s, 3);
+        let (id, start_at) = start_scheduled(&mut s, "ICP Nightly", 10..13);
+        let treasury = s.treasury;
+        let table = s.tournaments[&id].tables[0];
+        s.tables.get_mut(&table).unwrap().seats.iter_mut().flatten().find(|x| x.player == p(10)).unwrap().stack = 1_000;
+        let before = s.users[&p(10)].balance;
+        s.rebuy(p(10), id, start_at + SEC).unwrap();
+        assert_eq!(s.users[&p(10)].balance, before - E8S / 2, "buy-in only");
+        assert_eq!(s.treasury, treasury);
+        assert_eq!(s.tournament_badge(id, Some(p(10))).unwrap().rebuy_cost, E8S / 2);
+    }
+
+    #[test]
+    fn addon_window_and_limits() {
+        let mut s = setup();
+        many_players(&mut s, 3);
+        let (id, start_at) = start_scheduled(&mut s, "Chip Rebuy Madness", 10..13);
+        let level_at = |l: u64| start_at + l * 300 * SEC;
+        // Not yet: the add-on opens on the last rebuy level (level 4 of 4).
+        assert!(s.addon(p(10), id, level_at(0) + SEC).is_err());
+        assert!(!s.tournament_badge(id, Some(p(10))).unwrap().can_addon);
+        s.tick(level_at(3));
+        assert_eq!(s.tournaments[&id].level, 3);
+        let badge = s.tournament_badge(id, Some(p(10))).unwrap();
+        assert!(badge.can_addon && badge.addon_chips == 4_500 && badge.addon_cost == 2_000);
+
+        let stack = stack_of(&s, id, p(10)).unwrap();
+        let chips = s.users[&p(10)].chips;
+        let collected = s.tournaments[&id].collected;
+        s.addon(p(10), id, level_at(3) + SEC).unwrap();
+        assert_eq!(stack_of(&s, id, p(10)), Some(stack + 4_500));
+        assert_eq!(s.users[&p(10)].chips, chips - 2_000);
+        assert_eq!(s.tournaments[&id].collected, collected + 2_000);
+        assert!(s.addon(p(10), id, level_at(3) + 2 * SEC).is_err(), "once per player");
+        assert!(!s.tournament_badge(id, Some(p(10))).unwrap().can_addon);
+
+        // Still open the level after rebuys close; gone the level after that.
+        s.tick(level_at(4));
+        assert!(s.rebuy(p(11), id, level_at(4) + SEC).is_err(), "rebuys closed");
+        s.addon(p(11), id, level_at(4) + SEC).unwrap();
+        s.tick(level_at(5));
+        assert!(s.addon(p(12), id, level_at(5) + SEC).is_err());
+    }
+
+    #[test]
+    fn addon_refused_mid_hand_and_when_busted() {
+        let mut s = setup();
+        many_players(&mut s, 2);
+        let (id, start_at) = start_scheduled(&mut s, "Chip Rebuy Madness", 10..12);
+        let now = start_at + 3 * 300 * SEC;
+        s.tick(now);
+        let table = s.tournaments[&id].tables[0];
+        s.start_hand(table, [1; 32], now + 6 * SEC);
+        assert!(s.tables[&table].phase.is_betting());
+        let chips = s.users[&p(10)].chips;
+        assert!(s.addon(p(10), id, now + 7 * SEC).is_err(), "not during a hand");
+        assert_eq!(s.users[&p(10)].chips, chips, "nothing charged");
+        // A busted player has to rebuy before they can add on.
+        s.tournaments.get_mut(&id).unwrap().entrants.iter_mut().find(|e| e.player == p(11)).unwrap().rebuy_deadline = now + 30 * SEC;
+        assert!(s.addon(p(11), id, now + 7 * SEC).is_err());
     }
 
     #[test]

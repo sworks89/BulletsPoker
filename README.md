@@ -25,7 +25,9 @@ A social Texas Hold'em poker room that runs entirely on the [Internet Computer](
 - Sit-and-go's that start as soon as they fill (chips and ICP, heads-up to 9-max), re-opening automatically
 - Scheduled multi-table tournaments (an hourly play-chip freeroll with a guaranteed prize pool, plus a nightly ICP event) with rising blinds, table balancing and merging down to a final table, and payouts that scale with the field
 - Late registration for the first levels of scheduled events (late players are seated at the emptiest table, or a new one opens)
-- Rebuy events: during the rebuy period, busted players get 30 seconds to rebuy before they're knocked out, and anyone at or below the starting stack can rebuy between hands. Pools and payouts grow with every entry, and the pool always pays out exactly
+- Rebuy events: during the rebuy period, busted players get 30 seconds to rebuy before they're knocked out, and anyone at or below the starting stack can rebuy between hands. Rebuys cost the buy-in only (the house fee is charged once, on entry)
+- Add-ons: one extra stack per player, sold during the last rebuy level and the level after it, with the whole price going into the prize pool
+- Pools and payouts grow with every entry, and the pool always pays out exactly
 - Absent players keep getting dealt in and blind off, so every event finishes; tournament chips can't be cashed out, and prizes go straight to your wallet
 
 **Host your own table**
@@ -122,4 +124,4 @@ Only controllers can call the `admin_*` methods (create tables, add recurring to
 
 ## Roadmap ideas
 
-vetKeys-encrypted hole cards · Omaha and Crazy Pineapple · bad-beat jackpot · tournament add-ons · animated avatars as images/NFTs · moderators and mute/report · auto-stand for players sitting out too long.
+vetKeys-encrypted hole cards · Omaha and Crazy Pineapple · bad-beat jackpot · bounty tournaments · animated avatars as images/NFTs · moderators and mute/report · auto-stand for players sitting out too long.

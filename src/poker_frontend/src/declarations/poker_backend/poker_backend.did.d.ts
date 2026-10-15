@@ -409,8 +409,14 @@ export interface TournamentBadge {
   'can_rebuy' : boolean,
   'small_blind' : bigint,
   'rebuy_cost' : bigint,
+  /**
+   * The viewer may take the add-on right now.
+   */
+  'can_addon' : boolean,
+  'addon_chips' : bigint,
   'name' : string,
   'level' : number,
+  'addon_cost' : bigint,
   'finished' : boolean,
   'currency' : Currency,
   'big_blind' : bigint,
@@ -463,6 +469,7 @@ export interface TournamentSummary {
   'min_players' : number,
   'rebuy_levels' : number,
   'start_at' : bigint,
+  'addon_chips' : bigint,
   'kind' : TournamentKind,
   'name' : string,
   'level_secs' : bigint,
@@ -472,6 +479,7 @@ export interface TournamentSummary {
    * Total buy-ins: registrations plus rebuys.
    */
   'entries' : number,
+  'addon_cost' : bigint,
   'currency' : Currency,
   'prize_pool' : bigint,
   'players_left' : number,
@@ -496,6 +504,7 @@ export interface TournamentTemplate {
    * Rebuys are allowed while the level (0-based) is below this. 0 = freezeout.
    */
   'rebuy_levels' : number,
+  'addon_chips' : bigint,
   'kind' : TournamentKind,
   'name' : string,
   'level_secs' : bigint,
@@ -508,6 +517,11 @@ export interface TournamentTemplate {
    * Minimum prize pool, only for play-chip events (the house mints chips).
    */
   'guarantee' : bigint,
+  /**
+   * One-time add-on at the end of the rebuy period: price (into the pool, no fee)
+   * and the chips it buys. 0 = no add-on.
+   */
+  'addon_cost' : bigint,
   'currency' : Currency,
   'starting_stack' : bigint,
   /**
@@ -528,6 +542,10 @@ export interface Winner {
 }
 export interface _SERVICE {
   'act' : ActorMethod<[bigint, Action], Result>,
+  /**
+   * Takes the one-time add-on at the end of a tournament's rebuy period.
+   */
+  'addon_tournament' : ActorMethod<[bigint], Result>,
   'admin_add_item' : ActorMethod<[StoreItem], Result_1>,
   /**
    * Adds a recurring tournament (a sit-and-go or a scheduled event).
@@ -599,7 +617,7 @@ export interface _SERVICE {
   'list_tournaments' : ActorMethod<[], Array<TournamentSummary>>,
   'ping' : ActorMethod<[], undefined>,
   /**
-   * Buys a fresh starting stack during a tournament's rebuy period.
+   * Buys a fresh starting stack during a tournament's rebuy period (buy-in only, no fee).
    */
   'rebuy_tournament' : ActorMethod<[bigint], Result>,
   'register' : ActorMethod<[string], Result_4>,

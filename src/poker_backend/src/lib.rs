@@ -407,11 +407,18 @@ fn unregister_tournament(id: u64) -> R<()> {
     with_mut(|s| s.unregister_tournament(p, id))
 }
 
-/// Buys a fresh starting stack during a tournament's rebuy period.
+/// Buys a fresh starting stack during a tournament's rebuy period (buy-in only, no fee).
 #[update]
 fn rebuy_tournament(id: u64) -> R<()> {
     let p = caller()?;
     with_mut(|s| s.rebuy(p, id, now()))
+}
+
+/// Takes the one-time add-on at the end of a tournament's rebuy period.
+#[update]
+fn addon_tournament(id: u64) -> R<()> {
+    let p = caller()?;
+    with_mut(|s| s.addon(p, id, now()))
 }
 
 // ------------------------------------------------------------- player notes

@@ -244,6 +244,18 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
                 · {amountWithUnit(tourney.rebuy_cost, tourney.currency)} · {tourney.rebuys_left} left
               </button>
             )}
+            {tourney.can_addon && (
+              <button
+                className="btn small elsewhere"
+                title="One-time purchase at the end of the rebuy period"
+                onClick={async () => {
+                  const r = await run(async () => unwrap(await backend.addon_tournament(tourney.id)), `Add-on taken: +${tourney.addon_chips.toLocaleString()} chips`);
+                  if (r !== undefined) await Promise.all([refreshProfile(), load()]);
+                }}
+              >
+                Add-on +{tourney.addon_chips.toLocaleString()} chips · {amountWithUnit(tourney.addon_cost, tourney.currency)}
+              </button>
+            )}
             {tourney.my_place[0] !== undefined && (
               <span className="tag live">
                 You finished #{tourney.my_place[0]}
