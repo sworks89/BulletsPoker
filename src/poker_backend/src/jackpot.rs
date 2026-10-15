@@ -208,7 +208,7 @@ impl State {
             chips: self.jackpot(Currency::Chips),
             drop_bps: crate::state::JACKPOT_DROP_BPS,
             min_players: MIN_PLAYERS as u8,
-            qualifying_hand: "four of a kind or better (both hole cards must play)".into(),
+            qualifying_hand: "four of a kind or better (both hole cards must play; a hand that hits the jackpot is revealed even if mucked)".into(),
             payout_bps: PAYOUT_BPS,
             loser_bps: LOSER_BPS,
             winner_bps: WINNER_BPS,

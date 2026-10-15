@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { solvePow } from '../pow';
 import { useApp, usePoll } from '../context';
 import { unwrap, type LeaderboardEntry, type Settings } from '../ic';
 import { icp } from '../format';
@@ -194,22 +195,39 @@ export function Leaderboard() {
 }
 
 export function Register() {
-  const { backend, run, refreshProfile } = useApp();
+  const { backend, run, refreshProfile, principal } = useApp();
   const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  // Sign-ups carry a small proof-of-work against bulk bot accounts. The
+  // difficulty can rise while we work, so retry a couple of times.
+  const register = async () => {
+    for (let attempt = 0; ; attempt++) {
+      const { difficulty } = await backend.get_signup_challenge();
+      const nonce = await solvePow(principal!.toUint8Array(), difficulty);
+      const r = await backend.register(name.trim(), [nonce]);
+      if ('Ok' in r || attempt >= 2 || !r.Err.includes('Sign-up check failed')) return unwrap(r);
+    }
+  };
+
   return (
     <div className="modal-bg">
       <form
         className="modal"
         onSubmit={async (e) => {
           e.preventDefault();
-          const r = await run(async () => unwrap(await backend.register(name.trim())), 'Welcome to the tables!');
+          setBusy(true);
+          const r = await run(register, 'Welcome to the tables!');
+          setBusy(false);
           if (r !== undefined) await refreshProfile();
         }}
       >
         <h3>Pick your table name</h3>
         <p className="muted small">3–16 letters, digits or underscores. This is how other players see you.</p>
         <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Username" />
-        <button className="btn">Create profile</button>
+        <button className="btn" disabled={busy || !principal}>
+          {busy ? 'Setting up your account…' : 'Create profile'}
+        </button>
       </form>
     </div>
   );

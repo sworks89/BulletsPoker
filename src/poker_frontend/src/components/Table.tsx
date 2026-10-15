@@ -288,6 +288,8 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
           </div>
         )}
 
+        {view.restricted && <UnlockRoom id={id} onDone={load} />}
+
         <div className="felt-wrap">
           <div className="felt">
             <div className="felt-logo">♠ BULLETS ♠</div>
@@ -639,5 +641,28 @@ function PlayerCard({ seat, view, canThrow, onClose }: { seat: SeatView; view: T
         )}
       </div>
     </div>
+  );
+}
+
+/** Password prompt for a private room the viewer hasn't unlocked yet. */
+function UnlockRoom({ id, onDone }: { id: bigint; onDone: () => Promise<void> }) {
+  const { backend, run, profile } = useApp();
+  const [password, setPassword] = useState('');
+  if (!profile) return <div className="status-banner">🔒 Private table. Sign in and enter the password to watch.</div>;
+  return (
+    <form
+      className="status-banner row gap unlock"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        const ok = await run(async () => unwrap(await backend.unlock_room(id, password)));
+        if (ok !== undefined) await onDone();
+      }}
+    >
+      <span>🔒 Private table. Enter the password to watch and chat, or pick a seat to join.</span>
+      <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} maxLength={32} placeholder="Password" />
+      <button className="btn small" disabled={!password}>
+        Unlock
+      </button>
+    </form>
   );
 }

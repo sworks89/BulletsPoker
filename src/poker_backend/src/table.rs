@@ -326,7 +326,8 @@ impl Table {
         if i >= self.n() {
             return Err("No such seat".into());
         }
-        if self.seat_of(&player).is_some() {
+        // Includes a seat left mid-hand that is still in play: one seat per player.
+        if self.seats.iter().flatten().any(|s| s.player == player) {
             return Err("You are already seated at this table".into());
         }
         if self.seats[i].is_some() {
@@ -1319,6 +1320,23 @@ mod tests {
         let i = t.seat_of(&late).unwrap();
         assert!(t.seat(i).sitting_out);
         assert_eq!(t.eligible_count(), 1);
+    }
+
+    #[test]
+    fn one_seat_per_player_even_after_leaving_mid_hand() {
+        let mut t = Table::new(1, config());
+        t.sit(p(1), 0, 200).unwrap();
+        t.sit(p(2), 1, 200).unwrap();
+        t.sit(p(3), 2, 200).unwrap();
+        t.start_hand([6; 32], 0).unwrap();
+        t.stand(&p(1), 1).unwrap();
+        assert!(t.sit(p(1), 3, 100).is_err(), "their old seat is still in this hand");
+        while t.phase.is_betting() {
+            let p = to_act_player(&t);
+            t.act(&p, Action::Fold, 2).unwrap();
+        }
+        t.settle_after_hand();
+        t.sit(p(1), 3, 200).unwrap();
     }
 
     #[test]

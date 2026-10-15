@@ -78,7 +78,10 @@ impl Metrics {
         }
     }
 
-    pub fn to_prometheus(&self) -> String {
+    /// Prometheus text. The public endpoint (`public`) leaves out the house's
+    /// money figures (treasury, balances, liabilities, jackpot, solvency
+    /// surplus); admins get everything from `admin_get_metrics`.
+    pub fn to_prometheus(&self, public: bool) -> String {
         let mut out = String::new();
         let mut gauge = |name: &str, help: &str, kind: &str, v: f64| {
             out.push_str(&format!("# HELP bp_{name} {help}\n# TYPE bp_{name} {kind}\nbp_{name} {v}\n"));
@@ -94,10 +97,12 @@ impl Metrics {
         gauge("cycles", "Canister cycle balance", "gauge", self.cycles as f64);
         gauge("heap_bytes", "Wasm heap size", "gauge", self.heap_bytes as f64);
         gauge("stable_bytes", "Stable memory size", "gauge", self.stable_bytes as f64);
-        gauge("treasury_e8s", "House treasury", "gauge", self.treasury_e8s as f64);
-        gauge("wallet_total_e8s", "Sum of player ICP balances", "gauge", self.wallet_total_e8s as f64);
-        gauge("liabilities_e8s", "ICP the canister owes in total", "gauge", self.liabilities_e8s as f64);
-        gauge("jackpot_icp_e8s", "ICP bad-beat jackpot", "gauge", self.jackpot_icp_e8s as f64);
+        if !public {
+            gauge("treasury_e8s", "House treasury", "gauge", self.treasury_e8s as f64);
+            gauge("wallet_total_e8s", "Sum of player ICP balances", "gauge", self.wallet_total_e8s as f64);
+            gauge("liabilities_e8s", "ICP the canister owes in total", "gauge", self.liabilities_e8s as f64);
+            gauge("jackpot_icp_e8s", "ICP bad-beat jackpot", "gauge", self.jackpot_icp_e8s as f64);
+        }
         gauge("jackpot_chips", "Play-chip bad-beat jackpot", "gauge", self.jackpot_chips as f64);
         gauge("unresolved_ledger_ops", "Ledger operations with an unknown outcome", "gauge", self.unresolved_ledger_ops as f64);
         gauge("ledger_ops_failed_total", "Ledger operations that failed", "counter", self.ledger_ops_failed as f64);
@@ -108,7 +113,7 @@ impl Metrics {
         if let Some(at) = self.last_solvency_at {
             gauge("solvency_checked_seconds", "Time of the last solvency check (unix seconds)", "gauge", (at / 1_000_000_000) as f64);
         }
-        if let Some(surplus) = self.last_solvency_surplus_e8s {
+        if let (false, Some(surplus)) = (public, self.last_solvency_surplus_e8s) {
             gauge("solvency_surplus_e8s", "Ledger balance minus liabilities at the last check", "gauge", surplus as f64);
         }
         gauge("paused_deposits", "Deposits paused", "gauge", b(self.paused_deposits));
@@ -172,8 +177,12 @@ mod tests {
     fn prometheus_text() {
         let s = State::new(candid::Principal::anonymous(), 10_000);
         let m = Metrics::from_state(&s, 0);
-        let text = m.to_prometheus();
+        let text = m.to_prometheus(false);
         assert!(text.contains("# TYPE bp_users gauge\nbp_users 0\n"));
+        assert!(text.contains("bp_treasury_e8s 0\n"));
+        let public = m.to_prometheus(true);
+        assert!(!public.contains("treasury") && !public.contains("wallet_total") && !public.contains("liabilities"));
+        assert!(public.contains("bp_users 0\n"));
         assert!(text.contains("bp_jackpot_chips 100000\n"));
         assert!(!text.contains("solvency_ok"), "no solvency line before the first check");
     }

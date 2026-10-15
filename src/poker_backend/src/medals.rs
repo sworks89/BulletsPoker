@@ -97,7 +97,7 @@ impl State {
         if result.board.len() < 5 {
             return;
         }
-        // Showdown hands (before auto-muck hides them from other players).
+        // Hands shown at showdown (the caller has already removed mucked hands).
         for sh in &result.shown {
             let mut cards = sh.cards.clone();
             cards.extend_from_slice(&result.board);

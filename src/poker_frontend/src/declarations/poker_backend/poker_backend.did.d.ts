@@ -30,6 +30,7 @@ export interface AdminConfig {
   'moderators' : Array<[Principal, string]>,
   'banned_words' : Array<string>,
   'signups_per_hour' : number,
+  'signup_pow_bits' : number,
 }
 export interface AuditEntry {
   'action' : string,
@@ -464,6 +465,16 @@ export interface Report {
   'target_name' : string,
   'reason' : ReportReason,
 }
+/**
+ * A page of the open-report queue, oldest first.
+ */
+export interface ReportPage {
+  /**
+   * All open reports, not just this page.
+   */
+  'open_total' : bigint,
+  'reports' : Array<Report>,
+}
 export type ReportReason = { 'Spam' : null } |
   { 'Cheating' : null } |
   { 'Collusion' : null } |
@@ -487,9 +498,11 @@ export type Result_10 = { 'Ok' : Array<LedgerOp> } |
   { 'Err' : string };
 export type Result_11 = { 'Ok' : ModPlayerView } |
   { 'Err' : string };
-export type Result_12 = { 'Ok' : Array<Report> } |
+export type Result_12 = { 'Ok' : ReportPage } |
   { 'Err' : string };
-export type Result_13 = { 'Ok' : Profile } |
+export type Result_13 = { 'Ok' : Array<Report> } |
+  { 'Err' : string };
+export type Result_14 = { 'Ok' : Profile } |
   { 'Err' : string };
 export type Result_2 = { 'Ok' : Array<AuditEntry> } |
   { 'Err' : string };
@@ -570,6 +583,12 @@ export interface ShownHand {
   'cards' : Uint8Array | number[],
   'hand' : string,
   'seat' : number,
+}
+export interface SignupChallenge {
+  /**
+   * Required leading zero bits of sha256("bp-signup" ‖ principal ‖ nonce as u64 LE).
+   */
+  'difficulty' : number,
 }
 export interface SolvencyReport {
   'ok' : boolean,
@@ -698,6 +717,10 @@ export interface TableView {
    * Items thrown in the last few seconds, for clients to animate.
    */
   'throws' : Array<ThrowEvent>,
+  /**
+   * A private room the viewer hasn't unlocked: game details are hidden.
+   */
+  'restricted' : boolean,
   'board' : Uint8Array | number[],
   'phase' : Phase,
   'config' : TableConfig,
@@ -905,9 +928,13 @@ export interface _SERVICE {
    */
   'admin_set_pause' : ActorMethod<[PauseFlags], Result>,
   /**
-   * Most new accounts per hour (sign-up throttle against bulk account creation).
+   * Hourly sign-up target: past it, sign-ups need more proof-of-work (0 closes sign-ups).
    */
   'admin_set_signup_limit' : ActorMethod<[number], Result>,
+  /**
+   * Base sign-up proof-of-work, in leading zero bits (default 12, max 22).
+   */
+  'admin_set_signup_pow' : ActorMethod<[number], Result>,
   /**
    * Ledger operations whose outcome is unknown and need attention.
    */
@@ -971,6 +998,10 @@ export interface _SERVICE {
    */
   'get_notes' : ActorMethod<[], Array<NoteView>>,
   'get_profile' : ActorMethod<[Principal], [] | [PublicProfile]>,
+  /**
+   * How much sign-up work a new account needs right now (see `register`).
+   */
+  'get_signup_challenge' : ActorMethod<[], SignupChallenge>,
   'get_status' : ActorMethod<[], ServiceStatus>,
   'get_table' : ActorMethod<[bigint], [] | [TableView]>,
   /**
@@ -980,8 +1011,9 @@ export interface _SERVICE {
   'get_tables' : ActorMethod<[BigUint64Array | bigint[]], Array<TableView>>,
   'get_tournament' : ActorMethod<[bigint], [] | [TournamentDetail]>,
   /**
-   * `GET /metrics` (Prometheus text) and `GET /health` on the canister's raw
-   * domain. Responses are not certified, so they're for monitoring only.
+   * `GET /metrics` (Prometheus text, without the house's money figures) and
+   * `GET /health` on the canister's raw domain. Responses are not certified, so
+   * they're for monitoring only.
    */
   'http_request' : ActorMethod<[HttpRequest], HttpResponse>,
   /**
@@ -1002,18 +1034,24 @@ export interface _SERVICE {
    * Mutes a player in every chat for `hours` (0 lifts the mute).
    */
   'mod_mute' : ActorMethod<[Principal, number], Result>,
-  'mod_open_reports' : ActorMethod<[], Result_12>,
+  /**
+   * The open-report queue, oldest first: up to `limit` (max 50) after report `after`.
+   */
+  'mod_open_reports' : ActorMethod<[[] | [bigint], number], Result_12>,
   /**
    * The latest reports, open or resolved.
    */
-  'mod_recent_reports' : ActorMethod<[number], Result_12>,
+  'mod_recent_reports' : ActorMethod<[number], Result_13>,
   'mod_resolve_report' : ActorMethod<[bigint, ModAction, string], Result>,
   'mod_unban' : ActorMethod<[Principal], Result>,
   /**
    * Buys a fresh starting stack during a tournament's rebuy period (buy-in only, no fee).
    */
   'rebuy_tournament' : ActorMethod<[bigint], Result>,
-  'register' : ActorMethod<[string], Result_13>,
+  /**
+   * Creates your profile. `pow` is a nonce solving `get_signup_challenge`.
+   */
+  'register' : ActorMethod<[string, [] | [bigint]], Result_14>,
   'register_tournament' : ActorMethod<[bigint], Result>,
   'remove_friend' : ActorMethod<[Principal], Result>,
   /**
@@ -1037,6 +1075,10 @@ export interface _SERVICE {
   'sit_out' : ActorMethod<[bigint, boolean], Result>,
   'throw_item' : ActorMethod<[bigint, Principal, number, Currency], Result>,
   'top_up' : ActorMethod<[bigint, bigint], Result>,
+  /**
+   * Enters a private room's password so you can watch it and chat there.
+   */
+  'unlock_room' : ActorMethod<[bigint, string], Result>,
   'unregister_tournament' : ActorMethod<[bigint], Result>,
   'update_settings' : ActorMethod<[Settings], Result>,
   'whoami' : ActorMethod<[], Principal>,

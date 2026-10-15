@@ -215,13 +215,26 @@ function Reports({ onLookUp }: { onLookUp: (p: Principal) => void }) {
   const { backend } = useApp();
   const [showAll, setShowAll] = useState(false);
   const [reports, setReports] = useState<Report[] | null>(null);
-  const load = async () => setReports(unwrap(showAll ? await backend.mod_recent_reports(100) : await backend.mod_open_reports()));
+  const [openTotal, setOpenTotal] = useState(0);
+  // The oldest 50 open reports; resolving them brings the next ones in.
+  const load = async () => {
+    if (showAll) {
+      setReports(unwrap(await backend.mod_recent_reports(50)));
+    } else {
+      const page = unwrap(await backend.mod_open_reports([], 50));
+      setReports(page.reports);
+      setOpenTotal(Number(page.open_total));
+    }
+  };
   usePoll(load, 15000, [backend, showAll]);
 
   return (
     <div className="panel">
       <div className="panel-title row">
-        <span>{showAll ? 'Recent reports' : `Open reports (${reports?.length ?? '…'})`}</span>
+        <span>
+          {showAll ? 'Recent reports' : `Open reports (${reports ? openTotal : '…'})`}
+          {!showAll && reports && openTotal > reports.length && <span className="muted small"> · oldest {reports.length} shown</span>}
+        </span>
         <label className="switch-row small">
           <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Include resolved
         </label>
@@ -586,12 +599,14 @@ function Settings() {
   const [cfg, setCfg] = useState<AdminConfig | null>(null);
   const [words, setWords] = useState('');
   const [limit, setLimit] = useState('');
+  const [powBits, setPowBits] = useState('');
   const [newMod, setNewMod] = useState('');
   const load = async () => {
     const c = unwrap(await backend.admin_get_config());
     setCfg(c);
     setWords(c.banned_words.join(', '));
     setLimit(String(c.signups_per_hour));
+    setPowBits(String(c.signup_pow_bits));
   };
   useEffect(() => {
     load().catch(() => {});
@@ -640,18 +655,31 @@ function Settings() {
         </div>
       </div>
       <div className="panel">
-        <div className="panel-title">Sign-up limit</div>
+        <div className="panel-title">Sign-ups</div>
         <div className="row gap">
           <input className="narrow" value={limit} onChange={(e) => setLimit(e.target.value)} inputMode="numeric" />
-          <span className="muted small">new accounts per hour</span>
+          <span className="muted small grow">new accounts per hour before sign-up gets harder</span>
           <button
             className="btn small"
-            onClick={() => run(async () => { unwrap(await backend.admin_set_signup_limit(Number(limit) || 0)); await load(); }, 'Sign-up limit saved')}
+            onClick={() => run(async () => { unwrap(await backend.admin_set_signup_limit(Number(limit) || 0)); await load(); }, 'Sign-up target saved')}
           >
             Save
           </button>
         </div>
-        <p className="muted small">Lower it if you see a wave of bot accounts. 0 closes sign-ups.</p>
+        <div className="row gap">
+          <input className="narrow" value={powBits} onChange={(e) => setPowBits(e.target.value)} inputMode="numeric" />
+          <span className="muted small grow">base proof-of-work bits (12 ≈ instant, 20 ≈ 1s, max 22)</span>
+          <button
+            className="btn small"
+            onClick={() => run(async () => { unwrap(await backend.admin_set_signup_pow(Number(powBits) || 0)); await load(); }, 'Proof-of-work saved')}
+          >
+            Save
+          </button>
+        </div>
+        <p className="muted small">
+          Every new account solves a small proof-of-work. Past the hourly target it gets harder, so a bot wave slows itself down instead of locking real
+          players out. 0 accounts per hour closes sign-ups.
+        </p>
       </div>
       <div className="panel span2">
         <div className="panel-title">Word filter ({cfg.banned_words.length} words)</div>

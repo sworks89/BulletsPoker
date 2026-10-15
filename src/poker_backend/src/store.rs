@@ -29,6 +29,7 @@ const DMS: MemoryId = MemoryId::new(4);
 const HANDS: MemoryId = MemoryId::new(5);
 const LEDGER_OPS: MemoryId = MemoryId::new(6);
 const REPORTS: MemoryId = MemoryId::new(7);
+const REPORTS_BY_TARGET: MemoryId = MemoryId::new(8);
 
 macro_rules! candid_storable {
     ($($t:ty),*) => {$(
@@ -63,6 +64,8 @@ pub struct Stores {
     pub hands: StableBTreeMap<u64, HandRecord, Mem>,
     pub ledger_ops: StableBTreeMap<u64, LedgerOp, Mem>,
     pub reports: StableBTreeMap<u64, Report, Mem>,
+    /// (reported player, report id): finds a player's reports without a scan.
+    pub reports_by_target: StableBTreeMap<(Principal, u64), u8, Mem>,
 }
 
 impl Stores {
@@ -79,6 +82,7 @@ impl Stores {
             hands: StableBTreeMap::init(mm.get(HANDS)),
             ledger_ops: StableBTreeMap::init(mm.get(LEDGER_OPS)),
             reports: StableBTreeMap::init(mm.get(REPORTS)),
+            reports_by_target: StableBTreeMap::init(mm.get(REPORTS_BY_TARGET)),
         };
         (stores, users)
     }

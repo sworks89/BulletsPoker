@@ -159,7 +159,12 @@ impl Env {
     }
 
     fn register(&self, who: Principal, name: &str) {
-        let r: R<Profile> = self.update(who, "register", encode_one(name.to_string()).unwrap());
+        let challenge: poker_backend::signup::SignupChallenge = self.query(who, "get_signup_challenge", encode_args(()).unwrap());
+        let nonce = poker_backend::signup::solve(&who, challenge.difficulty);
+        // Without the proof-of-work, sign-up is refused.
+        let r: R<Profile> = self.update(who, "register", encode_args((name.to_string(), None::<u64>)).unwrap());
+        assert!(r.is_err() || challenge.difficulty == 0);
+        let r: R<Profile> = self.update(who, "register", encode_args((name.to_string(), Some(nonce))).unwrap());
         r.unwrap();
     }
 
@@ -361,6 +366,15 @@ fn ingress_filter_moderation_and_metrics() {
     assert!(r.unwrap_err().contains("yourself"));
     let r: R<()> = env.update(env.admin, "admin_set_moderator", encode_args((bob, false)).unwrap());
     r.unwrap();
+    // A suspended player can't use the social or store endpoints either.
+    let r: R<()> = env.update(env.admin, "mod_ban", encode_args((bob, 24u32, "spam".to_string())).unwrap());
+    r.unwrap();
+    let r: R<u64> = env.update(bob, "claim_daily_chips", encode_args(()).unwrap());
+    assert!(r.unwrap_err().contains("suspended"));
+    let r: R<()> = env.update(bob, "send_friend_request", encode_one(alice).unwrap());
+    assert!(r.unwrap_err().contains("suspended"));
+    let r: R<()> = env.update(env.admin, "mod_unban", encode_one(bob).unwrap());
+    r.unwrap();
     let r: R<()> = env.update(bob, "send_chat", encode_args((poker_backend::state::Channel::Lobby, "hi".to_string())).unwrap());
     assert!(r.unwrap_err().contains("muted"));
 
@@ -388,9 +402,10 @@ fn ingress_filter_moderation_and_metrics() {
     let text = String::from_utf8(m.body.into_vec()).unwrap();
     assert!(text.contains("bp_users 2\n"), "{text}");
     assert!(text.contains("bp_cycles "));
+    assert!(!text.contains("treasury") && !text.contains("liabilities"), "no money figures in public metrics");
     assert!(!text.contains("bp_heap_bytes 0\n"));
     assert_eq!(get("/health").status_code, 200);
     assert_eq!(get("/nope").status_code, 404);
     let log: R<Vec<poker_backend::moderation::AuditEntry>> = env.query(env.admin, "admin_audit_log", encode_one(10u32).unwrap());
-    assert_eq!(log.unwrap().len(), 4, "two moderator appointments, the mute and a removal");
+    assert_eq!(log.unwrap().len(), 6, "moderator changes, the mute, the suspension and its lifting");
 }

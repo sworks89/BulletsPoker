@@ -15,6 +15,7 @@ type AdminConfig = record {
   moderators : vec record { principal; text };
   banned_words : vec text;
   signups_per_hour : nat32;
+  signup_pow_bits : nat8;
 };
 type AuditEntry = record { action : text; actor : principal; time : nat64 };
 type Ban = record {
@@ -354,6 +355,12 @@ type Report = record {
   target_name : text;
   reason : ReportReason;
 };
+// A page of the open-report queue, oldest first.
+type ReportPage = record {
+  // All open reports, not just this page.
+  open_total : nat64;
+  reports : vec Report;
+};
 type ReportReason = variant {
   Spam;
   Cheating;
@@ -375,8 +382,9 @@ type Result = variant { Ok; Err : text };
 type Result_1 = variant { Ok : nat32; Err : text };
 type Result_10 = variant { Ok : vec LedgerOp; Err : text };
 type Result_11 = variant { Ok : ModPlayerView; Err : text };
-type Result_12 = variant { Ok : vec Report; Err : text };
-type Result_13 = variant { Ok : Profile; Err : text };
+type Result_12 = variant { Ok : ReportPage; Err : text };
+type Result_13 = variant { Ok : vec Report; Err : text };
+type Result_14 = variant { Ok : Profile; Err : text };
 type Result_2 = variant { Ok : vec AuditEntry; Err : text };
 type Result_3 = variant { Ok : record { nat64; nat64 }; Err : text };
 type Result_4 = variant { Ok : SolvencyReport; Err : text };
@@ -436,6 +444,10 @@ type ShownHand = record {
   cards : blob;
   hand : text;
   seat : nat8;
+};
+type SignupChallenge = record {
+  // Required leading zero bits of sha256("bp-signup" ‖ principal ‖ nonce as u64 LE).
+  difficulty : nat8;
 };
 type SolvencyReport = record {
   ok : bool;
@@ -534,6 +546,8 @@ type TableView = record {
   current_bet : nat64;
   // Items thrown in the last few seconds, for clients to animate.
   throws : vec ThrowEvent;
+  // A private room the viewer hasn't unlocked: game details are hidden.
+  restricted : bool;
   board : blob;
   phase : Phase;
   config : TableConfig;
@@ -683,8 +697,10 @@ service : (opt InitArgs) -> {
   admin_set_moderator : (principal, bool) -> (Result);
   // Emergency switches: pause deposits, withdrawals, dealing and/or new joins.
   admin_set_pause : (PauseFlags) -> (Result);
-  // Most new accounts per hour (sign-up throttle against bulk account creation).
+  // Hourly sign-up target: past it, sign-ups need more proof-of-work (0 closes sign-ups).
   admin_set_signup_limit : (nat32) -> (Result);
+  // Base sign-up proof-of-work, in leading zero bits (default 12, max 22).
+  admin_set_signup_pow : (nat8) -> (Result);
   // Ledger operations whose outcome is unknown and need attention.
   admin_unresolved_ops : () -> (Result_10) query;
   // Withdraws house revenue (rake and store sales) from the treasury.
@@ -724,14 +740,17 @@ service : (opt InitArgs) -> {
   // All your notes, most recently updated first.
   get_notes : () -> (vec NoteView) query;
   get_profile : (principal) -> (opt PublicProfile) query;
+  // How much sign-up work a new account needs right now (see `register`).
+  get_signup_challenge : () -> (SignupChallenge) query;
   get_status : () -> (ServiceStatus) query;
   get_table : (nat64) -> (opt TableView) query;
   // `password` is only needed for password-protected player rooms.
   // Views of several tables at once (for multi-tabling); unknown ids are skipped.
   get_tables : (vec nat64) -> (vec TableView) query;
   get_tournament : (nat64) -> (opt TournamentDetail) query;
-  // `GET /metrics` (Prometheus text) and `GET /health` on the canister's raw
-  // domain. Responses are not certified, so they're for monitoring only.
+  // `GET /metrics` (Prometheus text, without the house's money figures) and
+  // `GET /health` on the canister's raw domain. Responses are not certified, so
+  // they're for monitoring only.
   http_request : (HttpRequest) -> (HttpResponse) query;
   // `password` is only needed for password-protected player rooms.
   join_table : (nat64, nat8, nat64, opt text) -> (Result);
@@ -745,14 +764,16 @@ service : (opt InitArgs) -> {
   mod_get_player : (principal) -> (Result_11) query;
   // Mutes a player in every chat for `hours` (0 lifts the mute).
   mod_mute : (principal, nat32) -> (Result);
-  mod_open_reports : () -> (Result_12) query;
+  // The open-report queue, oldest first: up to `limit` (max 50) after report `after`.
+  mod_open_reports : (opt nat64, nat32) -> (Result_12) query;
   // The latest reports, open or resolved.
-  mod_recent_reports : (nat32) -> (Result_12) query;
+  mod_recent_reports : (nat32) -> (Result_13) query;
   mod_resolve_report : (nat64, ModAction, text) -> (Result);
   mod_unban : (principal) -> (Result);
   // Buys a fresh starting stack during a tournament's rebuy period (buy-in only, no fee).
   rebuy_tournament : (nat64) -> (Result);
-  register : (text) -> (Result_13);
+  // Creates your profile. `pow` is a nonce solving `get_signup_challenge`.
+  register : (text, opt nat64) -> (Result_14);
   register_tournament : (nat64) -> (Result);
   remove_friend : (principal) -> (Result);
   // Reports a player to the moderators. With a channel, their recent messages
@@ -769,6 +790,8 @@ service : (opt InitArgs) -> {
   sit_out : (nat64, bool) -> (Result);
   throw_item : (nat64, principal, nat32, Currency) -> (Result);
   top_up : (nat64, nat64) -> (Result);
+  // Enters a private room's password so you can watch it and chat there.
+  unlock_room : (nat64, text) -> (Result);
   unregister_tournament : (nat64) -> (Result);
   update_settings : (Settings) -> (Result);
   whoami : () -> (principal) query;

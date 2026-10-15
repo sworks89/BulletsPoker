@@ -7,8 +7,18 @@ use candid::{CandidType, Deserialize, Principal};
 const MAX_BLOCKED: usize = 500;
 const REPORTS_PER_DAY: u32 = 10;
 const MAX_REPORT_DETAILS: usize = 1_000;
-const EVIDENCE_MESSAGES: usize = 20;
+const EVIDENCE_MESSAGES: usize = 10;
+/// Most reports kept; past this the oldest resolved ones are deleted.
+const MAX_STORED_REPORTS: u64 = 20_000;
+/// Most reports awaiting a moderator at once.
+const MAX_OPEN_REPORTS: usize = 5_000;
+/// Largest page of reports a moderator can fetch at once.
+pub const REPORT_PAGE: usize = 50;
 const AUDIT_LOG_LEN: usize = 1_000;
+/// Longest ban reason or resolution note a moderator can enter.
+pub const MAX_MOD_TEXT: usize = 300;
+const MAX_AUDIT_TEXT: usize = 600;
+pub const MAX_BANNED_WORD: usize = 32;
 const DAY_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 const HOUR_NS: u64 = 60 * 60 * 1_000_000_000;
 
@@ -69,6 +79,14 @@ pub struct Report {
     pub status: ReportStatus,
 }
 
+/// A page of the open-report queue, oldest first.
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct ReportPage {
+    pub reports: Vec<Report>,
+    /// All open reports, not just this page.
+    pub open_total: u64,
+}
+
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct AuditEntry {
     pub time: u64,
@@ -96,6 +114,29 @@ pub struct ModPlayerView {
     pub tables: Vec<u64>,
     /// Reports against them, newest first (open and resolved, up to 20).
     pub reports: Vec<Report>,
+}
+
+/// Removes control characters and Unicode bidi overrides, which can be used to
+/// disguise text (e.g. make a message look like a system notice or reverse a
+/// name). Newlines are kept only where multi-line text makes sense.
+pub fn clean_text(text: &str, keep_newlines: bool) -> String {
+    text.chars()
+        .filter(|&c| {
+            let bidi = matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+            !bidi && (!c.is_control() || (keep_newlines && c == '\n'))
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// Validates free text a moderator enters (ban reasons, notes).
+fn mod_text(text: &str) -> R<String> {
+    let text = clean_text(text, false);
+    if text.chars().count() > MAX_MOD_TEXT {
+        return Err(format!("Keep it under {MAX_MOD_TEXT} characters"));
+    }
+    Ok(text)
 }
 
 /// Masks banned words (whole words, case-insensitive) with asterisks.
@@ -130,7 +171,8 @@ pub fn name_is_offensive(name: &str, banned: &[String]) -> bool {
 
 impl State {
     pub fn audit(&mut self, actor: Principal, action: impl Into<String>, now: u64) {
-        self.audit_log.push_front(AuditEntry { time: now, actor, action: action.into() });
+        let action: String = action.into().chars().take(MAX_AUDIT_TEXT).collect();
+        self.audit_log.push_front(AuditEntry { time: now, actor, action });
         self.audit_log.truncate(AUDIT_LOG_LEN);
     }
 
@@ -234,8 +276,18 @@ impl State {
             return Err("You can't report yourself".into());
         }
         let target_name = self.user(&target).map_err(|_| "No such player".to_string())?.username;
+        let details = clean_text(&details, true);
         if details.chars().count() > MAX_REPORT_DETAILS {
             return Err(format!("Keep it under {MAX_REPORT_DETAILS} characters"));
+        }
+        if self.open_reports.len() >= MAX_OPEN_REPORTS {
+            return Err("Our moderators have a lot to review right now. Please try again later.".into());
+        }
+        let already = self
+            .reports_of(&target)
+            .any(|id| self.open_reports.contains(&id) && self.stores.reports.get(&id).is_some_and(|r| r.reporter == caller));
+        if already {
+            return Err("You've already reported this player. A moderator will review it.".into());
         }
         let reporter_name = {
             let mut u = self.user_mut(&caller)?;
@@ -277,16 +329,40 @@ impl State {
                 status: ReportStatus::Open,
             },
         );
+        self.stores.reports_by_target.insert((target, id), 0);
         self.open_reports.insert(id);
         self.counters.reports_filed += 1;
+        self.prune_reports();
         Ok(id)
     }
 
-    pub fn open_reports(&self) -> Vec<Report> {
-        self.open_reports.iter().filter_map(|id| self.stores.reports.get(id)).collect()
+    /// Ids of reports against `target`, newest first.
+    fn reports_of(&self, target: &Principal) -> impl Iterator<Item = u64> + '_ {
+        self.stores.reports_by_target.range((*target, 0)..=(*target, u64::MAX)).rev().map(|e| e.key().1)
+    }
+
+    /// Keeps the report store bounded by deleting the oldest resolved reports.
+    fn prune_reports(&mut self) {
+        while self.stores.reports.len() > MAX_STORED_REPORTS {
+            // Open reports are bounded, so a resolved one turns up quickly.
+            let oldest = self.stores.reports.iter().take(MAX_OPEN_REPORTS + 1).map(|e| e.value()).find(|r| !self.open_reports.contains(&r.id));
+            let Some(r) = oldest else { return };
+            self.stores.reports.remove(&r.id);
+            self.stores.reports_by_target.remove(&(r.target, r.id));
+        }
+    }
+
+    /// Open reports oldest first, `limit` at a time, starting after report `after`.
+    pub fn open_reports(&self, after: Option<u64>, limit: usize) -> ReportPage {
+        let from = after.map_or(0, |a| a + 1);
+        ReportPage {
+            reports: self.open_reports.range(from..).take(limit.min(REPORT_PAGE)).filter_map(|id| self.stores.reports.get(id)).collect(),
+            open_total: self.open_reports.len() as u64,
+        }
     }
 
     pub fn resolve_report(&mut self, moderator: Principal, id: u64, action: ModAction, note: String, now: u64) -> R<()> {
+        let note = mod_text(&note)?;
         let mut report = self.stores.reports.get(&id).ok_or("No such report")?;
         if report.status != ReportStatus::Open {
             return Err("Report already resolved".into());
@@ -315,6 +391,7 @@ impl State {
     /// cash tables (chips back to their wallet) and sat out in tournaments.
     /// Withdrawals stay open so they can always take their money.
     pub fn ban(&mut self, moderator: Principal, target: Principal, hours: u32, reason: &str, now: u64) -> R<()> {
+        let reason = &mod_text(reason)?;
         let until = if hours == 0 { 0 } else { now + hours as u64 * HOUR_NS };
         self.user_mut(&target)?.ban = Some(crate::moderation::Ban {
             until,
@@ -341,7 +418,7 @@ impl State {
 
     pub fn mod_player_view(&self, p: &Principal) -> Option<ModPlayerView> {
         let u = self.users.get(p)?;
-        let reports = self.stores.reports.iter().rev().map(|e| e.value()).filter(|r| r.target == *p).take(20).collect();
+        let reports = self.reports_of(p).take(20).filter_map(|id| self.stores.reports.get(&id)).collect();
         Some(ModPlayerView {
             id: *p,
             username: u.username.clone(),
@@ -363,17 +440,26 @@ impl State {
 
     /// Most recent reports, open or resolved, newest first.
     pub fn recent_reports(&self, limit: usize) -> Vec<Report> {
-        self.stores.reports.iter().rev().take(limit).map(|e| e.value()).collect()
+        self.stores.reports.iter().rev().take(limit.min(REPORT_PAGE)).map(|e| e.value()).collect()
     }
 
+    /// Public single-line text: control/bidi characters removed, banned words masked.
     pub fn filter_text(&self, text: &str) -> String {
-        mask_words(text, &self.banned_words)
+        mask_words(&clean_text(text, false), &self.banned_words)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleaning_removes_disguises() {
+        assert_eq!(clean_text("gg\u{202E}lol\u{0007}", false), "gglol");
+        assert_eq!(clean_text("  line1\nline2\t ", true), "line1\nline2");
+        assert_eq!(clean_text("a\nb", false), "ab");
+        assert!(mod_text(&"x".repeat(MAX_MOD_TEXT + 1)).is_err());
+    }
 
     #[test]
     fn masking_whole_words_only() {

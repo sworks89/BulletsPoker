@@ -339,10 +339,13 @@ heap_state! {
     open_reports: BTreeSet<u64>,
     next_report_id: u64,
     counters: Counters,
-    /// Sign-up throttle: current hour and how many signed up in it.
+    /// Sign-ups this hour. Past `signups_per_hour` the sign-up proof-of-work
+    /// gets harder (see `crate::signup`); 0 closes sign-ups.
     signup_hour: u64,
     signup_count: u32,
     signups_per_hour: u32,
+    /// Base proof-of-work difficulty (leading zero bits) for a new account.
+    signup_pow_bits: u8,
 }
 
 /// Monotonic counters exported as metrics.
@@ -363,7 +366,12 @@ pub struct Room {
     pub password_hash: Option<Vec<u8>>,
     pub created_at: u64,
     pub last_active: u64,
+    /// Players who entered the password: they may watch and chat.
+    pub guests: BTreeSet<Principal>,
 }
+
+/// Most players who can unlock one password-protected room.
+const MAX_ROOM_GUESTS: usize = 500;
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct RoomArgs {
@@ -476,6 +484,8 @@ pub struct TableView {
     pub room_owner: Option<Principal>,
     /// Joining needs a password.
     pub locked: bool,
+    /// A private room the viewer hasn't unlocked: game details are hidden.
+    pub restricted: bool,
     /// Bad-beat jackpot for this table's currency (0 at tournament tables).
     pub jackpot: u64,
     /// A jackpot hit in the hand on screen, for the celebration.
@@ -688,6 +698,7 @@ impl State {
             signup_hour: 0,
             signup_count: 0,
             signups_per_hour: DEFAULT_SIGNUPS_PER_HOUR,
+            signup_pow_bits: crate::signup::DEFAULT_POW_BITS,
         };
         let mut s = State::from_snapshot(users, stores, snap);
         for (kind, name, price, chip_price, icon, description) in default_items() {
@@ -754,8 +765,8 @@ impl State {
             self.signup_hour = hour;
             self.signup_count = 0;
         }
-        if self.signup_count >= self.signups_per_hour {
-            return Err("Lots of people are signing up right now. Please try again in a few minutes.".into());
+        if self.signups_per_hour == 0 {
+            return Err("Sign-ups are closed right now. Please try again later.".into());
         }
         let key = username.to_lowercase();
         if self.stores.usernames.contains_key(&key) {
@@ -865,6 +876,8 @@ impl State {
         if status.chars().count() > 80 {
             return Err("Status is limited to 80 characters".into());
         }
+        // Shown publicly on profiles: same rules as chat.
+        let status = self.filter_text(&status);
         self.user_mut(&caller)?.status = status;
         Ok(())
     }
@@ -952,6 +965,9 @@ impl State {
         }
         if self.either_blocked(caller, to) {
             return Err("You can't send that to this player".into());
+        }
+        if !self.can_watch(table_id, Some(*caller)) {
+            return Err("This table is private".into());
         }
         let t = self.tables.get(&table_id).ok_or("No such table")?;
         let to_seat = t.seat_of(to).ok_or("That player is not at this table")?;
@@ -1113,7 +1129,7 @@ impl State {
             return Err("You can't keep notes on yourself".into());
         }
         self.user(&player).map_err(|_| "No such player".to_string())?;
-        let text = text.trim().to_string();
+        let text = crate::moderation::clean_text(&text, true);
         if text.chars().count() > MAX_NOTE_LEN {
             return Err(format!("Notes are limited to {MAX_NOTE_LEN} characters"));
         }
@@ -1233,6 +1249,9 @@ impl State {
             if !self.tables.contains_key(&id) {
                 return Err("No such table".into());
             }
+            if !self.can_watch(id, Some(caller)) {
+                return Err("This table is private".into());
+            }
         }
         self.check_can_chat(&caller, now)?;
         let name = self.check_chat(&caller, &text, now)?;
@@ -1243,6 +1262,11 @@ impl State {
 
     /// Chat as `viewer` sees it: messages from players they've blocked are hidden.
     pub fn chat_for(&self, viewer: Principal, ch: Channel, since: u64) -> Vec<ChatMessage> {
+        if let Channel::Table(id) = ch {
+            if !self.can_watch(id, Some(viewer)) {
+                return vec![];
+            }
+        }
         let blocked = self.users.get(&viewer).map(|u| u.blocked).unwrap_or_default();
         let mut msgs = self.chat_since(ch, since);
         if !blocked.is_empty() {
@@ -1403,6 +1427,11 @@ impl State {
             return Err(self.paused_msg("New tables"));
         }
         self.check_not_banned(&caller, now)?;
+        // Room names are listed in the lobby.
+        let clean = crate::moderation::clean_text(&args.name, false);
+        if crate::moderation::mask_words(&clean, &self.banned_words) != clean {
+            return Err("Please pick a different table name".into());
+        }
         if level_for_xp(self.user(&caller)?.xp) < HOST_MIN_LEVEL {
             return Err(format!("Reach level {HOST_MIN_LEVEL} to host your own table"));
         }
@@ -1428,7 +1457,7 @@ impl State {
         }
         let icp = args.currency == Currency::Icp;
         let cfg = TableConfig {
-            name: args.name.trim().to_string(),
+            name: crate::moderation::clean_text(&args.name, false),
             currency: args.currency,
             small_blind: bb / 2,
             big_blind: bb,
@@ -1449,6 +1478,7 @@ impl State {
                 password_hash: args.password.map(|pw| room_password_hash(id, &pw)),
                 created_at: now,
                 last_active: now,
+                guests: BTreeSet::new(),
             },
         );
         self.award(&caller, "host", None, now);
@@ -1518,13 +1548,8 @@ impl State {
         }
         let name = self.user(&caller)?.username.clone();
         let currency = self.table_currency(id)?;
-        if let Some(room) = self.rooms.get(&id) {
-            if let Some(hash) = &room.password_hash {
-                let ok = room.owner == caller || password.is_some_and(|pw| room_password_hash(id, &pw) == *hash);
-                if !ok {
-                    return Err("Wrong table password".into());
-                }
-            }
+        if !self.can_watch(id, Some(caller)) {
+            self.unlock_room(caller, id, password.unwrap_or_default())?;
         }
         // Check funds before seating so a failed debit can't leave chips on the table.
         self.debit_in(&caller, currency, buy_in)?;
@@ -1663,8 +1688,13 @@ impl State {
             };
             self.post(Channel::Table(id), None, String::new(), text, MessageKind::System, now);
         }
-        self.award_hand_medals(id, (!in_tournament).then_some(currency), &result, now);
+        // Medals only see hands that were actually shown, so a mucked hand's
+        // strength never leaks through a "Bad Beat" announcement.
+        let mut shown_result = result.clone();
+        shown_result.shown.retain(|sh| !muckers.contains(&sh.player));
+        self.award_hand_medals(id, (!in_tournament).then_some(currency), &shown_result, now);
         if !in_tournament {
+            // The jackpot judges the real hands: a qualifying hand is always revealed (see the rules).
             self.check_bad_beat(id, &result, now);
         }
         if in_tournament {
@@ -1880,6 +1910,33 @@ impl State {
     }
 
     pub fn table_view(&self, id: u64, viewer: Option<Principal>, now: u64) -> Option<TableView> {
+        let view = self.full_table_view(id, viewer, now)?;
+        if self.can_watch(id, viewer) {
+            return Some(view);
+        }
+        // A private room seen from outside: who sits where (to pick a seat), nothing about the game.
+        let seats = view
+            .seats
+            .into_iter()
+            .map(|s| {
+                s.map(|s| SeatView { stack: 0, bet: 0, cards: vec![], has_cards: false, last_action: None, gift: None, in_hand: false, folded: false, all_in: false, ..s })
+            })
+            .collect();
+        Some(TableView {
+            seats,
+            board: vec![],
+            pot: 0,
+            current_bet: 0,
+            to_act: None,
+            last_result: None,
+            throws: vec![],
+            jackpot_hit: None,
+            restricted: true,
+            ..view
+        })
+    }
+
+    fn full_table_view(&self, id: u64, viewer: Option<Principal>, now: u64) -> Option<TableView> {
         let t = self.tables.get(&id)?;
         let my_seat = viewer.and_then(|v| t.seat_of(&v));
         let seats = t
@@ -1957,7 +2014,33 @@ impl State {
             locked: self.rooms.get(&id).is_some_and(|r| r.password_hash.is_some()),
             jackpot: if t.config.jackpot_bps > 0 { self.jackpot(t.config.currency) } else { 0 },
             jackpot_hit: self.current_hit(id),
+            restricted: false,
         })
+    }
+}
+
+impl State {
+    /// Password-protected rooms are private: only the host, players seated
+    /// there and players who entered the password can watch or chat.
+    pub fn can_watch(&self, id: u64, viewer: Option<Principal>) -> bool {
+        let Some(room) = self.rooms.get(&id).filter(|r| r.password_hash.is_some()) else {
+            return true;
+        };
+        viewer.is_some_and(|v| room.owner == v || room.guests.contains(&v) || self.tables.get(&id).is_some_and(|t| t.seat_of(&v).is_some()))
+    }
+
+    /// Enters a room's password, to watch it (or sit down later).
+    pub fn unlock_room(&mut self, caller: Principal, id: u64, password: String) -> R<()> {
+        let room = self.rooms.get_mut(&id).ok_or("No such table")?;
+        let Some(hash) = &room.password_hash else { return Ok(()) };
+        if password.len() > 32 || room_password_hash(id, &password) != *hash {
+            return Err("Wrong table password".into());
+        }
+        if room.guests.len() >= MAX_ROOM_GUESTS && !room.guests.contains(&caller) {
+            return Err("This table has too many guests".into());
+        }
+        room.guests.insert(caller);
+        Ok(())
     }
 }
 
@@ -2396,7 +2479,7 @@ mod tests {
                 }
             }
             // Every remaining player is seated exactly once.
-            for e in t.entrants.iter().filter(|e| e.place.is_none()) {
+            for e in t.entrants.iter().filter(|e| e.active()) {
                 let seats = t.tables.iter().filter(|tid| s.tables.get(tid).is_some_and(|tb| tb.seat_of(&e.player).is_some())).count();
                 assert_eq!(seats, 1);
             }
@@ -2468,6 +2551,36 @@ mod tests {
         assert!(s.create_room(p(1), args(None), now).is_err(), "room limit");
         s.close_room(p(1), id).unwrap();
         assert!(!s.tables.contains_key(&id));
+    }
+
+    #[test]
+    fn password_rooms_are_private() {
+        let mut s = setup();
+        s.user_mut(&p(1)).unwrap().xp = 50;
+        let args = RoomArgs { name: "Home Game".into(), currency: Currency::Chips, big_blind: 100, max_seats: 6, password: Some("aces".into()), action_timeout_secs: 30 };
+        let id = s.create_room(p(1), args, 0).unwrap();
+        s.join_table(p(1), id, 0, 2_000, None, 0).unwrap();
+        s.send_chat(p(1), Channel::Table(id), "welcome".into(), 10 * SEC).unwrap();
+
+        // Outsiders (and anonymous viewers) see who sits where, nothing else.
+        for viewer in [Some(p(3)), None] {
+            let v = s.table_view(id, viewer, 1).unwrap();
+            assert!(v.restricted);
+            assert_eq!(v.seats[0].as_ref().unwrap().stack, 0);
+        }
+        assert!(s.chat_for(p(3), Channel::Table(id), 0).is_empty());
+        assert!(s.send_chat(p(3), Channel::Table(id), "hi".into(), 20 * SEC).unwrap_err().contains("private"));
+
+        // The password unlocks watching and chat.
+        assert!(s.unlock_room(p(3), id, "kings".into()).is_err());
+        s.unlock_room(p(3), id, "aces".into()).unwrap();
+        assert!(!s.table_view(id, Some(p(3)), 1).unwrap().restricted);
+        assert!(s.chat_for(p(3), Channel::Table(id), 0).iter().any(|m| m.text == "welcome"));
+        s.send_chat(p(3), Channel::Table(id), "hi".into(), 20 * SEC).unwrap();
+        // And they can sit without typing it again.
+        s.join_table(p(3), id, 1, 2_000, None, 0).unwrap();
+        // Public tables stay open to everyone.
+        assert!(!s.table_view(1, None, 1).unwrap().restricted);
     }
 
     #[test]
@@ -2605,7 +2718,38 @@ mod tests {
         let busted = s.tournaments[&id].entrants.iter().find(|e| e.rebuy_deadline != 0).unwrap().player;
         s.tick(now + REBUY_WINDOW_NS);
         let e = s.tournaments[&id].entrants.iter().find(|e| e.player == busted).unwrap();
+        assert!(e.place.is_none() && e.out_seq.is_some(), "out, but placed once late registration closes");
+        assert!(!s.tournament_badge(id, Some(busted)).unwrap().can_rebuy);
+        s.tick(start_at + 4 * 300 * SEC);
+        let e = s.tournaments[&id].entrants.iter().find(|e| e.player == busted).unwrap();
         assert_eq!(e.place, Some(3));
+    }
+
+    #[test]
+    fn late_registration_places_are_fair() {
+        let mut s = setup();
+        many_players(&mut s, 7);
+        let (id, start_at) = start_scheduled(&mut s, "Chip Rebuy Madness", 10..16);
+        let now = start_at + SEC;
+        // Four of six are knocked out while late registration is open...
+        for k in 10..14 {
+            s.knock_out(id, &p(k), None, now);
+        }
+        // ...then a seventh player joins late, and one more busts.
+        s.register_tournament(p(16), id, now).unwrap();
+        s.knock_out(id, &p(14), None, now);
+        assert!(s.tournaments[&id].entrants.iter().all(|e| e.place.is_none()), "no places yet");
+        // Late registration closes: seven entries, two still playing.
+        s.tick(start_at + 4 * 300 * SEC);
+        let t = &s.tournaments[&id];
+        let place = |k: u8| t.entrants.iter().find(|e| e.player == p(k)).unwrap().place;
+        assert_eq!(place(14), Some(3), "last out finishes just below the players left");
+        assert_eq!(place(13), Some(4));
+        assert_eq!(place(10), Some(7), "first out finishes last");
+        let mut places: Vec<u32> = t.entrants.iter().filter_map(|e| e.place).collect();
+        places.sort();
+        assert_eq!(places, (3..=7).collect::<Vec<_>>(), "no duplicate places");
+        assert!(t.paid <= t.prize_pool);
     }
 
     /// Plays a rebuy event to the end with every busted player rebuying while they can.
@@ -2808,6 +2952,23 @@ mod tests {
     }
 
     #[test]
+    fn mucked_hands_earn_no_public_medals() {
+        for muck in [true, false] {
+            let mut s = setup();
+            let (table, result) = bad_beat_hand(&mut s, 3, "7c 7d", "7h 7s Jh Qh Kh");
+            s.user_mut(&p(1)).unwrap().settings.auto_muck = muck;
+            let t = s.tables.get_mut(&table).unwrap();
+            t.phase = Phase::HandOver;
+            t.last_result = Some(result);
+            s.after_table_change(table, 3);
+            let medal = s.users.get(&p(1)).unwrap().medals.contains_key("bad_beat");
+            assert_eq!(medal, !muck, "a mucked losing hand must not reveal itself through a medal (muck={muck})");
+            let shown = s.table_view(table, Some(p(3)), 4).unwrap().last_result.unwrap().shown;
+            assert_eq!(shown.iter().any(|sh| sh.player == p(1)), !muck);
+        }
+    }
+
+    #[test]
     fn bad_beat_jackpot_pays_the_table() {
         let mut s = setup();
         s.jackpots.insert(Currency::Icp, E8S);
@@ -3007,31 +3168,47 @@ mod tests {
 
     #[test]
     fn reports_and_moderation() {
+        use crate::moderation::{ModAction, ReportReason, ReportStatus};
         let mut s = setup();
         let admin = p(200);
+        for k in 20..30 {
+            s.register(p(k), format!("other{k}"), 0).unwrap();
+        }
         s.send_chat(p(2), Channel::Lobby, "you all suck".into(), 10 * SEC).unwrap();
         s.send_chat(p(3), Channel::Lobby, "gl".into(), 10 * SEC).unwrap();
-        let id = s.report(p(1), p(2), crate::moderation::ReportReason::AbusiveChat, "rude".into(), Some(Channel::Lobby), 11 * SEC).unwrap();
-        assert!(s.report(p(1), p(1), crate::moderation::ReportReason::Spam, String::new(), None, 0).is_err());
-        let open = s.open_reports();
+        let id = s.report(p(1), p(2), ReportReason::AbusiveChat, "rude".into(), Some(Channel::Lobby), 11 * SEC).unwrap();
+        assert!(s.report(p(1), p(1), ReportReason::Spam, String::new(), None, 0).is_err());
+        let open = s.open_reports(None, 50).reports;
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].evidence.len(), 1, "only the target's messages are captured");
         assert_eq!(open[0].evidence[0].text, "you all suck");
-        for _ in 0..10 {
-            s.report(p(3), p(2), crate::moderation::ReportReason::Spam, String::new(), None, 12 * SEC).unwrap();
+        // One open report per reporter and target.
+        s.report(p(3), p(2), ReportReason::Spam, String::new(), None, 12 * SEC).unwrap();
+        assert!(s.report(p(3), p(2), ReportReason::Spam, String::new(), None, 12 * SEC).unwrap_err().contains("already reported"));
+        // Ten a day.
+        for k in 20..29 {
+            s.report(p(3), p(k), ReportReason::Spam, String::new(), None, 12 * SEC).unwrap();
         }
-        assert!(s.report(p(3), p(2), crate::moderation::ReportReason::Spam, String::new(), None, 12 * SEC).is_err(), "daily cap");
+        assert!(s.report(p(3), p(29), ReportReason::Spam, String::new(), None, 12 * SEC).is_err(), "daily cap");
 
         // A chat mute from a report.
-        s.resolve_report(admin, id, crate::moderation::ModAction::MuteChat(1), "cool off".into(), 20 * SEC).unwrap();
-        assert!(s.resolve_report(admin, id, crate::moderation::ModAction::Dismiss, String::new(), 20 * SEC).is_err());
+        s.resolve_report(admin, id, ModAction::MuteChat(1), "cool off".into(), 20 * SEC).unwrap();
+        assert!(s.resolve_report(admin, id, ModAction::Dismiss, String::new(), 20 * SEC).is_err());
         assert!(s.send_chat(p(2), Channel::Lobby, "still here".into(), 30 * SEC).unwrap_err().contains("muted"));
         s.send_chat(p(2), Channel::Lobby, "sorry".into(), 20 * SEC + 3600 * SEC).unwrap();
         assert_eq!(s.audit_log.len(), 2, "mute and resolution are audited");
-        assert_eq!(s.open_reports().len(), 10);
+        assert!(s.resolve_report(admin, 2, ModAction::Dismiss, "x".repeat(301), 0).is_err(), "note length is capped");
+
+        // The queue pages, oldest first.
+        let page = s.open_reports(None, 4);
+        assert_eq!((page.reports.len(), page.open_total), (4, 10));
+        let next = s.open_reports(Some(page.reports[3].id), 50);
+        assert_eq!(next.reports.len(), 6);
+        assert!(next.reports[0].id > page.reports[3].id);
+
         let view = s.mod_player_view(&p(2)).unwrap();
-        assert_eq!(view.reports.len(), 11);
-        assert!(matches!(view.reports.last().unwrap().status, crate::moderation::ReportStatus::Resolved { .. }), "oldest is the resolved one");
+        assert_eq!(view.reports.len(), 2, "found through the index");
+        assert!(matches!(view.reports.last().unwrap().status, ReportStatus::Resolved { .. }), "oldest is the resolved one");
         assert!(view.chat_muted_until > 0);
         assert_eq!(s.recent_reports(3).len(), 3);
         assert_eq!(s.recent_reports(3)[0].id, 11, "newest first");
@@ -3095,15 +3272,30 @@ mod tests {
         s.send_chat(p(1), Channel::Lobby, "what the fuck".into(), 10 * SEC).unwrap();
         assert_eq!(s.chat_since(Channel::Lobby, 0)[0].text, "what the ****");
         assert!(s.register(p(9), "shithead".into(), 0).is_err());
+        s.set_status(p(1), "shit happens \u{202E}".into()).unwrap();
+        assert_eq!(s.users.get(&p(1)).unwrap().status, "**** happens");
+        s.user_mut(&p(1)).unwrap().xp = 50;
+        let room = |name: &str| RoomArgs { name: name.into(), currency: Currency::Chips, big_blind: 100, max_seats: 6, password: None, action_timeout_secs: 30 };
+        assert!(s.create_room(p(1), room("Shit Game"), 0).is_err());
+        s.create_room(p(1), room("Scunthorpe Social"), 0).unwrap();
     }
 
     #[test]
     fn signup_throttle() {
         let mut s = setup();
+        let base = s.signup_difficulty(0);
         s.signups_per_hour = 4; // setup() already used 3
         s.register(p(10), "fourth".into(), 0).unwrap();
-        assert!(s.register(p(11), "fifth".into(), 0).unwrap_err().contains("try again"));
-        s.register(p(11), "fifth".into(), 3600 * SEC).unwrap();
+        // Past the hourly target sign-ups stay open but cost more work, so a
+        // flood of bot accounts can't lock real players out.
+        let busy = s.signup_difficulty(0);
+        assert!(busy > base);
+        s.register(p(11), "fifth".into(), 0).unwrap();
+        assert!(s.signup_difficulty(0) >= busy);
+        assert!(s.signup_difficulty(0) <= crate::signup::MAX_POW_BITS);
+        assert_eq!(s.signup_difficulty(3600 * SEC), base, "a new hour starts easy again");
+        s.signups_per_hour = 0;
+        assert!(s.register(p(12), "sixth".into(), 3600 * SEC).unwrap_err().contains("closed"));
     }
 
     #[test]

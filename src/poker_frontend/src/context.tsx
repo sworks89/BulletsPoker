@@ -3,6 +3,11 @@ import { authClient, makeActors, type Backend, type Ledger, type MedalDef, type 
 import type { Principal } from '@icp-sdk/core/principal';
 import { errorText } from './format';
 
+/** Internet Identity delegations last 12 hours: sign in again after that. */
+const SESSION_TTL_NS = BigInt(12 * 3600) * 1_000_000_000n;
+/** Sign out after this long without any input. */
+const IDLE_SIGN_OUT_MS = 60 * 60_000;
+
 export type View =
   | { name: 'lobby' }
   | { name: 'table'; id: bigint }
@@ -80,6 +85,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
     connect().catch((e) => notify(errorText(e), 'err'));
   }, [connect, notify]);
 
+  // Signing out forgets this browser's per-player state (open tables, layout)
+  // and reloads, so nothing from the last session lingers in memory.
+  const signOut = useCallback(async () => {
+    await authClient.signOut();
+    try {
+      Object.keys(localStorage)
+        .filter((k) => k.startsWith('bp.'))
+        .forEach((k) => localStorage.removeItem(k));
+    } catch {
+      // storage unavailable: nothing to clear
+    }
+    window.location.reload();
+  }, []);
+
+  // Idle sign-out: a signed-in session that sees no input for a while ends,
+  // so an unattended or shared computer doesn't stay logged in to a wallet.
+  useEffect(() => {
+    if (!principal) return;
+    let last = Date.now();
+    const touch = () => {
+      last = Date.now();
+    };
+    const events = ['pointerdown', 'keydown', 'wheel', 'touchstart'] as const;
+    events.forEach((e) => window.addEventListener(e, touch, { passive: true }));
+    const timer = setInterval(() => {
+      if (Date.now() - last > IDLE_SIGN_OUT_MS) signOut();
+    }, 30_000);
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, touch));
+      clearInterval(timer);
+    };
+  }, [principal, signOut]);
+
   const value = useMemo<AppState | null>(() => {
     if (!actors) return null;
     const refreshProfile = async () => {
@@ -97,14 +135,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       go: setView,
       refreshProfile,
       signIn: async () => {
-        await authClient.signIn({ maxTimeToLive: BigInt(7 * 24 * 3600) * 1_000_000_000n });
+        await authClient.signIn({ maxTimeToLive: SESSION_TTL_NS });
         await connect();
       },
-      signOut: async () => {
-        await authClient.signOut();
-        setView({ name: 'lobby' });
-        await connect();
-      },
+      signOut,
       notify,
       run: async (f, success) => {
         try {
@@ -117,7 +151,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       },
     };
-  }, [actors, principal, profile, items, medals, view, connect, notify]);
+  }, [actors, principal, profile, items, medals, view, connect, notify, signOut]);
 
   if (!value) {
     return <div className="splash">♠ ♥ Shuffling up… ♦ ♣</div>;

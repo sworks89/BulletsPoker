@@ -8,6 +8,7 @@ pub mod medals;
 pub mod metrics;
 pub mod moderation;
 pub mod ratelimit;
+pub mod signup;
 pub mod state;
 pub mod store;
 pub mod table;
@@ -24,7 +25,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 use jackpot::JackpotInfo;
 use medals::MedalDef;
-use moderation::{AuditEntry, ModAction, ModPlayerView, Report, ReportReason};
+use moderation::{AuditEntry, ModAction, ModPlayerView, Report, ReportPage, ReportReason};
 use table::{Action, Currency, TableConfig};
 use wallet::{LedgerOp, OpKind, OpStatus, PauseFlags, SolvencyReport};
 use tournament::{TournamentDetail, TournamentSummary, TournamentTemplate};
@@ -69,6 +70,20 @@ fn caller() -> R<Principal> {
         return Err("Too many requests. Please slow down.".into());
     }
     with_mut(|s| s.touch(&p, now()));
+    Ok(p)
+}
+
+/// A signed-in caller who isn't suspended.
+fn active_caller() -> R<Principal> {
+    let p = caller()?;
+    with(|s| s.check_not_banned(&p, now()))?;
+    Ok(p)
+}
+
+/// A signed-in caller who may post to chat (gifts and throws are announced there).
+fn chatty_caller() -> R<Principal> {
+    let p = caller()?;
+    with(|s| s.check_can_chat(&p, now()))?;
     Ok(p)
 }
 
@@ -275,9 +290,17 @@ fn whoami() -> Principal {
     ic_cdk::api::msg_caller()
 }
 
+/// How much sign-up work a new account needs right now (see `register`).
+#[query]
+fn get_signup_challenge() -> signup::SignupChallenge {
+    signup::SignupChallenge { difficulty: with(|s| s.signup_difficulty(now())) }
+}
+
+/// Creates your profile. `pow` is a nonce solving `get_signup_challenge`.
 #[update]
-fn register(username: String) -> R<Profile> {
+fn register(username: String, pow: Option<u64>) -> R<Profile> {
     let p = caller()?;
+    with(|s| s.check_signup_pow(&p, pow.unwrap_or(0), now()))?;
     with_mut(|s| s.register(p, username, now()))
 }
 
@@ -299,7 +322,7 @@ fn find_user(username: String) -> Option<PublicProfile> {
 
 #[update]
 fn set_status(status: String) -> R<()> {
-    let p = caller()?;
+    let p = active_caller()?;
     with_mut(|s| s.set_status(p, status))
 }
 
@@ -433,7 +456,7 @@ fn list_store() -> Vec<StoreItem> {
 
 #[update]
 fn buy_item(id: u32, currency: Currency) -> R<()> {
-    let p = caller()?;
+    let p = active_caller()?;
     with_mut(|s| s.buy_item(p, id, currency))
 }
 
@@ -445,13 +468,13 @@ fn equip(id: u32) -> R<()> {
 
 #[update]
 fn send_gift(table_id: u64, to: Principal, item_id: u32, currency: Currency) -> R<()> {
-    let p = caller()?;
+    let p = chatty_caller()?;
     with_mut(|s| s.send_gift(p, table_id, to, item_id, currency, now()))
 }
 
 #[update]
 fn throw_item(table_id: u64, to: Principal, item_id: u32, currency: Currency) -> R<()> {
-    let p = caller()?;
+    let p = chatty_caller()?;
     with_mut(|s| s.throw_item(p, table_id, to, item_id, currency, now()))
 }
 
@@ -460,7 +483,7 @@ fn throw_item(table_id: u64, to: Principal, item_id: u32, currency: Currency) ->
 /// Claims the daily free play-chip bonus (bigger on consecutive days).
 #[update]
 fn claim_daily_chips() -> R<u64> {
-    let p = caller()?;
+    let p = active_caller()?;
     with_mut(|s| s.claim_daily(p, now()))
 }
 
@@ -520,6 +543,13 @@ fn join_table(id: u64, seat: u8, buy_in: u64, password: Option<String>) -> R<()>
 fn create_room(args: RoomArgs) -> R<u64> {
     let p = caller()?;
     with_mut(|s| s.create_room(p, args, now()))
+}
+
+/// Enters a private room's password so you can watch it and chat there.
+#[update]
+fn unlock_room(id: u64, password: String) -> R<()> {
+    let p = caller()?;
+    with_mut(|s| s.unlock_room(p, id, password))
 }
 
 #[update]
@@ -647,7 +677,7 @@ fn get_dms(with_user: Principal, since: u64) -> Vec<ChatMessage> {
 
 #[update]
 fn send_friend_request(to: Principal) -> R<()> {
-    let p = caller()?;
+    let p = active_caller()?;
     with_mut(|s| s.friend_request(p, to))
 }
 
@@ -821,7 +851,7 @@ fn block_player(other: Principal, block: bool) -> R<()> {
 /// there are attached as evidence. Returns the report id.
 #[update]
 fn report_player(target: Principal, reason: ReportReason, details: String, channel: Option<Channel>) -> R<u64> {
-    let p = caller()?;
+    let p = active_caller()?;
     with_mut(|s| s.report(p, target, reason, details, channel, now()))
 }
 
@@ -849,13 +879,14 @@ fn mod_get_player(p: Principal) -> R<ModPlayerView> {
 #[query]
 fn mod_recent_reports(limit: u32) -> R<Vec<Report>> {
     moderator()?;
-    Ok(with(|s| s.recent_reports(limit.min(200) as usize)))
+    Ok(with(|s| s.recent_reports(limit as usize)))
 }
 
+/// The open-report queue, oldest first: up to `limit` (max 50) after report `after`.
 #[query]
-fn mod_open_reports() -> R<Vec<Report>> {
+fn mod_open_reports(after: Option<u64>, limit: u32) -> R<ReportPage> {
     moderator()?;
-    Ok(with(|s| s.open_reports()))
+    Ok(with(|s| s.open_reports(after, limit as usize)))
 }
 
 #[update]
@@ -907,6 +938,7 @@ pub struct AdminConfig {
     pub moderators: Vec<(Principal, String)>,
     pub banned_words: Vec<String>,
     pub signups_per_hour: u32,
+    pub signup_pow_bits: u8,
 }
 
 #[query]
@@ -916,6 +948,7 @@ fn admin_get_config() -> R<AdminConfig> {
         moderators: s.moderators.iter().map(|p| (*p, s.users.get(p).map(|u| u.username).unwrap_or_default())).collect(),
         banned_words: s.banned_words.clone(),
         signups_per_hour: s.signups_per_hour,
+        signup_pow_bits: s.signup_pow_bits(),
     }))
 }
 
@@ -926,6 +959,9 @@ fn admin_set_banned_words(words: Vec<String>) -> R<()> {
     if words.len() > 1_000 {
         return Err("At most 1000 words".into());
     }
+    if words.iter().any(|w| w.chars().count() > moderation::MAX_BANNED_WORD) {
+        return Err(format!("Words are at most {} characters", moderation::MAX_BANNED_WORD));
+    }
     with_mut(|s| {
         s.banned_words = words.into_iter().map(|w| w.trim().to_lowercase()).filter(|w| !w.is_empty()).collect();
         s.audit(a, format!("Set {} banned words", s.banned_words.len()), now());
@@ -933,7 +969,18 @@ fn admin_set_banned_words(words: Vec<String>) -> R<()> {
     Ok(())
 }
 
-/// Most new accounts per hour (sign-up throttle against bulk account creation).
+/// Base sign-up proof-of-work, in leading zero bits (default 12, max 22).
+#[update]
+fn admin_set_signup_pow(bits: u8) -> R<()> {
+    let a = admin()?;
+    with_mut(|s| {
+        s.set_signup_pow_bits(bits)?;
+        s.audit(a, format!("Sign-up proof-of-work: {bits} bits"), now());
+        Ok(())
+    })
+}
+
+/// Hourly sign-up target: past it, sign-ups need more proof-of-work (0 closes sign-ups).
 #[update]
 fn admin_set_signup_limit(per_hour: u32) -> R<()> {
     let a = admin()?;
@@ -976,13 +1023,14 @@ fn collect_metrics() -> metrics::Metrics {
     })
 }
 
-/// `GET /metrics` (Prometheus text) and `GET /health` on the canister's raw
-/// domain. Responses are not certified, so they're for monitoring only.
+/// `GET /metrics` (Prometheus text, without the house's money figures) and
+/// `GET /health` on the canister's raw domain. Responses are not certified, so
+/// they're for monitoring only.
 #[query]
 fn http_request(req: metrics::HttpRequest) -> metrics::HttpResponse {
     let path = req.url.split('?').next().unwrap_or_default();
     match path {
-        "/metrics" => metrics::HttpResponse::text(200, "text/plain; version=0.0.4", collect_metrics().to_prometheus()),
+        "/metrics" => metrics::HttpResponse::text(200, "text/plain; version=0.0.4", collect_metrics().to_prometheus(true)),
         "/health" => {
             let paused = with(|s| s.pause.withdrawals || s.pause.deposits || s.pause.dealing || s.pause.joins);
             metrics::HttpResponse::text(200, "text/plain", if paused { "ok (partially paused)".into() } else { "ok".into() })
