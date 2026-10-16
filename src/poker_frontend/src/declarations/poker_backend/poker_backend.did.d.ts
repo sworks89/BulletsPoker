@@ -1077,6 +1077,10 @@ export interface _SERVICE {
    */
   'set_note' : ActorMethod<[Principal, string, [] | [NoteColor]], Result>,
   'set_status' : ActorMethod<[string], Result>,
+  /**
+   * Shows your cards after winning a hand uncontested, until the next hand is dealt.
+   */
+  'show_cards' : ActorMethod<[bigint], Result>,
   'sit_out' : ActorMethod<[bigint, boolean], Result>,
   'throw_item' : ActorMethod<[bigint, Principal, number, Currency], Result>,
   'top_up' : ActorMethod<[bigint, bigint], Result>,

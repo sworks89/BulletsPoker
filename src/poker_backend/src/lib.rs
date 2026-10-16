@@ -654,6 +654,13 @@ fn sit_out(id: u64, out: bool) -> R<()> {
     with_mut(|s| s.sit_out(p, id, out, now()))
 }
 
+/// Shows your cards after winning a hand uncontested, until the next hand is dealt.
+#[update]
+fn show_cards(id: u64) -> R<()> {
+    let p = caller()?;
+    with_mut(|s| s.show_cards(p, id, now()))
+}
+
 #[update]
 fn act(id: u64, action: Action) -> R<()> {
     let p = caller()?;

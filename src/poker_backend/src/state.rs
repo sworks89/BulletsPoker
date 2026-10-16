@@ -111,7 +111,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             four_color_deck: false,
-            auto_muck: true,
+            auto_muck: false,
             auto_top_up: false,
             sound: true,
             show_throwables: true,
@@ -1632,6 +1632,27 @@ impl State {
         self.table_mut(id)?.set_sitting_out(&caller, out, now)
     }
 
+    /// Shows the caller's cards after winning a hand without a showdown, at the
+    /// table and in the hand history of everyone dealt in.
+    pub fn show_cards(&mut self, caller: Principal, id: u64, _now: u64) -> R<()> {
+        let t = self.table_mut(id)?;
+        let seat = t.show_cards(&caller)? as u8;
+        let hand_no = t.last_result.as_ref().map_or(0, |r| r.hand_no);
+        let shows = t.log.last().cloned();
+        // The hand was already recorded when it ended: mark it shown there too.
+        let latest = self.users.get(&caller).and_then(|u| u.history.back().copied());
+        if let Some(hid) = latest {
+            if let Some(mut rec) = self.stores.hands.get(&hid).filter(|r| r.table_id == id && r.hand_no == hand_no) {
+                if let Some(pl) = rec.players.iter_mut().find(|x| x.seat == seat) {
+                    pl.shown = true;
+                }
+                rec.log.extend(shows);
+                self.stores.hands.insert(hid, rec);
+            }
+        }
+        Ok(())
+    }
+
     pub fn act(&mut self, caller: Principal, id: u64, action: Action, now: u64) -> R<()> {
         self.check_not_banned(&caller, now)?;
         self.table_mut(id)?.act(&caller, action, now)?;
@@ -2343,9 +2364,9 @@ mod tests {
         let table = 1;
         s.join_table(p(1), table, 0, 1_000, None, 0).unwrap();
         s.join_table(p(2), table, 1, 1_000, None, 0).unwrap();
-        // p1 shows losing hands, p2 mucks them (the default).
-        let open = Settings { auto_muck: false, ..Settings::default() };
-        s.update_settings(p(1), open).unwrap();
+        // p1 shows losing hands (the default), p2 mucks them.
+        let muck = Settings { auto_muck: true, ..Settings::default() };
+        s.update_settings(p(2), muck).unwrap();
         play_hands(&mut s, table, 6, SEC);
 
         let hist = s.hand_history(p(1), 50);
@@ -2368,6 +2389,79 @@ mod tests {
         let lost = hist.iter().find(|h| h.net < 0 && h.board.len() == 5).expect("p1 lost a showdown");
         let rec = s.hand(p(2), lost.id).unwrap();
         assert_eq!(rec.players.iter().find(|x| x.player == p(1)).unwrap().cards.len(), 2);
+    }
+
+    #[test]
+    fn losing_hands_are_shown_at_showdown_by_default() {
+        let mut s = setup();
+        let table = 1;
+        s.join_table(p(1), table, 0, 1_000, None, 0).unwrap();
+        s.join_table(p(2), table, 1, 1_000, None, 0).unwrap();
+        let mut now = SEC;
+        // Check down hands until one has a loser (not a split pot).
+        let (result, loser) = loop {
+            now = play_hands(&mut s, table, 1, now);
+            let r = s.table_view(table, Some(p(3)), now).unwrap().last_result.unwrap();
+            if let Some(l) = r.players.iter().find(|x| x.won == 0) {
+                break (r.clone(), l.player);
+            }
+        };
+        assert!(result.shown.iter().any(|sh| sh.player == loser), "the losing hand is revealed");
+    }
+
+    /// Plays one hand at `table` where the first player to act folds; returns (winner, folder).
+    fn fold_hand(s: &mut State, table: u64, now: u64) -> (Principal, Principal) {
+        s.tick(now);
+        s.start_hand(table, [7; 32], now);
+        let t = &s.tables[&table];
+        let folder = t.seats[t.to_act.unwrap()].as_ref().unwrap().player;
+        s.act(folder, table, Action::Fold, now).unwrap();
+        let winner = s.tables[&table].last_result.as_ref().unwrap().winners[0].player;
+        (winner, folder)
+    }
+
+    #[test]
+    fn uncontested_winner_can_show_cards() {
+        let mut s = setup();
+        let table = 1;
+        s.join_table(p(1), table, 0, 1_000, None, 0).unwrap();
+        s.join_table(p(2), table, 1, 1_000, None, 0).unwrap();
+        let (winner, folder) = fold_hand(&mut s, table, SEC);
+        let seat = s.tables[&table].seat_of(&winner).unwrap();
+        let hand_id = s.hand_history(folder, 1)[0].id;
+        let cards_seen_by_folder = |s: &State| {
+            s.hand(folder, hand_id).unwrap().players.iter().find(|x| x.player == winner).unwrap().cards.len()
+        };
+        assert_eq!(s.table_view(table, Some(p(3)), SEC).unwrap().seats[seat].as_ref().unwrap().cards.len(), 0);
+        assert_eq!(cards_seen_by_folder(&s), 0);
+
+        assert!(s.show_cards(folder, table, SEC).is_err(), "only the winner can show");
+        s.show_cards(winner, table, SEC).unwrap();
+
+        let view = s.table_view(table, Some(p(3)), SEC).unwrap();
+        assert_eq!(view.seats[seat].as_ref().unwrap().cards.len(), 2, "watchers see the shown cards");
+        assert!(view.last_result.unwrap().shown.iter().any(|sh| sh.player == winner));
+        assert_eq!(cards_seen_by_folder(&s), 2, "the hand history reveals them too");
+        let rec = s.hand(folder, hand_id).unwrap();
+        assert!(rec.log.iter().any(|e| e.seat == Some(seat as u8) && e.text.starts_with("Shows")));
+        assert!(s.show_cards(winner, table, SEC).is_err(), "cards can only be shown once");
+
+        // Once the next hand is dealt, the moment has passed.
+        let (winner, _) = fold_hand(&mut s, table, 10 * SEC);
+        s.tick(20 * SEC);
+        s.start_hand(table, [8; 32], 20 * SEC);
+        assert!(s.show_cards(winner, table, 20 * SEC).is_err());
+    }
+
+    #[test]
+    fn showdown_hands_cannot_be_shown_again() {
+        let mut s = setup();
+        let table = 1;
+        s.join_table(p(1), table, 0, 1_000, None, 0).unwrap();
+        s.join_table(p(2), table, 1, 1_000, None, 0).unwrap();
+        play_hands(&mut s, table, 1, SEC);
+        let winner = s.tables[&table].last_result.as_ref().unwrap().winners[0].player;
+        assert!(s.show_cards(winner, table, 2 * SEC).is_err(), "only for hands won without a showdown");
     }
 
     #[test]

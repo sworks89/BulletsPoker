@@ -162,6 +162,15 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
   // In tab mode, point to another open table that is waiting on you.
   const elsewhere = compact ? undefined : open.filter((o) => o !== id).map((o) => views.get(String(o))).find((v) => isMyTurn(v));
   const winnerSeats = new Set(result?.winners.map((w) => w.seat) ?? []);
+  // Won without a showdown: the winner may show their cards until the next deal.
+  const canShow =
+    !!result && result.shown.length === 0 && result.winners.length === 1 && mySeat !== undefined && result.winners[0].seat === mySeat;
+  const showCards = async () => {
+    setBusy(true);
+    await run(async () => unwrap(await backend.show_cards(id)));
+    await load();
+    setBusy(false);
+  };
   const step = isChips(currency) ? 1 : Number(view.config.small_blind);
 
   return (
@@ -315,6 +324,11 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
                     🏆 {view.seats[w.seat][0]?.username ?? 'Player'} wins {amount(w.amount, currency)} — {w.hand}
                   </div>
                 ))}
+                {canShow && (
+                  <button className="btn small" disabled={busy} onClick={showCards}>
+                    Show cards
+                  </button>
+                )}
               </div>
             )}
           </div>

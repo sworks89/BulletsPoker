@@ -1100,6 +1100,37 @@ impl Table {
         }
     }
 
+    /// Reveals the hole cards of a player who won without a showdown, at their
+    /// choice, until the next hand is dealt. Returns their seat.
+    pub fn show_cards(&mut self, player: &Principal) -> Result<usize, String> {
+        if self.phase != Phase::HandOver {
+            return Err("Cards can only be shown between hands".into());
+        }
+        let r = self.last_result.as_ref().ok_or("No hand to show")?;
+        if !r.shown.is_empty() {
+            return Err("This hand already went to a showdown or was shown".into());
+        }
+        let w = match r.winners.as_slice() {
+            [w] if w.player == *player => w.seat as usize,
+            _ => return Err("Only the winner can show their cards".into()),
+        };
+        let cards = self.seat(w).hole.clone();
+        if cards.is_empty() {
+            return Err("No cards to show".into());
+        }
+        // A hand name needs five cards; before the flop just the cards are shown.
+        let hand = if self.board.len() >= 3 {
+            let mut all = cards.clone();
+            all.extend_from_slice(&self.board);
+            category(best_hand(&all).0).to_string()
+        } else {
+            String::new()
+        };
+        self.log(Some(w), if hand.is_empty() { "Shows".to_string() } else { format!("Shows {hand}") }, 0);
+        self.last_result.as_mut().unwrap().shown.push(ShownHand { seat: w as u8, player: *player, cards, hand });
+        Ok(w)
+    }
+
     /// Hole cards visible to `viewer` at seat `i`.
     pub fn visible_cards(&self, i: usize, viewer: Option<&Principal>) -> Vec<Card> {
         let s = self.seat(i);

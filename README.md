@@ -8,7 +8,8 @@ A social Texas Hold'em poker room that runs entirely on the [Internet Computer](
 - No-limit Texas Hold'em cash tables (heads-up up to 10-max) with blinds, a moving button, min-raise rules, all-ins, side pots, split pots and odd-chip handling
 - Action clock with a time bank: when your clock runs out, up to 30 seconds of extra time kicks in automatically (you're only charged what you use, and it refills 2 seconds every hand). A player who runs out of both is checked or folded and sat out ("I'm back" to return)
 - A "reconnecting" banner when your connection drops, and an instant catch-up when it returns
-- Hole cards stay private: the backend only returns your own cards, plus hands shown at showdown
+- Hole cards stay private: the backend only returns your own cards, plus hands shown at showdown (losing hands too, unless the player turns on auto-muck)
+- Win without a showdown and you can show your cards to the table until the next hand is dealt
 - A fresh deck every hand, shuffled with on-chain randomness (`raw_rand`)
 - Configurable rake (default 2.5%, capped at 3 big blinds, and none if there's no flop), taken from the main and side pots in proportion, so a short all-in only pays on what they can win
 - Standard betting rules: a short all-in doesn't reopen the betting for players who already acted (unless short all-ins add up to a full raise)
