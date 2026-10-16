@@ -1,4 +1,5 @@
 import { Actor, HttpAgent, type ActorSubclass, type Identity } from '@icp-sdk/core/agent';
+import { safeGetCanisterEnv } from '@icp-sdk/core/agent/canister-env';
 import { AuthClient } from '@icp-sdk/auth/client';
 import { type IDL } from '@icp-sdk/core/candid';
 import { Principal } from '@icp-sdk/core/principal';
@@ -8,28 +9,23 @@ import type { _SERVICE } from './declarations/poker_backend/poker_backend.did';
 export type Backend = ActorSubclass<_SERVICE>;
 export type * from './declarations/poker_backend/poker_backend.did';
 
-const env = import.meta.env;
-// Fail closed: only an explicit `local` build talks to a local replica and
-// trusts its root key. Anything else (including a build with no dfx env) is
-// mainnet, where the agent verifies responses against the real IC root key.
-export const network: string = env.DFX_NETWORK ?? 'ic';
-const isLocal = network === 'local';
-const host = isLocal ? 'http://127.0.0.1:4943' : 'https://icp-api.io';
+// The frontend canister (or the Vite dev server) sets the `ic_env` cookie with
+// the canister ids of this environment and the network's root key, so one build
+// works locally and on mainnet. Without the cookie, the agent falls back to the
+// mainnet root key.
+const canisterEnv = safeGetCanisterEnv();
+const rootKey = canisterEnv?.IC_ROOT_KEY;
 
-export const backendId: string = env.CANISTER_ID_POKER_BACKEND ?? env.VITE_BACKEND_CANISTER_ID ?? '';
-export const ledgerId: string = env.CANISTER_ID_ICP_LEDGER ?? 'ryjl3-tyaaa-aaaaa-aaaba-cai';
-const iiId: string | undefined = env.CANISTER_ID_INTERNET_IDENTITY;
+export const backendId: string = canisterEnv?.['PUBLIC_CANISTER_ID:poker_backend'] ?? '';
+// The ICP ledger has the same id on mainnet and on an icp-cli local network.
+export const ledgerId = 'ryjl3-tyaaa-aaaaa-aaaba-cai';
 
-export const authClient = new AuthClient(
-  isLocal && iiId
-    ? {
-        identityProvider: {
-          authorizeUrl: env.VITE_II_URL ?? `http://${iiId}.localhost:4943/authorize`,
-          canisterId: iiId,
-        },
-      }
-    : {},
-);
+// Mainnet Internet Identity (id.ai) everywhere: a local network trusts mainnet
+// signatures, so its delegations work against a locally deployed backend too.
+// The client mints delegations by calling the II canister, which only exists on
+// mainnet, so its agent always targets mainnet (with the mainnet root key) even
+// when the page itself is served by a local network.
+export const authClient = new AuthClient({ agentOptions: { host: 'https://icp-api.io' } });
 
 // Minimal ICRC-1/ICRC-2 interface of the ICP ledger, used to approve deposits.
 const ledgerIdl: IDL.InterfaceFactory = ({ IDL }) => {
@@ -77,10 +73,10 @@ export interface Ledger {
 }
 
 export async function makeActors(identity?: Identity): Promise<{ backend: Backend; ledger: Ledger }> {
-  if (!backendId) throw new Error('This build has no backend canister id. Build it with dfx (dfx deploy / dfx build).');
-  // Never fetch a root key from anything but a replica on this machine.
-  const fetchRootKey = isLocal && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(host);
-  const agent = await HttpAgent.create({ host, identity, shouldFetchRootKey: fetchRootKey });
+  if (!backendId) throw new Error('No backend canister id: serve the app from its frontend canister (icp deploy) or the Vite dev server.');
+  // No host: the agent resolves the page's own gateway (localhost or IC
+  // boundary nodes). Never fetch a root key at runtime.
+  const agent = await HttpAgent.create({ identity, rootKey });
   const backend = Actor.createActor<_SERVICE>(idlFactory, { agent, canisterId: backendId });
   const ledger = Actor.createActor(ledgerIdl, { agent, canisterId: ledgerId }) as unknown as Ledger;
   return { backend, ledger };

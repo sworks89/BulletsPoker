@@ -762,6 +762,7 @@ export const idlFactory = ({ IDL }) => {
         [],
       ),
     'set_status' : IDL.Func([IDL.Text], [Result], []),
+    'show_cards' : IDL.Func([IDL.Nat64], [Result], []),
     'sit_out' : IDL.Func([IDL.Nat64, IDL.Bool], [Result], []),
     'throw_item' : IDL.Func(
         [IDL.Nat64, IDL.Principal, IDL.Nat32, Currency],

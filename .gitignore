@@ -1,7 +1,7 @@
 target/
 node_modules/
 dist/
-.dfx/
-.env
+.icp/cache/
 *.log
 .pocket-ic/
+.env

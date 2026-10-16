@@ -790,6 +790,8 @@ service : (opt InitArgs) -> {
   // Saves a private note about a player. Empty text and no color deletes it.
   set_note : (principal, text, opt NoteColor) -> (Result);
   set_status : (text) -> (Result);
+  // Shows your cards after winning a hand uncontested, until the next hand is dealt.
+  show_cards : (nat64) -> (Result);
   sit_out : (nat64, bool) -> (Result);
   throw_item : (nat64, principal, nat32, Currency) -> (Result);
   top_up : (nat64, nat64) -> (Result);
