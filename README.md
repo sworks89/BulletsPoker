@@ -111,7 +111,7 @@ scripts/                    local deploy and test-ICP funding helpers
 
 ## Development
 
-Requirements: Rust (with `wasm32-unknown-unknown`), Node 22, and [dfx](https://internetcomputer.org/docs/building-apps/getting-started/install).
+Requirements: Rust (with `wasm32-unknown-unknown`), Node 22, [icp-cli](https://cli.internetcomputer.org) and `ic-wasm`. On Windows, run everything inside WSL.
 
 ```bash
 # Backend tests: hand evaluator, betting/side pots, 500 randomized hands, accounting
@@ -120,22 +120,22 @@ cargo test
 # After changing the backend API, regenerate the .did and the frontend bindings
 UPDATE_CANDID=1 cargo test
 
-# Run everything locally (local ICP ledger with ICRC-2, Internet Identity, backend, frontend)
-dfx start --background --clean
+# Run everything on a local network (http://<frontend-id>.localhost:8000). The network
+# includes the ICP ledger with ICRC-2; sign-in uses mainnet Internet Identity (id.ai),
+# which the local network trusts.
 ./scripts/deploy-local.sh
 
 # Give your Internet Identity principal (shown on the Wallet page) some local ICP
 ./scripts/fund.sh <your-principal> 50
 
-# Hot-reloading frontend against the local replica
+# Hot-reloading frontend against the local network (needs poker_backend deployed)
 cd src/poker_frontend && npm run dev
 ```
 
 ## Deploying to mainnet
 
 ```bash
-dfx deploy --network ic poker_backend   # defaults to the real ICP ledger
-dfx deploy --network ic poker_frontend
+icp deploy -e ic   # the backend defaults to the real ICP ledger
 ```
 
 Only controllers can call the `admin_*` methods (create tables, add recurring tournaments, add store items, view house stats, withdraw the treasury). Six tables, from micro to high stakes, and the default store catalogue are created at install time.
@@ -150,7 +150,7 @@ Only controllers can call the `admin_*` methods (create tables, add recurring to
 
 **Solvency.** Every 10 minutes (and on demand via `admin_check_solvency`) the canister compares its ICP ledger balance with everything it owes: wallet balances, chips on ICP tables, tournament pools, the jackpot and the treasury. A shortfall pauses withdrawals automatically, but only if a second check confirms it, so transfers settling mid-check can't trigger a false alarm. `get_status` exposes the latest report publicly. `admin_audit_wallet_total` re-adds every balance to verify the running total.
 
-**Upgrade runbook.** 1) `admin_set_pause` withdrawals and deposits. 2) Check `admin_unresolved_ops` is empty (or wait for the retry loop). 3) `dfx canister stop`, upgrade, `dfx canister start`. Ledger calls still in flight at upgrade time are marked unknown and retried automatically. 4) Unpause.
+**Upgrade runbook.** 1) `admin_set_pause` withdrawals and deposits. 2) Check `admin_unresolved_ops` is empty (or wait for the retry loop). 3) `icp canister stop`, upgrade, `icp canister start`. Ledger calls still in flight at upgrade time are marked unknown and retried automatically. 4) Unpause.
 
 **Abuse protection.** `inspect_message` drops ingress calls before they cost cycles: anonymous or unregistered callers (except `register`), arguments over 16 KB, `admin_*` from non-controllers, `mod_*` from non-moderators, and callers over budget. Each player gets a burst of 20 update calls, refilling at 5 per second; every endpoint checks again, since `inspect_message` isn't guaranteed to run. Every new account solves a small proof-of-work (`get_signup_challenge`, then `register(name, nonce)`; about 60 ms in a browser). Past the hourly sign-up target (`admin_set_signup_limit`, default 1,000) it gets harder (up to about 5 seconds), so a bot wave slows itself down instead of locking real players out; `admin_set_signup_pow` sets the base difficulty. Hosted tables are capped at 200 overall, and friend lists, friend requests, block lists and stored reports are bounded. User text (chat, DMs, status, notes, reports, room names) is stripped of control and bidi-override characters; public text goes through the word filter.
 
@@ -160,11 +160,11 @@ Only controllers can call the `admin_*` methods (create tables, add recurring to
 
 **Monitoring.** `https://<backend-id>.raw.icp0.io/metrics` serves Prometheus text: players (registered, active in the last 5 minutes, seated), tables, hands dealt, cycles, heap and stable memory, unresolved and failed ledger ops, whether the last solvency check passed, pause switches, reports, bans and rate-limited calls. Money figures (treasury, balances, liabilities, the ICP jackpot, the solvency surplus) are left out of the public endpoint; `admin_get_metrics` has everything. `/health` returns `ok`. Responses are uncertified and contain nothing private, so use them for dashboards and alerts only. Controllers can also call `admin_get_metrics`. Suggested alerts: `bp_solvency_ok == 0`, `bp_unresolved_ledger_ops > 0` for 30 minutes, `bp_cycles` below 2T, and no increase in `bp_hands_dealt_total` while `bp_seated_players > 1`.
 
-**Frontend headers.** `.ic-assets.json5` sets a strict Content-Security-Policy (own scripts only, API calls only to IC boundary nodes), Permissions-Policy, HSTS and anti-framing headers. If you add an external host (analytics, fonts), add it to the CSP.
+**Frontend headers.** `src/poker_frontend/public/_headers` sets a strict Content-Security-Policy (own scripts only, API calls only to IC boundary nodes), Permissions-Policy, HSTS and anti-framing headers. If you add an external host (analytics, fonts), add it to the CSP.
 
 **Sessions.** Internet Identity sessions last 12 hours, and the app signs out after an hour without any input. Signing out clears the browser's saved tables and layout.
 
-**Supply chain.** CI runs with a read-only token and pins every action to a commit. The integration script verifies the ICP ledger wasm against DFINITY's published checksum and the PocketIC binary against a pinned hash (x86_64 Linux; set `POCKET_IC_SHA256` on other platforms). `dfx.json` pins the Internet Identity release used locally.
+**Supply chain.** CI runs with a read-only token and pins every action to a commit. The integration script verifies the ICP ledger wasm against DFINITY's published checksum and the PocketIC binary against a pinned hash (x86_64 Linux; set `POCKET_IC_SHA256` on other platforms). `icp.yaml` pins the build recipe versions.
 
 **Testing.** `cargo test` runs the unit tests (game engine, state, wallet logic, an upgrade round-trip). `./scripts/integration-test.sh` runs the canister against the real ICP ledger on a PocketIC replica: deposits both ways, withdrawals, exact solvency, pause switches, an upgrade in the middle of a hand, the ingress filter and rate limits, moderation and the metrics endpoint. CI runs both.
 
