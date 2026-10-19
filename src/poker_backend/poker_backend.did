@@ -514,12 +514,18 @@ type TableSummary = record {
   id : nat64;
   small_blind : nat64;
   min_buy_in : nat64;
+  // The game this table belongs to: the original table's id (its own id for originals and rooms).
+  game : nat64;
   name : text;
+  // No more copies of this game can open right now (always true for rooms).
+  game_at_cap : bool;
   locked : bool;
   max_seats : nat8;
   avg_pot : nat64;
   players : nat8;
   currency : Currency;
+  // 1 for the original, 2.. for copies opened when the game filled up.
+  number : nat8;
   big_blind : nat64;
   phase : Phase;
   // Username of the player who created this room, for player-created tables.
@@ -532,6 +538,8 @@ type TableView = record {
   pot : nat64;
   my_seat : opt nat8;
   to_call : nat64;
+  // The game this table belongs to: the original table's id (its own id for originals and rooms).
+  game : nat64;
   hand_no : nat64;
   // Bad-beat jackpot for this table's currency (0 at tournament tables).
   jackpot : nat64;
@@ -550,6 +558,8 @@ type TableView = record {
   current_bet : nat64;
   // Items thrown in the last few seconds, for clients to animate.
   throws : vec ThrowEvent;
+  // 1 for the original, 2.. for copies opened when the game filled up.
+  number : nat8;
   // A private room the viewer hasn't unlocked: game details are hidden.
   restricted : bool;
   board : blob;

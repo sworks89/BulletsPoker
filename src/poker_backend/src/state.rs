@@ -33,6 +33,13 @@ const MAX_STREAK: u32 = 7;
 /// Share of the rake paid to the creator of a player-created ICP room.
 pub const HOST_RAKE_SHARE_BPS: u64 = 2_000;
 const ROOM_IDLE_CLOSE_NS: u64 = 30 * 60 * 1_000_000_000;
+/// An empty copy of a full game closes after this long (the original never does).
+pub const COPY_IDLE_CLOSE_NS: u64 = 60 * 1_000_000_000;
+/// Most copies one game can have open, and in total per currency (separate
+/// budgets so a rush on free tables can't block real-money ones).
+pub const MAX_COPIES_PER_GAME: usize = 50;
+pub const MAX_CHIP_COPIES: usize = 200;
+pub const MAX_ICP_COPIES: usize = 100;
 const MAX_ROOMS_PER_USER: usize = 2;
 const MAX_NOTE_LEN: usize = 500;
 const LEADERS: usize = 100;
@@ -473,6 +480,10 @@ pub struct SeatView {
 pub struct TableView {
     pub id: u64,
     pub config: TableConfig,
+    /// The game this table belongs to: the original table's id (its own id for originals and rooms).
+    pub game: u64,
+    /// 1 for the original, 2.. for copies opened when the game filled up.
+    pub number: u8,
     pub phase: Phase,
     pub hand_no: u64,
     pub seats: Vec<Option<SeatView>>,
@@ -511,6 +522,12 @@ pub struct TableView {
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct TableSummary {
     pub id: u64,
+    /// The game this table belongs to: the original table's id (its own id for originals and rooms).
+    pub game: u64,
+    /// 1 for the original, 2.. for copies opened when the game filled up.
+    pub number: u8,
+    /// No more copies of this game can open right now (always true for rooms).
+    pub game_at_cap: bool,
     pub name: String,
     pub currency: Currency,
     pub small_blind: u64,
@@ -1439,6 +1456,82 @@ impl State {
         Ok(id)
     }
 
+    /// The game a table belongs to: its original's id, or its own id.
+    pub fn game_of(&self, table: u64) -> u64 {
+        self.tables.get(&table).and_then(|t| t.game).unwrap_or(table)
+    }
+
+    /// Tables of a game (original first, then copies by number), never tournament tables.
+    pub fn game_tables(&self, game: u64) -> Vec<u64> {
+        let mut ids: Vec<(u8, u64)> = self
+            .tables
+            .values()
+            .filter(|t| !self.table_tournament.contains_key(&t.id) && t.game.unwrap_or(t.id) == game)
+            .map(|t| (t.copy_number.unwrap_or(1), t.id))
+            .collect();
+        ids.sort();
+        ids.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// An original cash table that may have copies: not a room, a copy or a tournament table.
+    fn is_copyable_game(&self, game: u64) -> bool {
+        self.tables.get(&game).is_some_and(|t| t.game.is_none())
+            && !self.rooms.contains_key(&game)
+            && !self.table_tournament.contains_key(&game)
+    }
+
+    fn can_open_copy(&self, game: u64) -> bool {
+        if !self.is_copyable_game(game) {
+            return false;
+        }
+        let currency = self.tables[&game].config.currency;
+        let copies = self.tables.values().filter(|t| t.game.is_some());
+        let (mut of_game, mut of_currency) = (0, 0);
+        for t in copies {
+            of_game += usize::from(t.game == Some(game));
+            of_currency += usize::from(t.config.currency == currency);
+        }
+        let budget = match currency {
+            Currency::Chips => MAX_CHIP_COPIES,
+            Currency::Icp => MAX_ICP_COPIES,
+        };
+        of_game < MAX_COPIES_PER_GAME && of_currency < budget
+    }
+
+    /// Opens another table of a full game, with the same settings.
+    pub fn open_copy(&mut self, game: u64, now: u64) -> R<u64> {
+        if !self.is_copyable_game(game) {
+            return Err("This table can't have copies".into());
+        }
+        let cfg = self.tables[&game].config.clone();
+        if !self.can_open_copy(game) {
+            return Err(format!("{} is full right now. Watch a table and turn on auto-sit to get the next seat.", cfg.name));
+        }
+        let used: BTreeSet<u8> = self.tables.values().filter(|t| t.game == Some(game)).filter_map(|t| t.copy_number).collect();
+        let number = (2..=u8::MAX).find(|n| !used.contains(n)).ok_or("No free table number")?;
+        let id = self.create_table(cfg)?;
+        let t = self.tables.get_mut(&id).unwrap();
+        t.game = Some(game);
+        t.copy_number = Some(number);
+        t.empty_since = Some(now);
+        Ok(id)
+    }
+
+    /// Closes copies that have been empty for `COPY_IDLE_CLOSE_NS`.
+    fn close_empty_copies(&mut self, now: u64) {
+        let mut done = vec![];
+        for t in self.tables.values_mut().filter(|t| t.game.is_some()) {
+            if t.player_count() > 0 {
+                t.empty_since = None;
+            } else if now.saturating_sub(*t.empty_since.get_or_insert(now)) >= COPY_IDLE_CLOSE_NS {
+                done.push(t.id);
+            }
+        }
+        for id in done {
+            self.remove_table(id);
+        }
+    }
+
     /// Creates a player-hosted table. ICP rooms pay the host a share of the rake.
     pub fn create_room(&mut self, caller: Principal, args: RoomArgs, now: u64) -> R<u64> {
         if self.pause.joins {
@@ -1592,7 +1685,7 @@ impl State {
         let chips = self.table_mut(id)?.stand(&caller, now)?;
         self.credit_in(&caller, currency, chips)?;
         if !self.table_tournament.contains_key(&id) {
-            self.cashouts.insert((id, caller), (chips, now));
+            self.cashouts.insert((self.game_of(id), caller), (chips, now));
         }
         let name = self.user(&caller)?.username.clone();
         self.post(Channel::Table(id), None, String::new(), format!("{name} left the table"), MessageKind::System, now);
@@ -1625,7 +1718,7 @@ impl State {
     /// The smallest buy-in `p` may sit down with at table `id` right now: what
     /// they left with if they left within the last 30 minutes, else 0.
     pub fn min_return_buy_in(&self, id: u64, p: &Principal, now: u64) -> u64 {
-        self.cashouts.get(&(id, *p)).filter(|(_, at)| now < at + RETURN_WINDOW_NS).map_or(0, |(chips, _)| *chips)
+        self.cashouts.get(&(self.game_of(id), *p)).filter(|(_, at)| now < at + RETURN_WINDOW_NS).map_or(0, |(chips, _)| *chips)
     }
 
     pub fn sit_out(&mut self, caller: Principal, id: u64, out: bool, now: u64) -> R<()> {
@@ -1900,6 +1993,7 @@ impl State {
     pub fn tick(&mut self, now: u64) -> Vec<u64> {
         self.tournament_tick(now);
         self.close_idle_rooms(now);
+        self.close_empty_copies(now);
         self.stand_up_idle(now);
         self.cashouts.retain(|_, (_, at)| now < *at + RETURN_WINDOW_NS);
         let ids: Vec<u64> = self.tables.keys().copied().collect();
@@ -1959,6 +2053,9 @@ impl State {
             .filter(|t| !self.table_tournament.contains_key(&t.id))
             .map(|t| TableSummary {
                 id: t.id,
+                game: t.game.unwrap_or(t.id),
+                number: t.copy_number.unwrap_or(1),
+                game_at_cap: !self.can_open_copy(t.game.unwrap_or(t.id)),
                 name: t.config.name.clone(),
                 currency: t.config.currency,
                 small_blind: t.config.small_blind,
@@ -2056,6 +2153,8 @@ impl State {
         Some(TableView {
             id,
             config: t.config.clone(),
+            game: t.game.unwrap_or(id),
+            number: t.copy_number.unwrap_or(1),
             phase: t.phase,
             hand_no: t.hand_no,
             seats,
@@ -3530,5 +3629,155 @@ mod tests {
         assert_eq!(fmt_icp(E8S), "1");
         assert_eq!(fmt_icp(150_000_000), "1.5");
         assert_eq!(fmt_icp(10_000), "0.0001");
+    }
+
+    // ---------------------------------------------------------- table copies
+
+    const HU: u64 = 3; // Heads Up Hangout, a 2-seat chip game (buy-in 1,000-5,000)
+
+    #[test]
+    fn copies_share_config_and_number_up() {
+        let mut s = setup();
+        let c2 = s.open_copy(HU, 0).unwrap();
+        let c3 = s.open_copy(HU, 0).unwrap();
+        assert_eq!(s.tables[&c2].copy_number, Some(2));
+        assert_eq!(s.tables[&c3].copy_number, Some(3));
+        for c in [c2, c3] {
+            assert_eq!(format!("{:?}", s.tables[&c].config), format!("{:?}", s.tables[&HU].config));
+            assert_eq!(s.game_of(c), HU);
+        }
+        assert_eq!(s.game_of(HU), HU);
+        assert_eq!(s.game_tables(HU), vec![HU, c2, c3]);
+    }
+
+    #[test]
+    fn copy_numbers_reuse_the_lowest_free() {
+        let mut s = setup();
+        let c2 = s.open_copy(HU, 0).unwrap();
+        let c3 = s.open_copy(HU, 0).unwrap();
+        s.tick(COPY_IDLE_CLOSE_NS); // both empty since 0: both close
+        assert!(!s.tables.contains_key(&c2) && !s.tables.contains_key(&c3));
+        let again = s.open_copy(HU, COPY_IDLE_CLOSE_NS).unwrap();
+        assert_eq!(s.tables[&again].copy_number, Some(2));
+    }
+
+    #[test]
+    fn copy_caps() {
+        let mut s = setup();
+        for _ in 0..MAX_COPIES_PER_GAME {
+            s.open_copy(HU, 0).unwrap();
+        }
+        assert!(s.open_copy(HU, 0).unwrap_err().contains("is full right now"), "per-game cap");
+        // Fill the play-chip budget across the other chip games plus one extra admin game.
+        let extra = s.create_table(s.tables[&HU].config.clone()).unwrap();
+        let chip_games: Vec<u64> = s
+            .tables
+            .values()
+            .filter(|t| t.game.is_none() && t.config.currency == Currency::Chips && t.id != HU && t.id != extra)
+            .map(|t| t.id)
+            .collect();
+        let mut opened = MAX_COPIES_PER_GAME;
+        'fill: for g in chip_games {
+            for _ in 0..MAX_COPIES_PER_GAME {
+                if opened == MAX_CHIP_COPIES {
+                    break 'fill;
+                }
+                s.open_copy(g, 0).unwrap();
+                opened += 1;
+            }
+        }
+        assert_eq!(opened, MAX_CHIP_COPIES);
+        assert!(s.open_copy(extra, 0).is_err(), "play-chip budget used up");
+        let icp_game = s.tables.values().find(|t| t.config.currency == Currency::Icp && !s.rooms.contains_key(&t.id)).unwrap().id;
+        assert!(s.open_copy(icp_game, 0).is_ok(), "ICP games have their own budget");
+    }
+
+    #[test]
+    fn rooms_and_copies_are_not_copyable() {
+        let mut s = setup();
+        s.user_mut(&p(1)).unwrap().xp = 50; // level 2: may host
+        let room = s
+            .create_room(
+                p(1),
+                RoomArgs { name: "Mark's Game".into(), currency: Currency::Chips, big_blind: 50, max_seats: 2, password: None, action_timeout_secs: 30 },
+                0,
+            )
+            .unwrap();
+        assert!(s.open_copy(room, 0).is_err());
+        let c = s.open_copy(HU, 0).unwrap();
+        assert!(s.open_copy(c, 0).is_err(), "copies come from the original");
+        assert!(s.list_tables().iter().find(|t| t.id == room).unwrap().game_at_cap);
+    }
+
+    #[test]
+    fn empty_copy_closes_after_a_minute() {
+        let mut s = setup();
+        let c = s.open_copy(HU, 0).unwrap();
+        s.tick(COPY_IDLE_CLOSE_NS - SEC);
+        assert!(s.tables.contains_key(&c));
+        s.tick(COPY_IDLE_CLOSE_NS);
+        assert!(!s.tables.contains_key(&c));
+        s.tick(100 * COPY_IDLE_CLOSE_NS);
+        assert!(s.tables.contains_key(&HU), "originals never close");
+    }
+
+    #[test]
+    fn occupied_copy_never_closes() {
+        let mut s = setup();
+        let c = s.open_copy(HU, 0).unwrap();
+        s.join_table(p(1), c, 0, 1_000, None, 0).unwrap();
+        s.tick(5 * COPY_IDLE_CLOSE_NS);
+        assert!(s.tables.contains_key(&c));
+        assert_eq!(s.tables[&c].empty_since, None);
+    }
+
+    #[test]
+    fn buy_back_minimum_covers_the_whole_game() {
+        let mut s = setup();
+        s.join_table(p(1), HU, 0, 3_000, None, 0).unwrap();
+        s.leave_table(p(1), HU, SEC).unwrap();
+        let c = s.open_copy(HU, SEC).unwrap();
+        let err = s.join_table(p(1), c, 0, 1_000, None, 2 * SEC).unwrap_err();
+        assert!(err.contains("less than 30 minutes ago"), "{err}");
+        s.join_table(p(1), c, 0, 3_000, None, 2 * SEC).unwrap();
+    }
+
+    #[test]
+    fn joining_a_closed_copy_fails_cleanly() {
+        let mut s = setup();
+        let c = s.open_copy(HU, 0).unwrap();
+        s.tick(COPY_IDLE_CLOSE_NS);
+        let before = s.users.get(&p(1)).unwrap().chips;
+        assert_eq!(s.join_table(p(1), c, 0, 1_000, None, COPY_IDLE_CLOSE_NS).unwrap_err(), "No such table");
+        assert_eq!(s.users.get(&p(1)).unwrap().chips, before);
+    }
+
+    #[test]
+    fn summaries_and_views_carry_game_and_number() {
+        let mut s = setup();
+        let c = s.open_copy(HU, 0).unwrap();
+        let rows = s.list_tables();
+        let copy = rows.iter().find(|t| t.id == c).unwrap();
+        assert_eq!((copy.game, copy.number, copy.game_at_cap), (HU, 2, false));
+        let orig = rows.iter().find(|t| t.id == HU).unwrap();
+        assert_eq!((orig.game, orig.number), (HU, 1));
+        let v = s.table_view(c, None, 0).unwrap();
+        assert_eq!((v.game, v.number), (HU, 2));
+    }
+
+    #[test]
+    fn old_snapshots_decode_new_options_as_none() {
+        #[derive(CandidType)]
+        struct Old {
+            a: u64,
+        }
+        #[derive(CandidType, Deserialize)]
+        struct New {
+            a: u64,
+            b: Option<u64>,
+        }
+        let bytes = candid::encode_one(Old { a: 1 }).unwrap();
+        let new: New = candid::decode_one(&bytes).unwrap();
+        assert_eq!((new.a, new.b), (1, None));
     }
 }

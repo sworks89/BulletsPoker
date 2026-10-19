@@ -677,12 +677,24 @@ export interface TableSummary {
   'id' : bigint,
   'small_blind' : bigint,
   'min_buy_in' : bigint,
+  /**
+   * The game this table belongs to: the original table's id (its own id for originals and rooms).
+   */
+  'game' : bigint,
   'name' : string,
+  /**
+   * No more copies of this game can open right now (always true for rooms).
+   */
+  'game_at_cap' : boolean,
   'locked' : boolean,
   'max_seats' : number,
   'avg_pot' : bigint,
   'players' : number,
   'currency' : Currency,
+  /**
+   * 1 for the original, 2.. for copies opened when the game filled up.
+   */
+  'number' : number,
   'big_blind' : bigint,
   'phase' : Phase,
   /**
@@ -697,6 +709,10 @@ export interface TableView {
   'pot' : bigint,
   'my_seat' : [] | [number],
   'to_call' : bigint,
+  /**
+   * The game this table belongs to: the original table's id (its own id for originals and rooms).
+   */
+  'game' : bigint,
   'hand_no' : bigint,
   /**
    * Bad-beat jackpot for this table's currency (0 at tournament tables).
@@ -725,6 +741,10 @@ export interface TableView {
    * Items thrown in the last few seconds, for clients to animate.
    */
   'throws' : Array<ThrowEvent>,
+  /**
+   * 1 for the original, 2.. for copies opened when the game filled up.
+   */
+  'number' : number,
   /**
    * A private room the viewer hasn't unlocked: game details are hidden.
    */

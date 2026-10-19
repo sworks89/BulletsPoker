@@ -237,6 +237,12 @@ pub struct Table {
     /// which they started drawing on at `bank_started_at`.
     pub time_bank_active: bool,
     pub bank_started_at: u64,
+    /// For a copy opened when its game filled up: the original table's id.
+    pub game: Option<u64>,
+    /// For a copy: its number in the game (the original is 1).
+    pub copy_number: Option<u8>,
+    /// For a copy: when it last became empty (it closes after a minute).
+    pub empty_since: Option<u64>,
 }
 
 const NANOS: u64 = 1_000_000_000;
@@ -270,7 +276,15 @@ impl Table {
             tournament_mode: false,
             time_bank_active: false,
             bank_started_at: 0,
+            game: None,
+            copy_number: None,
+            empty_since: None,
         }
+    }
+
+    /// Lowest empty seat, if any.
+    pub fn first_free_seat(&self) -> Option<u8> {
+        self.seats.iter().position(|s| s.is_none()).map(|i| i as u8)
     }
 
     fn log(&mut self, seat: Option<usize>, text: impl Into<String>, amount: u64) {
