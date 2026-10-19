@@ -620,7 +620,9 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
                 ? 'Sign in and create a profile to play.'
                 : mySeat === undefined
                   ? 'Pick an empty seat to sit down. Click a player to send a gift or throw something.'
-                  : phase === 'Waiting'
+                  : me?.sitting_out
+                    ? "You're sitting out, so your hands are checked or folded for you. Click I'm back to play."
+                    : phase === 'Waiting'
                     ? 'Waiting for another player…'
                     : 'Waiting for your turn…'}
             </div>

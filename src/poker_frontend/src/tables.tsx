@@ -1,6 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useApp, usePoll } from './context';
 import type { TableView } from './ic';
+import { isMyTurn } from './turn';
+
+export { isMyTurn };
 
 /** Most tables a player can have open at once. */
 export const MAX_OPEN = 4;
@@ -33,8 +36,6 @@ export function useTables(): TablesState {
   return c;
 }
 
-export const isMyTurn = (v: TableView | undefined): boolean =>
-  !!v && v.my_seat.length > 0 && v.to_act.length > 0 && v.my_seat[0] === v.to_act[0];
 
 // Per-browser preferences: which tables are open and how they're laid out.
 function load<T>(key: string, fallback: T): T {
