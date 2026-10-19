@@ -3,6 +3,7 @@ import { useApp, usePoll } from '../context';
 import { unwrap, type NoteColor, type NoteView, type PlayerNote } from '../ic';
 import type { Principal } from '@icp-sdk/core/principal';
 import { timeAgo } from '../format';
+import { Avatar } from '../art/Avatar';
 
 type ColorName = 'Red' | 'Orange' | 'Yellow' | 'Green' | 'Blue' | 'Purple';
 
@@ -121,7 +122,7 @@ export function NotesPanel() {
         return (
           <div key={key} className="note-row">
             <div className="row gap">
-              <span className={`avatar sm ${c ? `note-${c.toLowerCase()}` : ''}`}>{n.avatar}</span>
+              <Avatar icon={n.avatar} size="sm" className={c ? `note-${c.toLowerCase()}` : ''} />
               <b className="grow">{n.username}</b>
               <span className="muted small">{timeAgo(n.updated_at)}</span>
               <button className="chip" onClick={() => setEditing(editing === key ? null : key)}>

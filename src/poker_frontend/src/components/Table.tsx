@@ -8,6 +8,7 @@ import { Chat } from './Chat';
 import { NoteEditor } from './Notes';
 import { SafetyActions } from './Safety';
 import { JackpotCelebration } from './Jackpot';
+import { Avatar } from '../art/Avatar';
 
 /** Most a time bank can hold (matches the backend). */
 const TIME_BANK_MS = 30_000;
@@ -367,11 +368,10 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
                       ? [0, 1].map((k) => <Card key={k} back={s.card_back} small />)
                       : null}
                 </div>
-                <div className={`avatar ${noteColor ? `note-${noteColor}` : ''}`} title={note ? note.text || 'Has a note' : undefined}>
-                  {s.avatar}
+                <Avatar icon={s.avatar} className={noteColor ? `note-${noteColor}` : ''} title={note ? note.text || 'Has a note' : undefined}>
                   {s.gift[0] && <span className="gift">{s.gift[0]}</span>}
                   {note && <span className="note-mark">📝</span>}
-                </div>
+                </Avatar>
                 <div className="nameplate">
                   <div className="name">
                     {s.username} <span className="lvl">Lv{s.level}</span>
@@ -625,7 +625,7 @@ function PlayerCard({ seat, view, canThrow, onClose }: { seat: SeatView; view: T
     <div className="modal-bg" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="row gap">
-          <span className="avatar lg">{seat.avatar}</span>
+          <Avatar icon={seat.avatar} size="lg" />
           <div>
             <h3>{seat.username}</h3>
             <div className="muted">Level {seat.level}</div>

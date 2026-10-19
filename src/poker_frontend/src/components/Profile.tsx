@@ -3,6 +3,7 @@ import { solvePow } from '../pow';
 import { useApp, usePoll } from '../context';
 import { unwrap, type LeaderboardEntry, type Settings } from '../ic';
 import { icp } from '../format';
+import { Avatar } from '../art/Avatar';
 
 export function ProfilePage() {
   const { backend, profile, items, run, refreshProfile } = useApp();
@@ -20,7 +21,7 @@ export function ProfilePage() {
     <div className="page-grid">
       <div className="panel">
         <div className="row gap">
-          <span className="avatar lg">{items.get(profile.avatar)?.icon}</span>
+          <Avatar icon={items.get(profile.avatar)?.icon ?? ''} size="lg" />
           <div className="grow">
             <h2>{profile.username}</h2>
             <div className="muted">Level {lvl}</div>
@@ -85,14 +86,14 @@ export function ProfilePage() {
           {avatars.map((a) => (
             <button
               key={a.id}
-              className={`avatar lg pick ${profile.avatar === a.id ? 'active' : ''}`}
+              className="avatar-pick"
               title={a.name}
               onClick={async () => {
                 await run(async () => unwrap(await backend.equip(a.id)));
                 await refreshProfile();
               }}
             >
-              {a.icon}
+              <Avatar icon={a.icon} size="lg" className={`pick ${profile.avatar === a.id ? 'active' : ''}`} />
             </button>
           ))}
         </div>
@@ -179,7 +180,7 @@ export function Leaderboard() {
             <tr key={r.id.toText()}>
               <td>{i + 1}</td>
               <td>
-                <span className="avatar sm">{r.avatar}</span> {r.username}
+                <Avatar icon={r.avatar} size="sm" /> {r.username}
               </td>
               <td>{r.level}</td>
               <td>{String(r.stats.hands_played)}</td>

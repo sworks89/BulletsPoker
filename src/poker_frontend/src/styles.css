@@ -97,6 +97,29 @@ main { padding: 18px 0; }
 .avatar.lg { width: 72px; height: 72px; font-size: 42px; }
 .avatar.pick.active { border-color: var(--accent); box-shadow: 0 0 10px var(--accent); }
 .avatar .gift { position: absolute; right: -8px; bottom: -6px; font-size: 22px; animation: pop 0.4s ease; }
+.avatar-pick { background: none; border: 0; padding: 0; cursor: pointer; border-radius: 50%; }
+
+/* illustrated avatars (src/art) */
+.avatar.has-art { font-size: 0; background: #121826; }
+.avatar-art { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; display: block; }
+.avatar-svg { width: 100%; height: 100%; display: block; }
+.avatar-svg .eyes, .avatar-svg .acc, .avatar-svg .tear { transform-box: fill-box; transform-origin: center; }
+.avatar-svg .figure { transform-box: view-box; transform-origin: 50% 100%; }
+.avatar-svg .face-hit, .avatar-svg .face-sad, .avatar-svg .face-happy { display: none; }
+.avatar[data-expr='hit'] .face-normal, .avatar[data-expr='sad'] .face-normal, .avatar[data-expr='happy'] .face-normal { display: none; }
+.avatar[data-expr='hit'] .face-hit, .avatar[data-expr='sad'] .face-sad, .avatar[data-expr='happy'] .face-happy { display: inline; }
+.avatar-svg .acc { transition: transform 0.15s ease-out; }
+.avatar[data-expr='hit'] .acc { transform: rotate(-14deg) translate(-3px, 5px); }
+.avatar-svg .eyes { animation: blink 5s var(--blink-delay, 0s) infinite; }
+@keyframes blink { 0%, 93%, 100% { transform: scaleY(1); } 96% { transform: scaleY(0.1); } }
+.avatar:not(.sm) .avatar-svg .figure { animation: breathe 3.6s ease-in-out infinite; }
+@keyframes breathe { 50% { transform: scale(1.025); } }
+.avatar-svg .face-sad .tear { animation: tear 1.4s ease-in infinite; }
+@keyframes tear { 0% { transform: translateY(-2px); opacity: 0; } 30% { opacity: 1; } 100% { transform: translateY(14px); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .avatar-svg .eyes, .avatar-svg .figure, .avatar-svg .face-sad .tear { animation: none; }
+  .avatar-svg .acc { transition: none; }
+}
 @keyframes pop { from { transform: scale(0); } to { transform: scale(1); } }
 
 /* table */
