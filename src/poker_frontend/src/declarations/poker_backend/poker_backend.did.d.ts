@@ -37,6 +37,29 @@ export interface AuditEntry {
   'actor' : Principal,
   'time' : bigint,
 }
+/**
+ * Where a player stands with auto-sit at a table.
+ */
+export type AutoSitStatus = {
+    'Queued' : { 'place' : number, 'buy_in' : bigint, 'waiting' : number }
+  } |
+  {
+    /**
+     * Seated automatically at this table (reported once).
+     */
+    'Seated' : { 'table' : bigint }
+  } |
+  {
+    /**
+     * Taken out of the line because seating failed (reported once).
+     */
+    'Dropped' : { 'reason' : string }
+  } |
+  { 'NotQueued' : null };
+/**
+ * The viewer's own place in a table's auto-sit line.
+ */
+export interface AutoSitView { 'place' : number, 'buy_in' : bigint }
 export interface Ban {
   /**
    * 0 = permanent.
@@ -496,13 +519,15 @@ export type Result_1 = { 'Ok' : number } |
   { 'Err' : string };
 export type Result_10 = { 'Ok' : Array<LedgerOp> } |
   { 'Err' : string };
-export type Result_11 = { 'Ok' : ModPlayerView } |
+export type Result_11 = { 'Ok' : AutoSitStatus } |
   { 'Err' : string };
-export type Result_12 = { 'Ok' : ReportPage } |
+export type Result_12 = { 'Ok' : ModPlayerView } |
   { 'Err' : string };
-export type Result_13 = { 'Ok' : Array<Report> } |
+export type Result_13 = { 'Ok' : ReportPage } |
   { 'Err' : string };
-export type Result_14 = { 'Ok' : Profile } |
+export type Result_14 = { 'Ok' : Array<Report> } |
+  { 'Err' : string };
+export type Result_15 = { 'Ok' : Profile } |
   { 'Err' : string };
 export type Result_2 = { 'Ok' : Array<AuditEntry> } |
   { 'Err' : string };
@@ -710,6 +735,10 @@ export interface TableView {
   'my_seat' : [] | [number],
   'to_call' : bigint,
   /**
+   * The viewer's place in this table's auto-sit line, if they're in it.
+   */
+  'my_auto_sit' : [] | [AutoSitView],
+  /**
    * The game this table belongs to: the original table's id (its own id for originals and rooms).
    */
   'game' : bigint,
@@ -757,6 +786,10 @@ export interface TableView {
    */
   'room_owner' : [] | [Principal],
   'button' : number,
+  /**
+   * How many watchers are waiting to be seated here automatically.
+   */
+  'auto_sit_waiting' : number,
   /**
    * Smallest buy-in the viewer may sit down with (they left recently with
    * this many chips); 0 means the table's normal minimum.
@@ -977,6 +1010,16 @@ export interface _SERVICE {
    */
   'admin_withdraw_treasury' : ActorMethod<[Account, bigint], Result_5>,
   /**
+   * Waits for a seat at a table: you're seated automatically, with this buy-in,
+   * when one opens. `None` leaves the line. Keep calling `auto_sit_ping` while
+   * you watch, or you're dropped from the line.
+   */
+  'auto_sit' : ActorMethod<[bigint, [] | [bigint]], Result_11>,
+  /**
+   * Keeps you in a table's auto-sit line and reports whether you were seated or dropped.
+   */
+  'auto_sit_ping' : ActorMethod<[bigint], Result_11>,
+  /**
    * Blocks (or unblocks) a player: hides their chat and stops DMs, friend
    * requests, gifts and throws between you.
    */
@@ -1067,7 +1110,7 @@ export interface _SERVICE {
    * Suspends a player for `hours` (0 = permanent). They keep access to withdrawals.
    */
   'mod_ban' : ActorMethod<[Principal, number, string], Result>,
-  'mod_get_player' : ActorMethod<[Principal], Result_11>,
+  'mod_get_player' : ActorMethod<[Principal], Result_12>,
   /**
    * Mutes a player in every chat for `hours` (0 lifts the mute).
    */
@@ -1075,11 +1118,11 @@ export interface _SERVICE {
   /**
    * The open-report queue, oldest first: up to `limit` (max 50) after report `after`.
    */
-  'mod_open_reports' : ActorMethod<[[] | [bigint], number], Result_12>,
+  'mod_open_reports' : ActorMethod<[[] | [bigint], number], Result_13>,
   /**
    * The latest reports, open or resolved.
    */
-  'mod_recent_reports' : ActorMethod<[number], Result_13>,
+  'mod_recent_reports' : ActorMethod<[number], Result_14>,
   'mod_resolve_report' : ActorMethod<[bigint, ModAction, string], Result>,
   'mod_unban' : ActorMethod<[Principal], Result>,
   /**
@@ -1089,7 +1132,7 @@ export interface _SERVICE {
   /**
    * Creates your profile. `pow` is a nonce solving `get_signup_challenge`.
    */
-  'register' : ActorMethod<[string, [] | [bigint]], Result_14>,
+  'register' : ActorMethod<[string, [] | [bigint]], Result_15>,
   'register_tournament' : ActorMethod<[bigint], Result>,
   'remove_friend' : ActorMethod<[Principal], Result>,
   /**

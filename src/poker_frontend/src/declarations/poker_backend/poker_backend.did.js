@@ -177,6 +177,17 @@ export const idlFactory = ({ IDL }) => {
     'reason' : IDL.Opt(IDL.Text),
   });
   const Result_10 = IDL.Variant({ 'Ok' : IDL.Vec(LedgerOp), 'Err' : IDL.Text });
+  const AutoSitStatus = IDL.Variant({
+    'Queued' : IDL.Record({
+      'place' : IDL.Nat32,
+      'buy_in' : IDL.Nat64,
+      'waiting' : IDL.Nat32,
+    }),
+    'Seated' : IDL.Record({ 'table' : IDL.Nat64 }),
+    'Dropped' : IDL.Record({ 'reason' : IDL.Text }),
+    'NotQueued' : IDL.Null,
+  });
+  const Result_11 = IDL.Variant({ 'Ok' : AutoSitStatus, 'Err' : IDL.Text });
   const RoomArgs = IDL.Record({
     'action_timeout_secs' : IDL.Nat64,
     'password' : IDL.Opt(IDL.Text),
@@ -377,6 +388,7 @@ export const idlFactory = ({ IDL }) => {
     'solvency' : IDL.Opt(SolvencyReport),
     'pause' : PauseFlags,
   });
+  const AutoSitView = IDL.Record({ 'place' : IDL.Nat32, 'buy_in' : IDL.Nat64 });
   const ShownHand = IDL.Record({
     'player' : IDL.Principal,
     'cards' : IDL.Vec(IDL.Nat8),
@@ -465,6 +477,7 @@ export const idlFactory = ({ IDL }) => {
     'pot' : IDL.Nat64,
     'my_seat' : IDL.Opt(IDL.Nat8),
     'to_call' : IDL.Nat64,
+    'my_auto_sit' : IDL.Opt(AutoSitView),
     'game' : IDL.Nat64,
     'hand_no' : IDL.Nat64,
     'jackpot' : IDL.Nat64,
@@ -486,6 +499,7 @@ export const idlFactory = ({ IDL }) => {
     'config' : TableConfig,
     'room_owner' : IDL.Opt(IDL.Principal),
     'button' : IDL.Nat8,
+    'auto_sit_waiting' : IDL.Nat32,
     'my_min_buy_in' : IDL.Nat64,
     'max_raise_to' : IDL.Nat64,
   });
@@ -629,14 +643,14 @@ export const idlFactory = ({ IDL }) => {
     'net_winnings' : IDL.Int64,
     'hands_played' : IDL.Nat64,
   });
-  const Result_11 = IDL.Variant({ 'Ok' : ModPlayerView, 'Err' : IDL.Text });
+  const Result_12 = IDL.Variant({ 'Ok' : ModPlayerView, 'Err' : IDL.Text });
   const ReportPage = IDL.Record({
     'open_total' : IDL.Nat64,
     'reports' : IDL.Vec(Report),
   });
-  const Result_12 = IDL.Variant({ 'Ok' : ReportPage, 'Err' : IDL.Text });
-  const Result_13 = IDL.Variant({ 'Ok' : IDL.Vec(Report), 'Err' : IDL.Text });
-  const Result_14 = IDL.Variant({ 'Ok' : Profile, 'Err' : IDL.Text });
+  const Result_13 = IDL.Variant({ 'Ok' : ReportPage, 'Err' : IDL.Text });
+  const Result_14 = IDL.Variant({ 'Ok' : IDL.Vec(Report), 'Err' : IDL.Text });
+  const Result_15 = IDL.Variant({ 'Ok' : Profile, 'Err' : IDL.Text });
   return IDL.Service({
     'act' : IDL.Func([IDL.Nat64, Action], [Result], []),
     'addon_tournament' : IDL.Func([IDL.Nat64], [Result], []),
@@ -664,6 +678,8 @@ export const idlFactory = ({ IDL }) => {
     'admin_set_signup_pow' : IDL.Func([IDL.Nat8], [Result], []),
     'admin_unresolved_ops' : IDL.Func([], [Result_10], ['query']),
     'admin_withdraw_treasury' : IDL.Func([Account, IDL.Nat64], [Result_5], []),
+    'auto_sit' : IDL.Func([IDL.Nat64, IDL.Opt(IDL.Nat64)], [Result_11], []),
+    'auto_sit_ping' : IDL.Func([IDL.Nat64], [Result_11], []),
     'block_player' : IDL.Func([IDL.Principal, IDL.Bool], [Result], []),
     'buy_item' : IDL.Func([IDL.Nat32, Currency], [Result], []),
     'claim_daily_chips' : IDL.Func([], [Result_5], []),
@@ -728,14 +744,14 @@ export const idlFactory = ({ IDL }) => {
     'list_tables' : IDL.Func([], [IDL.Vec(TableSummary)], ['query']),
     'list_tournaments' : IDL.Func([], [IDL.Vec(TournamentSummary)], ['query']),
     'mod_ban' : IDL.Func([IDL.Principal, IDL.Nat32, IDL.Text], [Result], []),
-    'mod_get_player' : IDL.Func([IDL.Principal], [Result_11], ['query']),
+    'mod_get_player' : IDL.Func([IDL.Principal], [Result_12], ['query']),
     'mod_mute' : IDL.Func([IDL.Principal, IDL.Nat32], [Result], []),
     'mod_open_reports' : IDL.Func(
         [IDL.Opt(IDL.Nat64), IDL.Nat32],
-        [Result_12],
+        [Result_13],
         ['query'],
       ),
-    'mod_recent_reports' : IDL.Func([IDL.Nat32], [Result_13], ['query']),
+    'mod_recent_reports' : IDL.Func([IDL.Nat32], [Result_14], ['query']),
     'mod_resolve_report' : IDL.Func(
         [IDL.Nat64, ModAction, IDL.Text],
         [Result],
@@ -743,7 +759,7 @@ export const idlFactory = ({ IDL }) => {
       ),
     'mod_unban' : IDL.Func([IDL.Principal], [Result], []),
     'rebuy_tournament' : IDL.Func([IDL.Nat64], [Result], []),
-    'register' : IDL.Func([IDL.Text, IDL.Opt(IDL.Nat64)], [Result_14], []),
+    'register' : IDL.Func([IDL.Text, IDL.Opt(IDL.Nat64)], [Result_15], []),
     'register_tournament' : IDL.Func([IDL.Nat64], [Result], []),
     'remove_friend' : IDL.Func([IDL.Principal], [Result], []),
     'report_player' : IDL.Func(

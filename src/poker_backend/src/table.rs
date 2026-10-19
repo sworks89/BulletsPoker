@@ -243,6 +243,17 @@ pub struct Table {
     pub copy_number: Option<u8>,
     /// For a copy: when it last became empty (it closes after a minute).
     pub empty_since: Option<u64>,
+    /// Watchers waiting to be seated automatically when a seat opens, in order.
+    pub auto_sit: Option<std::collections::VecDeque<AutoSitEntry>>,
+}
+
+/// A watcher waiting for a seat at a table.
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct AutoSitEntry {
+    pub player: Principal,
+    pub buy_in: u64,
+    /// Last time their browser checked in (they're only seated while it keeps doing so).
+    pub last_seen: u64,
 }
 
 const NANOS: u64 = 1_000_000_000;
@@ -279,6 +290,7 @@ impl Table {
             game: None,
             copy_number: None,
             empty_since: None,
+            auto_sit: None,
         }
     }
 
