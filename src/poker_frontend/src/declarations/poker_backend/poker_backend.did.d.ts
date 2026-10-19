@@ -1050,6 +1050,11 @@ export interface _SERVICE {
    */
   'http_request' : ActorMethod<[HttpRequest], HttpResponse>,
   /**
+   * Joins a game: a free seat at its fullest table, or a new copy of it when every
+   * table is full. Returns the id of the table you were seated at.
+   */
+  'join_game' : ActorMethod<[bigint, bigint], Result_5>,
+  /**
    * `password` is only needed for password-protected player rooms.
    */
   'join_table' : ActorMethod<[bigint, number, bigint, [] | [string]], Result>,

@@ -769,6 +769,9 @@ service : (opt InitArgs) -> {
   // `GET /health` on the canister's raw domain. Responses are not certified, so
   // they're for monitoring only.
   http_request : (HttpRequest) -> (HttpResponse) query;
+  // Joins a game: a free seat at its fullest table, or a new copy of it when every
+  // table is full. Returns the id of the table you were seated at.
+  join_game : (nat64, nat64) -> (Result_5);
   // `password` is only needed for password-protected player rooms.
   join_table : (nat64, nat8, nat64, opt text) -> (Result);
   leave_table : (nat64) -> (Result_5);

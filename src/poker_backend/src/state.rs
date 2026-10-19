@@ -1680,6 +1680,73 @@ impl State {
         Ok(())
     }
 
+    /// Tables of a game the caller could sit at now: a free seat, not already
+    /// seated there. Fullest first, then by table number, so tables fill up
+    /// before new ones open.
+    pub(crate) fn join_candidates(&self, caller: &Principal, game: u64) -> Vec<u64> {
+        let mut c: Vec<(std::cmp::Reverse<usize>, u8, u64)> = self
+            .game_tables(game)
+            .into_iter()
+            .map(|id| &self.tables[&id])
+            .filter(|t| t.first_free_seat().is_some() && t.seat_of(caller).is_none())
+            .map(|t| (std::cmp::Reverse(t.player_count()), t.copy_number.unwrap_or(1), t.id))
+            .collect();
+        c.sort();
+        c.into_iter().map(|(_, _, id)| id).collect()
+    }
+
+    /// Joins a game rather than a table: a free seat at its fullest table, or a
+    /// new copy when all of them are full. Returns the table the caller sat at.
+    pub fn join_game(&mut self, caller: Principal, game: u64, buy_in: u64, now: u64) -> R<u64> {
+        if !self.is_copyable_game(game) {
+            return Err("Join this table directly".into());
+        }
+        // Cheap checks first, so a caller who can't sit can't open copies either.
+        if self.pause.joins {
+            return Err(self.paused_msg("New seats"));
+        }
+        self.check_not_banned(&caller, now)?;
+        let cash_seats = self
+            .tables
+            .values()
+            .filter(|t| !self.table_tournament.contains_key(&t.id) && t.seat_of(&caller).is_some())
+            .count();
+        if cash_seats >= MAX_CASH_SEATS {
+            return Err(format!("You can play at most {MAX_CASH_SEATS} cash tables at once"));
+        }
+        let cfg = &self.tables[&game].config;
+        if buy_in < cfg.min_buy_in || buy_in > cfg.max_buy_in {
+            return Err(format!(
+                "Buy in between {} and {}",
+                fmt_amount(cfg.currency, cfg.min_buy_in),
+                fmt_amount(cfg.currency, cfg.max_buy_in)
+            ));
+        }
+        let currency = cfg.currency;
+        let required = self.min_return_buy_in(game, &caller, now);
+        if buy_in < required {
+            return Err(format!(
+                "You left this game less than 30 minutes ago with {}: buy back in for at least that much",
+                fmt_amount(currency, required)
+            ));
+        }
+        let u = self.user(&caller)?;
+        let have = match currency {
+            Currency::Chips => u.chips,
+            Currency::Icp => u.balance,
+        };
+        if have < buy_in {
+            return Err("Not enough funds for that buy-in".into());
+        }
+        let id = match self.join_candidates(&caller, game).first() {
+            Some(id) => *id,
+            None => self.open_copy(game, now)?,
+        };
+        let seat = self.tables[&id].first_free_seat().ok_or("Seat is taken")?;
+        self.join_table(caller, id, seat, buy_in, None, now)?;
+        Ok(id)
+    }
+
     pub fn leave_table(&mut self, caller: Principal, id: u64, now: u64) -> R<u64> {
         let currency = self.table_currency(id)?;
         let chips = self.table_mut(id)?.stand(&caller, now)?;
@@ -3779,5 +3846,87 @@ mod tests {
         let bytes = candid::encode_one(Old { a: 1 }).unwrap();
         let new: New = candid::decode_one(&bytes).unwrap();
         assert_eq!((new.a, new.b), (1, None));
+    }
+
+    // ---------------------------------------------------------- join_game
+
+    #[test]
+    fn join_game_fills_the_fullest_table_first() {
+        let mut s = setup();
+        let g = 1; // Free Roll Fun, 9 seats
+        let c = s.open_copy(g, 0).unwrap();
+        s.join_table(p(1), c, 0, 200, None, 0).unwrap();
+        s.join_table(p(2), c, 1, 200, None, 0).unwrap();
+        assert_eq!(s.join_game(p(3), g, 200, 0).unwrap(), c);
+    }
+
+    #[test]
+    fn join_game_opens_a_copy_when_full() {
+        let mut s = setup();
+        s.register(p(4), "player4".into(), 0).unwrap();
+        s.join_table(p(1), HU, 0, 1_000, None, 0).unwrap();
+        s.join_table(p(2), HU, 1, 1_000, None, 0).unwrap();
+        let c = s.join_game(p(3), HU, 1_000, 0).unwrap();
+        assert_ne!(c, HU);
+        assert_eq!(s.game_of(c), HU);
+        assert_eq!(s.join_game(p(4), HU, 1_000, 0).unwrap(), c, "fills the half-empty copy before opening another");
+        assert_eq!(s.game_tables(HU).len(), 2);
+    }
+
+    #[test]
+    fn join_game_skips_tables_you_already_sit_at() {
+        let mut s = setup();
+        s.join_table(p(1), HU, 0, 1_000, None, 0).unwrap();
+        let c = s.join_game(p(1), HU, 1_000, 0).unwrap();
+        assert_ne!(c, HU);
+        let seated = s.game_tables(HU).iter().filter(|id| s.tables[id].seat_of(&p(1)).is_some()).count();
+        assert_eq!(seated, 2);
+    }
+
+    #[test]
+    fn join_game_rejects_rooms_and_tournament_tables() {
+        let mut s = setup();
+        s.user_mut(&p(1)).unwrap().xp = 50;
+        let room = s
+            .create_room(
+                p(1),
+                RoomArgs { name: "Mark's Game".into(), currency: Currency::Chips, big_blind: 50, max_seats: 2, password: None, action_timeout_secs: 30 },
+                0,
+            )
+            .unwrap();
+        let tables = s.tables.len();
+        assert!(s.join_game(p(2), room, 1_000, 0).is_err());
+        let tourney_table = s.create_table(s.tables[&HU].config.clone()).unwrap();
+        s.table_tournament.insert(tourney_table, 99);
+        assert!(s.join_game(p(2), tourney_table, 1_000, 0).is_err());
+        assert_eq!(s.tables.len(), tables + 1, "no copies were opened");
+    }
+
+    #[test]
+    fn join_game_checks_money_before_opening_a_copy() {
+        let mut s = setup();
+        s.join_table(p(1), HU, 0, 1_000, None, 0).unwrap();
+        s.join_table(p(2), HU, 1, 1_000, None, 0).unwrap();
+        s.user_mut(&p(3)).unwrap().chips = 500;
+        assert!(s.join_game(p(3), HU, 1_000, 0).is_err());
+        assert!(s.join_game(p(3), HU, 100, 0).is_err(), "below the table minimum");
+        assert_eq!(s.game_tables(HU).len(), 1, "no copy was opened");
+    }
+
+    #[test]
+    fn join_game_at_cap_says_full() {
+        let mut s = setup();
+        s.join_table(p(1), HU, 0, 1_000, None, 0).unwrap();
+        s.join_table(p(2), HU, 1, 1_000, None, 0).unwrap();
+        for _ in 0..MAX_COPIES_PER_GAME {
+            let c = s.open_copy(HU, 0).unwrap();
+            // Fill each copy with two fresh players.
+            for k in 0..2u8 {
+                let who = Principal::from_slice(&[100 + (c as u8), k, 7, 7, 7, 7, 7, 7, 7, 7]);
+                s.register(who, format!("f{c}x{k}"), 0).unwrap();
+                s.join_table(who, c, k, 1_000, None, 0).unwrap();
+            }
+        }
+        assert!(s.join_game(p(3), HU, 1_000, 0).unwrap_err().contains("is full right now"));
     }
 }

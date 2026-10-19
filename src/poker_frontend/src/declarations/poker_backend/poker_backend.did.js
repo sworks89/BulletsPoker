@@ -716,6 +716,7 @@ export const idlFactory = ({ IDL }) => {
         ['query'],
       ),
     'http_request' : IDL.Func([HttpRequest], [HttpResponse], ['query']),
+    'join_game' : IDL.Func([IDL.Nat64, IDL.Nat64], [Result_5], []),
     'join_table' : IDL.Func(
         [IDL.Nat64, IDL.Nat8, IDL.Nat64, IDL.Opt(IDL.Text)],
         [Result],
