@@ -13,6 +13,7 @@ import { ItemArt } from '../art/ItemArt';
 import { BadBeatTag, ChipBurst, RainCloud, THROW_FX, useSeatFx } from '../fx/SeatFx';
 import { handReactions } from '../fx/poker';
 import { giftArrivals } from '../fx/gifts';
+import { WatchBar } from './WatchBar';
 import { Burst, Mark } from '../fx/marks';
 
 /** How long a thrown item flies, and how long its mark stays (spec: ~0.7s, ~4s plus the wipe). */
@@ -89,6 +90,7 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
   const { backend, profile, run, refreshProfile, go } = useApp();
   const { open, views, clockOffset, refresh, closeTable, focus } = useTables();
   const view = views.get(String(id)) ?? null;
+  const hadView = useRef(false);
   const [, setTick] = useState(0);
   const [buyInSeat, setBuyInSeat] = useState<number | null>(null);
   const [selected, setSelected] = useState<SeatView | null>(null);
@@ -251,7 +253,27 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
     }
   }, [view, visible, play]);
 
-  if (!view) return visible ? <div className="splash">Loading table…</div> : null;
+  if (!view) {
+    if (!visible) return null;
+    // A table copy closes a minute after it empties: say so instead of loading forever.
+    return hadView.current ? (
+      <div className="splash">
+        <p>This table closed.</p>
+        <button
+          className="btn"
+          onClick={() => {
+            closeTable(id);
+            go({ name: 'lobby' });
+          }}
+        >
+          Back to lobby
+        </button>
+      </div>
+    ) : (
+      <div className="splash">Loading table…</div>
+    );
+  }
+  hadView.current = true;
 
   const currency = view.config.currency;
   const tourney = view.tournament[0];
@@ -312,6 +334,7 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
           )}
           <div>
             <b>{view.config.name}</b>
+            {view.number > 1 && <span className="muted"> · Table {view.number}</span>}
             {tourney ? (
               <span className="tag live">Tournament</span>
             ) : (
@@ -614,6 +637,8 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
             <button className="btn elsewhere" onClick={() => focus(elsewhere.id)}>
               Your turn at {elsewhere.config.name} →
             </button>
+          ) : profile && mySeat === undefined && !view.restricted && view.tournament.length === 0 ? (
+            <WatchBar view={view} onChange={load} />
           ) : (
             <div className="muted">
               {!profile
