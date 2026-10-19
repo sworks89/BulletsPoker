@@ -410,6 +410,8 @@ type SeatView = record {
   time_bank_secs : nat32;
   username : text;
   player : principal;
+  // Who sent the current gift (their username).
+  gift_from : opt text;
   all_in : bool;
   cards : blob;
   gift : opt text;
@@ -418,6 +420,8 @@ type SeatView = record {
   has_cards : bool;
   seat : nat8;
   last_action : opt text;
+  // When the current gift was sent; a repeat of the same gift gets a new time.
+  gift_sent_at : opt nat64;
   level : nat32;
   stack : nat64;
   card_back : text;

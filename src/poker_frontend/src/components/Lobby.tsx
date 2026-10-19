@@ -6,6 +6,7 @@ import { Chat } from './Chat';
 import { CreateRoom } from './CreateRoom';
 import { JackpotBanner } from './Jackpot';
 import { CHIPS, ICP } from '../format';
+import { Avatar } from '../art/Avatar';
 
 export function Lobby() {
   const { backend, go, profile } = useApp();
@@ -108,7 +109,7 @@ export function Lobby() {
               .filter((f) => f.online)
               .map((f) => (
                 <div key={f.id.toText()} className="friend-row">
-                  <span className="avatar sm">{f.avatar}</span>
+                  <Avatar icon={f.avatar} size="sm" />
                   <span className="grow">{f.username}</span>
                   {f.tables.length > 0 && (
                     <button className="btn small" onClick={() => go({ name: 'table', id: f.tables[0] })}>

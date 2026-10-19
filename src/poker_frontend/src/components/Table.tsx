@@ -8,6 +8,33 @@ import { Chat } from './Chat';
 import { NoteEditor } from './Notes';
 import { SafetyActions } from './Safety';
 import { JackpotCelebration } from './Jackpot';
+import { Avatar } from '../art/Avatar';
+import { ItemArt } from '../art/ItemArt';
+import { BadBeatTag, ChipBurst, RainCloud, THROW_FX, useSeatFx } from '../fx/SeatFx';
+import { handReactions } from '../fx/poker';
+import { giftArrivals } from '../fx/gifts';
+import { Burst, Mark } from '../fx/marks';
+
+/** How long a thrown item flies, and how long its mark stays (spec: ~0.7s, ~4s plus the wipe). */
+const THROW_FLIGHT_MS = 700;
+const THROW_MARK_MS = 4700;
+/** Items without art keep the old flight. */
+const LEGACY_FLIGHT_MS = 1100;
+
+/** How long winner and bad-beat reactions last (the HandOver pause is about 5s). */
+const REACTION_MS = 4500;
+
+/** How long a gift takes to fly to its seat. */
+const GIFT_FLIGHT_MS = 700;
+
+interface GiftFlight {
+  id: number;
+  icon: string;
+  from: { left: string; top: string };
+  to: { left: string; top: string };
+  /** The sender isn't seated here: it drops in from above. */
+  drop: boolean;
+}
 
 /** Most a time bank can hold (matches the backend). */
 const TIME_BANK_MS = 30_000;
@@ -48,6 +75,8 @@ export function priceLabel(item: StoreItem, currency: CurrencyV): string {
 interface Flying {
   id: bigint;
   icon: string;
+  /** No art or mark for this item: the old spin-and-fade. */
+  legacy: boolean;
   from: { left: string; top: string };
   to: { left: string; top: string };
 }
@@ -66,6 +95,14 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
   const [raiseTo, setRaiseTo] = useState<bigint>(0n);
   const [busy, setBusy] = useState(false);
   const [flying, setFlying] = useState<Flying[]>([]);
+  const { fx, play } = useSeatFx();
+  const [giftFlights, setGiftFlights] = useState<GiftFlight[]>([]);
+  // Seats whose gift is still in the air (badge hidden), just landed (pop), or just expired (fading out).
+  const [giftLanding, setGiftLanding] = useState<Map<number, 'flying' | 'landed'>>(new Map());
+  const [giftFading, setGiftFading] = useState<Map<number, string>>(new Map());
+  const seenGifts = useRef<Map<string, bigint | null> | null>(null);
+  const lastGiftIcons = useRef<Map<number, string>>(new Map());
+  const giftFlightId = useRef(0);
   const [dismissedHit, setDismissedHit] = useState<string>('');
   const seenThrows = useRef<Set<bigint> | null>(null);
   const settings = profile?.settings;
@@ -124,12 +161,95 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
     fresh.forEach((t) => seenThrows.current!.add(t.id));
     if ((settings && !settings.show_throwables) || !visible) return;
     if (settings?.sound) sounds.splat();
-    const add = fresh.map((t: ThrowEvent) => ({ id: t.id, icon: t.icon, from: seatPos(view, t.from_seat), to: seatPos(view, t.to_seat) }));
+    const add = fresh.map((t: ThrowEvent) => ({
+      id: t.id,
+      icon: t.icon,
+      legacy: !THROW_FX[t.icon],
+      from: seatPos(view, t.from_seat),
+      to: seatPos(view, t.to_seat),
+    }));
     setFlying((f) => [...f, ...add]);
-    setTimeout(() => setFlying((f) => f.filter((x) => !add.some((a) => a.id === x.id))), 2200);
+    for (const [k, t] of fresh.entries()) {
+      const hit = THROW_FX[t.icon];
+      // The item lands, then its mark sits on the face until it wipes off.
+      setTimeout(() => {
+        setFlying((f) => f.filter((x) => x.id !== add[k].id));
+        play(
+          t.to_seat,
+          hit
+            ? { expression: hit.expression, motion: hit.motion, overlay: <Mark kind={hit.mark} />, around: <Burst kind={hit.mark} /> }
+            : { expression: 'hit', motion: 'fx-shake', around: <Burst kind="plain" /> },
+          hit ? THROW_MARK_MS : 1500,
+        );
+      }, hit ? THROW_FLIGHT_MS : LEGACY_FLIGHT_MS);
+    }
     // seatPos is a pure function of the view
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, settings?.show_throwables]);
+
+  // Gifts fly in from the sender's seat (or drop in from above) and pop into place.
+  useEffect(() => {
+    if (!view) return;
+    const seats = view.seats.flatMap((s) => (s[0] ? [s[0]] : []));
+    const { next, arrivals } = giftArrivals(seenGifts.current, seats);
+    seenGifts.current = next;
+    const icons = new Map(seats.flatMap((s) => (s.gift[0] ? [[s.seat, s.gift[0]] as const] : [])));
+    const gone = [...lastGiftIcons.current].filter(([seat]) => !icons.has(seat));
+    lastGiftIcons.current = icons;
+    if (!visible) return;
+    for (const [seat, icon] of gone) {
+      setGiftFading((m) => withSeat(m, seat, icon));
+      setTimeout(() => setGiftFading((m) => withSeat(m, seat)), 500);
+    }
+    for (const a of arrivals) {
+      const to = giftSpot(view, a.seat, compact);
+      const from = a.fromSeat !== null ? giftSpot(view, a.fromSeat, compact) : { left: to.left, top: `calc(${to.top} - 90px)` };
+      const flight = { id: ++giftFlightId.current, icon: a.icon, from, to, drop: a.fromSeat === null };
+      setGiftFlights((f) => [...f, flight]);
+      setGiftLanding((m) => withSeat(m, a.seat, 'flying'));
+      setTimeout(() => {
+        setGiftFlights((f) => f.filter((x) => x.id !== flight.id));
+        setGiftLanding((m) => withSeat(m, a.seat, 'landed'));
+      }, GIFT_FLIGHT_MS);
+      setTimeout(() => setGiftLanding((m) => withSeat(m, a.seat)), GIFT_FLIGHT_MS + 900);
+    }
+    // giftSpot is a pure function of the view
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, visible, compact]);
+
+  // When a hand ends, winners cheer and a player who lost after being ahead on the turn gets a rain cloud.
+  const reactedHand = useRef<bigint | undefined>(undefined);
+  useEffect(() => {
+    if (!view) return;
+    const r = 'HandOver' in view.phase ? view.last_result[0] : undefined;
+    if (reactedHand.current === undefined) {
+      // First load: don't replay a hand that ended before we arrived.
+      reactedHand.current = r?.hand_no ?? -1n;
+      return;
+    }
+    if (!r || r.hand_no === reactedHand.current) return;
+    reactedHand.current = r.hand_no;
+    if (!visible) return;
+    const reactions = handReactions({
+      result: {
+        board: Array.from(r.board),
+        shown: r.shown.map((x) => ({ seat: x.seat, cards: Array.from(x.cards) })),
+        winners: r.winners,
+      },
+      bigBlind: view.config.big_blind,
+      allInSeats: new Set(view.seats.flatMap((s) => (s[0]?.all_in ? [s[0].seat] : []))),
+    });
+    // The jackpot celebration already announces a bad beat.
+    const jackpot = view.jackpot_hit[0]?.hand_no === r.hand_no;
+    for (const [seat, reaction] of reactions) {
+      if (reaction === 'badBeat') {
+        play(seat, { expression: 'sad', motion: 'fx-droop', overlay: <RainCloud />, around: !jackpot && <BadBeatTag /> }, REACTION_MS);
+      } else {
+        const big = reaction === 'bigWin';
+        play(seat, { expression: 'happy', motion: big ? 'fx-bigwin' : 'fx-cheer', around: <ChipBurst big={big} /> }, REACTION_MS);
+      }
+    }
+  }, [view, visible, play]);
 
   if (!view) return visible ? <div className="splash">Loading table…</div> : null;
 
@@ -367,11 +487,30 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
                       ? [0, 1].map((k) => <Card key={k} back={s.card_back} small />)
                       : null}
                 </div>
-                <div className={`avatar ${noteColor ? `note-${noteColor}` : ''}`} title={note ? note.text || 'Has a note' : undefined}>
-                  {s.avatar}
-                  {s.gift[0] && <span className="gift">{s.gift[0]}</span>}
+                <Avatar
+                  icon={s.avatar}
+                  expression={fx.get(i)?.expression}
+                  className={`${noteColor ? `note-${noteColor}` : ''} ${fx.get(i)?.cleaning ? 'cleaning' : ''}`}
+                  fxKey={fx.get(i)?.key}
+                  motion={fx.get(i)?.motion}
+                  title={note ? note.text || 'Has a note' : undefined}
+                  overlay={fx.get(i)?.overlay}
+                >
+                  {s.gift[0] ? (
+                    <span className={`gift ${giftLanding.get(i) ?? ''}`}>
+                      <ItemArt icon={s.gift[0]} className="idle" />
+                      {giftLanding.get(i) === 'landed' && <Burst kind="sparkle" />}
+                    </span>
+                  ) : (
+                    giftFading.has(i) && (
+                      <span className="gift fading">
+                        <ItemArt icon={giftFading.get(i)!} />
+                      </span>
+                    )
+                  )}
                   {note && <span className="note-mark">📝</span>}
-                </div>
+                  {fx.get(i)?.around}
+                </Avatar>
                 <div className="nameplate">
                   <div className="name">
                     {s.username} <span className="lvl">Lv{s.level}</span>
@@ -397,13 +536,22 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
             );
           })}
 
+          {giftFlights.map((g) => (
+            <div
+              key={`gift-${g.id}`}
+              className={`gift-flight ${g.drop ? 'drop' : ''}`}
+              style={{ '--x0': g.from.left, '--y0': g.from.top, '--x1': g.to.left, '--y1': g.to.top } as CSSProperties}
+            >
+              <ItemArt icon={g.icon} />
+            </div>
+          ))}
           {flying.map((f) => (
             <div
               key={String(f.id)}
-              className="flying"
+              className={`flying ${f.legacy ? 'legacy' : ''}`}
               style={{ '--x0': f.from.left, '--y0': f.from.top, '--x1': f.to.left, '--y1': f.to.top } as CSSProperties}
             >
-              {f.icon}
+              <ItemArt icon={f.icon} />
             </div>
           ))}
         </div>
@@ -493,6 +641,20 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
       {selected && <PlayerCard seat={selected} view={view} canThrow={mySeat !== undefined} onClose={() => setSelected(null)} />}
     </div>
   );
+}
+
+/** A copy of `m` with `seat` set to `value`, or removed when there is no value. */
+function withSeat<T>(m: Map<number, T>, seat: number, value?: T): Map<number, T> {
+  const n = new Map(m);
+  if (value === undefined) n.delete(seat);
+  else n.set(seat, value);
+  return n;
+}
+
+/** Where a seat's gift badge sits: just below and right of the seat centre. */
+function giftSpot(view: TableView, i: number, compact: boolean) {
+  const p = seatPos(view, i);
+  return compact ? { left: `calc(${p.left} + 24px)`, top: `calc(${p.top} + 8px)` } : { left: `calc(${p.left} + 37px)`, top: `calc(${p.top} + 2px)` };
 }
 
 /** Seat position around the oval, rotated so the viewer sits at the bottom. */
@@ -613,7 +775,7 @@ function PlayerCard({ seat, view, canThrow, onClose }: { seat: SeatView; view: T
     <div className="gift-grid">
       {list.map((g) => (
         <button key={g.id} className="gift-btn" title={g.description} onClick={() => use(g, kind)}>
-          <span className="icon">{g.icon}</span>
+          <ItemArt icon={g.icon} className="icon" />
           <span>{g.name}</span>
           <span className="price">{priceLabel(g, payCurrency(g, tableCurrency))}</span>
         </button>
@@ -625,7 +787,7 @@ function PlayerCard({ seat, view, canThrow, onClose }: { seat: SeatView; view: T
     <div className="modal-bg" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="row gap">
-          <span className="avatar lg">{seat.avatar}</span>
+          <Avatar icon={seat.avatar} size="lg" />
           <div>
             <h3>{seat.username}</h3>
             <div className="muted">Level {seat.level}</div>

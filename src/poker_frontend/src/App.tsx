@@ -14,6 +14,7 @@ import { Friends } from './components/Friends';
 import { Leaderboard, ProfilePage, Register } from './components/Profile';
 import { AccountNotice } from './components/Safety';
 import { Admin } from './components/Admin';
+import { Avatar } from './art/Avatar';
 
 const NAV: { name: View['name']; label: string }[] = [
   { name: 'lobby', label: 'Lobby' },
@@ -88,7 +89,7 @@ function Shell() {
                 {icp(profile.balance, 4)} ICP
               </button>
               <button className="me" onClick={() => go({ name: 'profile' })}>
-                <span className="avatar sm">{items.get(profile.avatar)?.icon}</span>
+                <Avatar icon={items.get(profile.avatar)?.icon ?? ''} size="sm" />
                 <span className="me-name">{profile.username}</span>
               </button>
               <button className="btn ghost small" onClick={() => run(signOut)}>

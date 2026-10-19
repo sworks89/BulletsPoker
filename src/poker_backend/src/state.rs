@@ -459,6 +459,10 @@ pub struct SeatView {
     pub cards: Vec<u8>,
     pub last_action: Option<String>,
     pub gift: Option<String>,
+    /// Who sent the current gift (their username).
+    pub gift_from: Option<String>,
+    /// When the current gift was sent; a repeat of the same gift gets a new time.
+    pub gift_sent_at: Option<u64>,
     /// The viewer's own note about this player, if any.
     pub note: Option<PlayerNote>,
     /// Seconds left in this player's time bank.
@@ -1984,7 +1988,7 @@ impl State {
             .seats
             .into_iter()
             .map(|s| {
-                s.map(|s| SeatView { stack: 0, bet: 0, cards: vec![], has_cards: false, last_action: None, gift: None, in_hand: false, folded: false, all_in: false, ..s })
+                s.map(|s| SeatView { stack: 0, bet: 0, cards: vec![], has_cards: false, last_action: None, gift: None, gift_from: None, gift_sent_at: None, in_hand: false, folded: false, all_in: false, ..s })
             })
             .collect();
         Some(TableView {
@@ -2011,6 +2015,7 @@ impl State {
             .map(|(i, s)| {
                 let s = s.as_ref().filter(|s| !s.left)?;
                 let u = self.users.get(&s.player);
+                let gift = u.as_ref().and_then(|u| u.gift.as_ref()).filter(|g| g.expires_at > now);
                 Some(SeatView {
                     seat: i as u8,
                     player: s.player,
@@ -2027,11 +2032,9 @@ impl State {
                     has_cards: s.in_hand && !s.folded && !s.hole.is_empty(),
                     cards: t.visible_cards(i, viewer.as_ref()),
                     last_action: s.last_action.clone(),
-                    gift: u
-                        .as_ref()
-                        .and_then(|u| u.gift.as_ref())
-                        .filter(|g| g.expires_at > now)
-                        .map(|g| self.icon(g.item)),
+                    gift: gift.map(|g| self.icon(g.item)),
+                    gift_from: gift.map(|g| g.from.clone()),
+                    gift_sent_at: gift.map(|g| g.expires_at.saturating_sub(GIFT_DURATION_NS)),
                     note: viewer.and_then(|v| self.stores.notes.get(&(v, s.player))),
                     time_bank_secs: if t.time_bank_active && t.to_act == Some(i) {
                         t.action_deadline.saturating_sub(now) / 1_000_000_000
@@ -2182,9 +2185,17 @@ mod tests {
         s.send_gift(p(1), icp_table, p(2), beer, Currency::Icp, 0).unwrap();
         let v = s.table_view(icp_table, None, 1).unwrap();
         assert_eq!(v.seats[0].as_ref().unwrap().gift.as_deref(), Some("🍺"));
+        assert_eq!(v.seats[0].as_ref().unwrap().gift_from.as_deref(), Some("player1"));
+        assert_eq!(v.seats[0].as_ref().unwrap().gift_sent_at, Some(0));
+        // A repeat of the same gift is told apart by its sent time.
+        s.send_gift(p(1), icp_table, p(2), beer, Currency::Icp, 5 * SEC).unwrap();
+        let v = s.table_view(icp_table, None, 6 * SEC).unwrap();
+        assert_eq!(v.seats[0].as_ref().unwrap().gift.as_deref(), Some("🍺"));
+        assert_eq!(v.seats[0].as_ref().unwrap().gift_sent_at, Some(5 * SEC));
         // Gifts expire lazily: they simply stop being shown.
-        let v = s.table_view(icp_table, None, GIFT_DURATION_NS + 1).unwrap();
-        assert!(v.seats[0].as_ref().unwrap().gift.is_none());
+        let v = s.table_view(icp_table, None, 5 * SEC + GIFT_DURATION_NS + 1).unwrap();
+        let seat = v.seats[0].as_ref().unwrap();
+        assert!(seat.gift.is_none() && seat.gift_from.is_none() && seat.gift_sent_at.is_none());
     }
 
     #[test]

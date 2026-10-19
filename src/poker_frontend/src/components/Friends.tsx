@@ -5,6 +5,7 @@ import type { Principal } from '@icp-sdk/core/principal';
 import { mergeMessages } from './Chat';
 import { NotesPanel } from './Notes';
 import { BlockedPanel } from './Safety';
+import { Avatar } from '../art/Avatar';
 
 export function Friends() {
   const { backend, profile, run, refreshProfile, go } = useApp();
@@ -52,7 +53,7 @@ export function Friends() {
         {found === null && <p className="muted">No player with that name.</p>}
         {found && (
           <div className="friend-row">
-            <span className="avatar sm">{found.avatar}</span>
+            <Avatar icon={found.avatar} size="sm" />
             <span className="grow">
               {found.username} <span className="lvl">Lv{found.level}</span>
             </span>
@@ -68,7 +69,7 @@ export function Friends() {
           <div className="panel-title">Friend requests</div>
           {requests.map((r) => (
             <div key={r.id.toText()} className="friend-row">
-              <span className="avatar sm">{r.avatar}</span>
+              <Avatar icon={r.avatar} size="sm" />
               <span className="grow">{r.username}</span>
               <button className="btn small" onClick={() => respond(r.id, true)}>
                 Accept
@@ -87,7 +88,7 @@ export function Friends() {
         {friends.map((f) => (
           <div key={f.id.toText()} className="friend-row">
             <span className={`dot ${f.online ? 'on' : ''}`} />
-            <span className="avatar sm">{f.avatar}</span>
+            <Avatar icon={f.avatar} size="sm" />
             <span className="grow">{f.username}</span>
             {f.tables.length > 0 && (
               <button className="btn small" onClick={() => go({ name: 'table', id: f.tables[0] })}>

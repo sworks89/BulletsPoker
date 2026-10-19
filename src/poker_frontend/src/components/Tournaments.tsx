@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useApp, usePoll } from '../context';
 import { unwrap, type TournamentDetail, type TournamentSummary } from '../ic';
 import { amountWithUnit, countdown, isChips } from '../format';
+import { Avatar } from '../art/Avatar';
 
 const STATUS_LABEL: Record<string, string> = {
   Registering: 'Registering',
@@ -222,7 +223,7 @@ function Detail({ d }: { d: TournamentDetail }) {
             <tr key={s.player.toText()} className={s.player.toText() === profile?.id.toText() ? 'me-row' : ''}>
               <td>{s.place[0] ?? (status === 'Registering' ? '' : i + 1)}</td>
               <td>
-                <span className="avatar sm">{s.avatar}</span> {s.username}
+                <Avatar icon={s.avatar} size="sm" /> {s.username}
               </td>
               <td>
                 {s.place[0] !== undefined ? <span className="muted">out</span> : status !== 'Registering' && s.chips.toLocaleString()}
