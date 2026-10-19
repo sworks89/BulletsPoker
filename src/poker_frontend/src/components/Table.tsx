@@ -11,6 +11,7 @@ import { JackpotCelebration } from './Jackpot';
 import { Avatar } from '../art/Avatar';
 import { ItemArt } from '../art/ItemArt';
 import { THROW_FX, useSeatFx } from '../fx/SeatFx';
+import { giftArrivals } from '../fx/gifts';
 import { Burst, Mark } from '../fx/marks';
 
 /** How long a thrown item flies, and how long its mark stays (spec: ~0.7s, ~4s plus the wipe). */
@@ -18,6 +19,18 @@ const THROW_FLIGHT_MS = 700;
 const THROW_MARK_MS = 4700;
 /** Items without art keep the old flight. */
 const LEGACY_FLIGHT_MS = 1100;
+
+/** How long a gift takes to fly to its seat. */
+const GIFT_FLIGHT_MS = 700;
+
+interface GiftFlight {
+  id: number;
+  icon: string;
+  from: { left: string; top: string };
+  to: { left: string; top: string };
+  /** The sender isn't seated here: it drops in from above. */
+  drop: boolean;
+}
 
 /** Most a time bank can hold (matches the backend). */
 const TIME_BANK_MS = 30_000;
@@ -79,6 +92,13 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
   const [busy, setBusy] = useState(false);
   const [flying, setFlying] = useState<Flying[]>([]);
   const { fx, play } = useSeatFx();
+  const [giftFlights, setGiftFlights] = useState<GiftFlight[]>([]);
+  // Seats whose gift is still in the air (badge hidden), just landed (pop), or just expired (fading out).
+  const [giftLanding, setGiftLanding] = useState<Map<number, 'flying' | 'landed'>>(new Map());
+  const [giftFading, setGiftFading] = useState<Map<number, string>>(new Map());
+  const seenGifts = useRef<Map<number, bigint> | null>(null);
+  const lastGiftIcons = useRef<Map<number, string>>(new Map());
+  const giftFlightId = useRef(0);
   const [dismissedHit, setDismissedHit] = useState<string>('');
   const seenThrows = useRef<Set<bigint> | null>(null);
   const settings = profile?.settings;
@@ -162,6 +182,36 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
     // seatPos is a pure function of the view
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, settings?.show_throwables]);
+
+  // Gifts fly in from the sender's seat (or drop in from above) and pop into place.
+  useEffect(() => {
+    if (!view) return;
+    const seats = view.seats.flatMap((s) => (s[0] ? [s[0]] : []));
+    const { next, arrivals } = giftArrivals(seenGifts.current, seats);
+    seenGifts.current = next;
+    const icons = new Map(seats.flatMap((s) => (s.gift[0] ? [[s.seat, s.gift[0]] as const] : [])));
+    const gone = [...lastGiftIcons.current].filter(([seat]) => !icons.has(seat));
+    lastGiftIcons.current = icons;
+    if (!visible) return;
+    for (const [seat, icon] of gone) {
+      setGiftFading((m) => withSeat(m, seat, icon));
+      setTimeout(() => setGiftFading((m) => withSeat(m, seat)), 500);
+    }
+    for (const a of arrivals) {
+      const to = giftSpot(view, a.seat);
+      const from = a.fromSeat !== null ? giftSpot(view, a.fromSeat) : { left: to.left, top: `calc(${to.top} - 90px)` };
+      const flight = { id: ++giftFlightId.current, icon: a.icon, from, to, drop: a.fromSeat === null };
+      setGiftFlights((f) => [...f, flight]);
+      setGiftLanding((m) => withSeat(m, a.seat, 'flying'));
+      setTimeout(() => {
+        setGiftFlights((f) => f.filter((x) => x.id !== flight.id));
+        setGiftLanding((m) => withSeat(m, a.seat, 'landed'));
+      }, GIFT_FLIGHT_MS);
+      setTimeout(() => setGiftLanding((m) => withSeat(m, a.seat)), GIFT_FLIGHT_MS + 900);
+    }
+    // giftSpot is a pure function of the view
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, visible]);
 
   if (!view) return visible ? <div className="splash">Loading table…</div> : null;
 
@@ -407,7 +457,18 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
                   title={note ? note.text || 'Has a note' : undefined}
                   overlay={fx.get(i)?.overlay}
                 >
-                  {s.gift[0] && <span className="gift">{s.gift[0]}</span>}
+                  {s.gift[0] ? (
+                    <span className={`gift ${giftLanding.get(i) ?? ''}`}>
+                      <ItemArt icon={s.gift[0]} className="idle" />
+                      {giftLanding.get(i) === 'landed' && <Burst kind="sparkle" />}
+                    </span>
+                  ) : (
+                    giftFading.has(i) && (
+                      <span className="gift fading">
+                        <ItemArt icon={giftFading.get(i)!} />
+                      </span>
+                    )
+                  )}
                   {note && <span className="note-mark">📝</span>}
                   {fx.get(i)?.around}
                 </Avatar>
@@ -436,6 +497,15 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
             );
           })}
 
+          {giftFlights.map((g) => (
+            <div
+              key={`gift-${g.id}`}
+              className={`gift-flight ${g.drop ? 'drop' : ''}`}
+              style={{ '--x0': g.from.left, '--y0': g.from.top, '--x1': g.to.left, '--y1': g.to.top } as CSSProperties}
+            >
+              <ItemArt icon={g.icon} />
+            </div>
+          ))}
           {flying.map((f) => (
             <div
               key={String(f.id)}
@@ -532,6 +602,20 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
       {selected && <PlayerCard seat={selected} view={view} canThrow={mySeat !== undefined} onClose={() => setSelected(null)} />}
     </div>
   );
+}
+
+/** A copy of `m` with `seat` set to `value`, or removed when there is no value. */
+function withSeat<T>(m: Map<number, T>, seat: number, value?: T): Map<number, T> {
+  const n = new Map(m);
+  if (value === undefined) n.delete(seat);
+  else n.set(seat, value);
+  return n;
+}
+
+/** Where a seat's gift badge sits: just below and right of the seat centre. */
+function giftSpot(view: TableView, i: number) {
+  const p = seatPos(view, i);
+  return { left: `calc(${p.left} + 24px)`, top: `calc(${p.top} + 10px)` };
 }
 
 /** Seat position around the oval, rotated so the viewer sits at the bottom. */

@@ -6,5 +6,9 @@ import './items';
 export function ItemArt({ icon, className = '' }: { icon: string; className?: string }) {
   const uid = useSvgUid();
   const entry = artFor(icon);
-  return <span className={`item-art ${entry ? 'has-art' : ''} ${className}`}>{entry ? <entry.Svg uid={uid} /> : icon}</span>;
+  return (
+    <span className={`item-art ${entry ? 'has-art' : ''} ${className}`} data-item={entry?.name}>
+      {entry ? <entry.Svg uid={uid} /> : icon}
+    </span>
+  );
 }

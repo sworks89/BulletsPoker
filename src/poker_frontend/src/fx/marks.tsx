@@ -132,7 +132,7 @@ export function Mark({ kind }: { kind: MarkKind }) {
 }
 
 /** Bits that fly out on impact, around (not clipped to) the avatar. */
-export function Burst({ kind }: { kind: MarkKind | 'plain' }) {
+export function Burst({ kind }: { kind: MarkKind | 'plain' | 'sparkle' }) {
   const colors: Record<string, string[]> = {
     tomato: ['#dc2626', '#dc2626', '#fde68a'],
     pie: ['#fff', '#fff', '#d97706'],
@@ -142,6 +142,7 @@ export function Burst({ kind }: { kind: MarkKind | 'plain' }) {
     money: ['#4ade80', '#facc15', '#4ade80'],
     bomb: ['#fb923c', '#fde047', '#1f2937'],
     plain: ['#e6ebf3', '#e6ebf3', '#e6ebf3'],
+    sparkle: ['#fde047', '#fff', '#facc15'],
   };
   const dirs = [
     [-34, -26],

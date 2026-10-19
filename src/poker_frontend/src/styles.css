@@ -96,7 +96,41 @@ main { padding: 18px 0; }
 .avatar.sm { width: 28px; height: 28px; font-size: 16px; border-width: 1px; }
 .avatar.lg { width: 72px; height: 72px; font-size: 42px; }
 .avatar.pick.active { border-color: var(--accent); box-shadow: 0 0 10px var(--accent); }
-.avatar .gift { position: absolute; right: -8px; bottom: -6px; font-size: 22px; animation: pop 0.4s ease; }
+.avatar .gift { position: absolute; right: -12px; bottom: -8px; width: 30px; height: 30px; font-size: 22px; z-index: 2; animation: pop 0.4s ease; }
+.avatar .gift .item-art { width: 100%; height: 100%; filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.5)); }
+.avatar.sm .gift { display: none; }
+.avatar .gift.flying { visibility: hidden; }
+.avatar .gift.landed { animation: giftPop 0.5s cubic-bezier(.2,1.6,.4,1); }
+.avatar .gift.fading { animation: fadeOut 0.5s forwards; }
+@keyframes giftPop { 0% { transform: scale(0.3); } 60% { transform: scale(1.35); } 100% { transform: scale(1); } }
+.avatar .gift .burst { top: 50%; }
+
+/* the gift flying to its seat */
+.gift-flight { position: absolute; z-index: 20; width: 34px; height: 34px; pointer-events: none; transform: translate(-50%, -50%); animation: giftFly 0.7s cubic-bezier(.35,.05,.6,1) forwards; }
+.gift-flight .item-art { width: 100%; height: 100%; }
+@keyframes giftFly {
+  from { left: var(--x0); top: var(--y0); transform: translate(-50%, -50%) scale(0.7); }
+  50% { transform: translate(-50%, -130%) scale(1.3); }
+  to { left: var(--x1); top: var(--y1); transform: translate(-50%, -50%) scale(1); }
+}
+.gift-flight.drop { animation-timing-function: cubic-bezier(.5,0,.8,.6); }
+
+/* gifts idling at the seat: each item's .idle group */
+.gift .item-svg .idle { transform-box: fill-box; transform-origin: 50% 100%; }
+.gift [data-item='Beer'] .idle { animation: foam 2.4s ease-in-out infinite; }
+@keyframes foam { 50% { transform: scale(1.06, 1.12); } }
+.gift [data-item='Coffee'] .idle, .gift [data-item='Pizza'] .idle, .gift [data-item='Cigar'] .idle { animation: steam 2.2s ease-in-out infinite; }
+@keyframes steam { 0% { transform: translateY(4px); opacity: 0; } 40% { opacity: 0.9; } 100% { transform: translateY(-8px); opacity: 0; } }
+.gift [data-item='Rose'] .idle { animation: sway 3s ease-in-out infinite; }
+@keyframes sway { 25% { transform: rotate(-6deg); } 75% { transform: rotate(6deg); } }
+.gift [data-item='Cocktail'] .idle, .gift [data-item='Trophy'] .idle { animation: gleam 2.6s ease-in-out infinite; }
+@keyframes gleam { 0%, 60%, 100% { opacity: 0; } 75% { opacity: 1; } }
+.gift [data-item='Champagne'] .idle { animation: bubbles 1.6s linear infinite; }
+@keyframes bubbles { 0% { transform: translateY(10px); opacity: 0; } 30% { opacity: 1; } 100% { transform: translateY(-10px); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .gift .item-svg .idle, .avatar .gift.landed { animation: none; }
+  .gift-flight { animation: none; left: var(--x1); top: var(--y1); opacity: 0; }
+}
 .avatar-pick { background: none; border: 0; padding: 0; cursor: pointer; border-radius: 50%; }
 
 /* illustrated avatars (src/art) */
