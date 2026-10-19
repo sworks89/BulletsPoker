@@ -593,3 +593,9 @@ input.narrow { width: 80px; flex: none; }
 
 .status-banner.unlock { justify-content: flex-start; flex-wrap: wrap; }
 .status-banner.unlock input { max-width: 180px; }
+
+/* lobby: games with several tables (table copies) */
+.tag.copies { background: #3b2a06; color: var(--accent); }
+.grid .caret { color: var(--muted); margin-right: 4px; display: inline-block; width: 10px; }
+.grid tr.copy-row td { background: rgba(0, 0, 0, 0.18); font-size: 13px; }
+.grid tr.copy-row .copy-name { padding-left: 28px; color: var(--muted); }
