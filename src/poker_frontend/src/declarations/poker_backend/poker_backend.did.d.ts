@@ -541,6 +541,10 @@ export interface SeatView {
   'time_bank_secs' : number,
   'username' : string,
   'player' : Principal,
+  /**
+   * Who sent the current gift (their username).
+   */
+  'gift_from' : [] | [string],
   'all_in' : boolean,
   'cards' : Uint8Array | number[],
   'gift' : [] | [string],
@@ -551,6 +555,10 @@ export interface SeatView {
   'has_cards' : boolean,
   'seat' : number,
   'last_action' : [] | [string],
+  /**
+   * When the current gift was sent; a repeat of the same gift gets a new time.
+   */
+  'gift_sent_at' : [] | [bigint],
   'level' : number,
   'stack' : bigint,
   'card_back' : string,
