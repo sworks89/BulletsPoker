@@ -236,13 +236,69 @@ main { padding: 18px 0; }
 .daily.ready { color: #1a1200; background: linear-gradient(180deg, var(--accent-2), var(--accent)); border-color: transparent; animation: glow 1.6s ease-in-out infinite; }
 @keyframes glow { 50% { box-shadow: 0 0 14px var(--accent); } }
 
-.flying { position: absolute; z-index: 20; font-size: 36px; pointer-events: none; transform: translate(-50%, -50%); animation: fly 1.1s cubic-bezier(.3,.1,.3,1) forwards, splat 0.9s 1.1s ease-out forwards; }
+.flying { position: absolute; z-index: 20; width: 40px; height: 40px; pointer-events: none; transform: translate(-50%, -50%); animation: fly 0.7s cubic-bezier(.35,.05,.6,1) forwards; }
+.flying .item-art { width: 100%; height: 100%; font-size: 34px; }
 @keyframes fly {
   from { left: var(--x0); top: var(--y0); transform: translate(-50%, -50%) rotate(0deg) scale(0.8); }
-  50% { transform: translate(-50%, -120%) rotate(360deg) scale(1.3); }
-  to { left: var(--x1); top: var(--y1); transform: translate(-50%, -50%) rotate(720deg) scale(1); }
+  50% { transform: translate(-50%, -150%) rotate(300deg) scale(1.25); }
+  to { left: var(--x1); top: var(--y1); transform: translate(-50%, -50%) rotate(600deg) scale(1); }
 }
+/* items without art keep the old spin and fade */
+.flying.legacy { animation: fly 1.1s cubic-bezier(.3,.1,.3,1) forwards, splat 0.9s 1.1s ease-out forwards; }
 @keyframes splat { to { left: var(--x1); top: var(--y1); transform: translate(-50%, -50%) scale(2.2); opacity: 0; } }
+
+/* throw marks (src/fx/marks.tsx), inside the clipped avatar circle */
+.mark { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; transform-origin: 55% 45%; animation: markIn 0.22s cubic-bezier(.2,1.6,.4,1) both; }
+@keyframes markIn { from { opacity: 0; transform: scale(0.3); } }
+.cleaning .mark { animation: wipe 0.7s ease-in forwards; }
+@keyframes wipe { from { opacity: 1; } to { opacity: 0; transform: translateY(18%); } }
+.mark .drip { transform-box: fill-box; transform-origin: top; transform: scaleY(0); animation: drip 2.6s 0.2s ease-in forwards; }
+.mark .drip.d2 { animation-delay: 0.5s; animation-duration: 3s; }
+.mark .drip.d3 { animation-delay: 0.9s; }
+@keyframes drip { to { transform: scaleY(1); } }
+.mark-pie .slide { animation: slide 4s ease-in forwards; }
+@keyframes slide { to { transform: translateY(10px); } }
+.mark-fish .stars { transform-box: fill-box; transform-origin: center; animation: spinStars 1.2s linear infinite; }
+@keyframes spinStars { to { transform: rotate(360deg); } }
+.mark-money .bill { animation: flutter 1.8s ease-in forwards; opacity: 0; }
+.mark-money .b1 { animation-delay: 0s; } .mark-money .b2 { animation-delay: .15s; } .mark-money .b3 { animation-delay: .3s; } .mark-money .b4 { animation-delay: .5s; } .mark-money .b5 { animation-delay: .7s; }
+@keyframes flutter { 0% { opacity: 1; translate: 0 -20px; } 50% { translate: 6px 50px; } 100% { opacity: 1; translate: -4px 104px; } }
+.mark-bomb .blast { transform-box: fill-box; transform-origin: center; animation: blast 0.5s ease-out forwards; }
+@keyframes blast { 0% { transform: scale(0.2); opacity: 1; } 70% { transform: scale(1.3); opacity: 1; } 100% { transform: scale(1.5); opacity: 0; } }
+.mark-bomb .soot { opacity: 0; animation: fadeIn 0.2s 0.35s forwards; }
+@keyframes fadeIn { to { opacity: 1; } }
+
+/* impact bits around the avatar */
+.burst { position: absolute; left: 50%; top: 45%; width: 0; height: 0; pointer-events: none; z-index: 3; }
+.burst i { position: absolute; width: 8px; height: 8px; margin: -4px; border-radius: 50%; opacity: 0; font-style: normal; font-size: 12px; line-height: 8px; color: #e11d48; animation: burst 0.6s ease-out forwards; }
+.burst-kiss i:nth-child(odd) { background: none !important; }
+@keyframes burst { 0% { opacity: 1; transform: translate(0, 0) scale(1); } 100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(0.5); } }
+
+/* whole-avatar reactions to a hit */
+.avatar.fx-shake { animation: fxShake 0.45s ease-out; }
+@keyframes fxShake { 15% { transform: translateX(-7px) rotate(-4deg); } 35% { transform: translateX(6px) rotate(3deg); } 55% { transform: translateX(-3px); } 75% { transform: translateX(2px); } }
+.avatar.fx-shiver { animation: fxShiver 0.12s linear 12; }
+@keyframes fxShiver { 50% { transform: translateX(2px); } }
+.avatar.fx-knock { animation: fxKnock 0.6s cubic-bezier(.2,1.4,.4,1); }
+@keyframes fxKnock { 20% { transform: translateX(14px) rotate(16deg); } }
+.avatar.fx-wobble { animation: fxWobble 0.6s ease-in-out; }
+@keyframes fxWobble { 30% { transform: scale(1.12) rotate(-5deg); } 60% { transform: scale(0.96) rotate(3deg); } }
+.avatar.fx-bounce { animation: fxBounce 0.5s ease-out 2; }
+@keyframes fxBounce { 40% { transform: translateY(-10px) scale(1.05); } }
+.avatar.fx-stun { animation: fxShake 0.5s ease-out; }
+.avatar.fx-stun .avatar-svg .eyes { animation: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .flying, .flying.legacy { animation: none; left: var(--x1); top: var(--y1); opacity: 0; }
+  .mark, .mark .drip, .mark-pie .slide, .mark-fish .stars, .mark-bomb .blast, .burst i { animation: none; }
+  .mark .drip { transform: none; }
+  .mark-money .bill { animation: none; opacity: 1; translate: 0 40px; }
+  .mark-bomb .blast { opacity: 0; }
+  .mark-bomb .soot { animation: none; opacity: 1; }
+  .cleaning .mark { animation: fadeOut 0.2s forwards; }
+  .avatar.fx-shake, .avatar.fx-shiver, .avatar.fx-knock, .avatar.fx-wobble, .avatar.fx-bounce, .avatar.fx-stun { animation: none; }
+}
+@keyframes fadeOut { to { opacity: 0; } }
 
 .setting { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; cursor: pointer; }
 .setting input { width: auto; margin-top: 3px; accent-color: var(--accent); }

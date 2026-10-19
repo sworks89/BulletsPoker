@@ -10,6 +10,14 @@ import { SafetyActions } from './Safety';
 import { JackpotCelebration } from './Jackpot';
 import { Avatar } from '../art/Avatar';
 import { ItemArt } from '../art/ItemArt';
+import { THROW_FX, useSeatFx } from '../fx/SeatFx';
+import { Burst, Mark } from '../fx/marks';
+
+/** How long a thrown item flies, and how long its mark stays (spec: ~0.7s, ~4s plus the wipe). */
+const THROW_FLIGHT_MS = 700;
+const THROW_MARK_MS = 4700;
+/** Items without art keep the old flight. */
+const LEGACY_FLIGHT_MS = 1100;
 
 /** Most a time bank can hold (matches the backend). */
 const TIME_BANK_MS = 30_000;
@@ -50,6 +58,8 @@ export function priceLabel(item: StoreItem, currency: CurrencyV): string {
 interface Flying {
   id: bigint;
   icon: string;
+  /** No art or mark for this item: the old spin-and-fade. */
+  legacy: boolean;
   from: { left: string; top: string };
   to: { left: string; top: string };
 }
@@ -68,6 +78,7 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
   const [raiseTo, setRaiseTo] = useState<bigint>(0n);
   const [busy, setBusy] = useState(false);
   const [flying, setFlying] = useState<Flying[]>([]);
+  const { fx, play } = useSeatFx();
   const [dismissedHit, setDismissedHit] = useState<string>('');
   const seenThrows = useRef<Set<bigint> | null>(null);
   const settings = profile?.settings;
@@ -126,9 +137,28 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
     fresh.forEach((t) => seenThrows.current!.add(t.id));
     if ((settings && !settings.show_throwables) || !visible) return;
     if (settings?.sound) sounds.splat();
-    const add = fresh.map((t: ThrowEvent) => ({ id: t.id, icon: t.icon, from: seatPos(view, t.from_seat), to: seatPos(view, t.to_seat) }));
+    const add = fresh.map((t: ThrowEvent) => ({
+      id: t.id,
+      icon: t.icon,
+      legacy: !THROW_FX[t.icon],
+      from: seatPos(view, t.from_seat),
+      to: seatPos(view, t.to_seat),
+    }));
     setFlying((f) => [...f, ...add]);
-    setTimeout(() => setFlying((f) => f.filter((x) => !add.some((a) => a.id === x.id))), 2200);
+    for (const [k, t] of fresh.entries()) {
+      const hit = THROW_FX[t.icon];
+      // The item lands, then its mark sits on the face until it wipes off.
+      setTimeout(() => {
+        setFlying((f) => f.filter((x) => x.id !== add[k].id));
+        play(
+          t.to_seat,
+          hit
+            ? { expression: hit.expression, motion: hit.motion, overlay: <Mark kind={hit.mark} />, around: <Burst kind={hit.mark} /> }
+            : { expression: 'hit', motion: 'fx-shake', around: <Burst kind="plain" /> },
+          hit ? THROW_MARK_MS : 1500,
+        );
+      }, hit ? THROW_FLIGHT_MS : LEGACY_FLIGHT_MS);
+    }
     // seatPos is a pure function of the view
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, settings?.show_throwables]);
@@ -369,9 +399,17 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
                       ? [0, 1].map((k) => <Card key={k} back={s.card_back} small />)
                       : null}
                 </div>
-                <Avatar icon={s.avatar} className={noteColor ? `note-${noteColor}` : ''} title={note ? note.text || 'Has a note' : undefined}>
+                <Avatar
+                  key={fx.get(i)?.key ?? 0}
+                  icon={s.avatar}
+                  expression={fx.get(i)?.expression}
+                  className={`${noteColor ? `note-${noteColor}` : ''} ${fx.get(i)?.motion ?? ''} ${fx.get(i)?.cleaning ? 'cleaning' : ''}`}
+                  title={note ? note.text || 'Has a note' : undefined}
+                  overlay={fx.get(i)?.overlay}
+                >
                   {s.gift[0] && <span className="gift">{s.gift[0]}</span>}
                   {note && <span className="note-mark">📝</span>}
+                  {fx.get(i)?.around}
                 </Avatar>
                 <div className="nameplate">
                   <div className="name">
@@ -401,10 +439,10 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
           {flying.map((f) => (
             <div
               key={String(f.id)}
-              className="flying"
+              className={`flying ${f.legacy ? 'legacy' : ''}`}
               style={{ '--x0': f.from.left, '--y0': f.from.top, '--x1': f.to.left, '--y1': f.to.top } as CSSProperties}
             >
-              {f.icon}
+              <ItemArt icon={f.icon} />
             </div>
           ))}
         </div>
