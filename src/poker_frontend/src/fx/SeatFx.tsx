@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { Expression } from '../art/registry';
 import type { MarkKind } from './marks';
 
@@ -62,4 +62,53 @@ export function useSeatFx(): { fx: Map<number, SeatEffect>; play(seat: number, e
   }, []);
 
   return { fx, play };
+}
+
+/** A little rain cloud over a player who just took a bad beat. */
+export function RainCloud() {
+  return (
+    <span className="rain-cloud" aria-hidden="true">
+      <svg viewBox="0 0 60 40">
+        <path d="M14 26 q-10 0 -10 -8 q0 -9 10 -8 q2 -9 12 -8 q6 -8 16 -2 q12 -2 12 9 q8 1 6 9 q-1 8 -10 8z" fill="#94a3b8" stroke="#1b1b1b" strokeWidth="2.5" strokeLinejoin="round" />
+      </svg>
+      {[0, 1, 2, 3].map((k) => (
+        <i key={k} style={{ left: `${30 + k * 14}%`, animationDelay: `${k * 0.18}s` }} />
+      ))}
+    </span>
+  );
+}
+
+export function BadBeatTag() {
+  return <span className="bad-beat-tag">Bad beat</span>;
+}
+
+/** Chips (and confetti, for a big win) bursting out of a winner. */
+export function ChipBurst({ big }: { big: boolean }) {
+  const n = big ? 18 : 8;
+  const colors = ['#facc15', '#ef4444', '#22c55e', '#3b82f6', '#a855f7', '#f97316'];
+  return (
+    <span className={`chip-burst ${big ? 'big' : ''}`} aria-hidden="true">
+      {Array.from({ length: n }, (_, k) => {
+        // Out to the sides, never up over the hole cards.
+        const side = k % 2 === 0 ? 0 : Math.PI;
+        const angle = side + (((k >> 1) / (n / 2)) * 2 - 1) * 0.6 * (side ? -1 : 1);
+        const dist = (big ? 60 : 40) + (k % 3) * 8;
+        const confetti = big && k % 2 === 1;
+        return (
+          <i
+            key={k}
+            className={confetti ? 'confetti' : 'chip'}
+            style={
+              {
+                '--dx': `${Math.round(Math.cos(angle) * dist)}px`,
+                '--dy': `${Math.round(Math.sin(angle) * dist)}px`,
+                '--c': colors[k % colors.length],
+                animationDelay: `${(k % 4) * 0.05}s`,
+              } as CSSProperties
+            }
+          />
+        );
+      })}
+    </span>
+  );
 }

@@ -10,7 +10,8 @@ import { SafetyActions } from './Safety';
 import { JackpotCelebration } from './Jackpot';
 import { Avatar } from '../art/Avatar';
 import { ItemArt } from '../art/ItemArt';
-import { THROW_FX, useSeatFx } from '../fx/SeatFx';
+import { BadBeatTag, ChipBurst, RainCloud, THROW_FX, useSeatFx } from '../fx/SeatFx';
+import { handReactions } from '../fx/poker';
 import { giftArrivals } from '../fx/gifts';
 import { Burst, Mark } from '../fx/marks';
 
@@ -19,6 +20,9 @@ const THROW_FLIGHT_MS = 700;
 const THROW_MARK_MS = 4700;
 /** Items without art keep the old flight. */
 const LEGACY_FLIGHT_MS = 1100;
+
+/** How long winner and bad-beat reactions last (the HandOver pause is about 5s). */
+const REACTION_MS = 4500;
 
 /** How long a gift takes to fly to its seat. */
 const GIFT_FLIGHT_MS = 700;
@@ -212,6 +216,40 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
     // giftSpot is a pure function of the view
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, visible]);
+
+  // When a hand ends, winners cheer and a player who lost after being ahead on the turn gets a rain cloud.
+  const reactedHand = useRef<bigint | undefined>(undefined);
+  useEffect(() => {
+    if (!view) return;
+    const r = 'HandOver' in view.phase ? view.last_result[0] : undefined;
+    if (reactedHand.current === undefined) {
+      // First load: don't replay a hand that ended before we arrived.
+      reactedHand.current = r?.hand_no ?? -1n;
+      return;
+    }
+    if (!r || r.hand_no === reactedHand.current) return;
+    reactedHand.current = r.hand_no;
+    if (!visible) return;
+    const reactions = handReactions({
+      result: {
+        board: Array.from(r.board),
+        shown: r.shown.map((x) => ({ seat: x.seat, cards: Array.from(x.cards) })),
+        winners: r.winners,
+      },
+      bigBlind: view.config.big_blind,
+      allInSeats: new Set(view.seats.flatMap((s) => (s[0]?.all_in ? [s[0].seat] : []))),
+    });
+    // The jackpot celebration already announces a bad beat.
+    const jackpot = view.jackpot_hit[0]?.hand_no === r.hand_no;
+    for (const [seat, reaction] of reactions) {
+      if (reaction === 'badBeat') {
+        play(seat, { expression: 'sad', motion: 'fx-droop', overlay: <RainCloud />, around: !jackpot && <BadBeatTag /> }, REACTION_MS);
+      } else {
+        const big = reaction === 'bigWin';
+        play(seat, { expression: 'happy', motion: big ? 'fx-bigwin' : 'fx-cheer', around: <ChipBurst big={big} /> }, REACTION_MS);
+      }
+    }
+  }, [view, visible, play]);
 
   if (!view) return visible ? <div className="splash">Loading table…</div> : null;
 

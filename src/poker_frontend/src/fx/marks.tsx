@@ -144,15 +144,16 @@ export function Burst({ kind }: { kind: MarkKind | 'plain' | 'sparkle' }) {
     plain: ['#e6ebf3', '#e6ebf3', '#e6ebf3'],
     sparkle: ['#fde047', '#fff', '#facc15'],
   };
+  // Out to the sides and down, never up over the hole cards.
   const dirs = [
-    [-34, -26],
-    [32, -30],
-    [-40, 8],
-    [40, 6],
-    [-16, -40],
-    [18, -42],
-    [0, -44],
-    [-30, 26],
+    [-38, -8],
+    [38, -6],
+    [-44, 10],
+    [44, 12],
+    [-30, 24],
+    [30, 26],
+    [-48, 0],
+    [48, 2],
   ];
   return (
     <span className={`burst burst-${kind}`} aria-hidden="true">
