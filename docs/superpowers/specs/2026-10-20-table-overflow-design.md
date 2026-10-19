@@ -66,10 +66,14 @@ automatically, while still letting people watch and take a seat when one opens.
   `Lobby.tsx`, `Table.tsx`). Candid changes must be additive.
 - **Upgrades:** stable-memory upgrades must stay compatible. New persisted
   fields are optional or defaulted.
-- **Caps (my call):** at most **50 copies per game** and **300 copies in
-  total**, so the once-a-second `tick` over all tables stays cheap. When a game
-  is at its cap and full, Join fails with a clear message suggesting watching
-  with auto-sit.
+- **Caps (my call):**
+  - At most **50 copies per game**.
+  - At most **200 copies of play-chip games** and **100 copies of ICP games** in
+    total. The budgets are separate so a bot wave on free tables can't stop
+    real-money games from opening copies, and the once-a-second `tick` over all
+    tables stays cheap.
+  - When a game is at a cap and full, Join fails with a clear message
+    suggesting watching with auto-sit.
 - **Rate limits:** existing limits and `inspect_message` rules apply to the new
   endpoints too. The new updates count against the per-player budget.
 - **Seats per player:** `MAX_CASH_SEATS` (4) still caps how many cash tables a
@@ -108,14 +112,17 @@ id where the player was seated.
    buy-in limits and the buy-back minimum.
    - The buy-back minimum now looks at cashouts from **any table in the game**
      within the last 30 minutes.
-   - A player already seated at any table of this game gets "You're already
-     playing this game".
+   - **Several tables of one game are allowed (owner's decision):** a player
+     may sit at more than one table of the same game, up to `MAX_CASH_SEATS`.
+     `join_game` only considers tables where the caller isn't already seated.
 2. Pick a table:
    - **Preference:** the table in the game with the most players that still has
-     a free seat.
+     a free seat, among tables where the caller isn't seated.
    - **Tie-break:** the lowest table number.
-   - **Queue rule:** a table whose auto-sit queue isn't empty counts as having
-     no free seat. Its seats belong to the queue.
+   - **Queue rule (my call):** a table whose auto-sit queue isn't empty counts
+     as having no free seat for `join_game`. That joiner gets another table or a
+     new copy instead, so queues don't starve on a busy game. Manual seat clicks
+     are different; see "First click wins" below.
 3. If none qualifies and the game is under both caps, create a copy and use it.
 4. Seat the player in the first free seat (lowest index), debit as
    `join_table` does, and post "X sat down".
@@ -139,8 +146,17 @@ in-table seat click. It also applies the game-wide buy-back minimum.
   - Each queue holds at most 100 players.
 - **Staying in line.** While the table is open, the frontend calls
   `auto_sit_ping(table)` every **20 s**. It updates `last_seen` and returns the
-  current place. An entry not seen for **60 s** is dropped. Closing the tab,
-  leaving the table view, or the copy closing therefore drops the player.
+  current place.
+  - An entry not seen for **60 s** is dropped. Closing the tab, leaving the
+    table view, or the copy closing therefore drops the player.
+  - **Live check (my call):** a player is only seated if their `last_seen` is
+    within the last **25 s**. Older entries are skipped but stay in line until
+    they expire, so a player who has closed the tab can't be seated more than
+    about 25 s after closing it.
+- **First click wins (owner's decision):** the queue is best effort. A watcher
+  who clicks a free seat (`join_table`) gets it even when the table has a
+  queue. The queue fills seats still free at the next `tick`, which runs about
+  once a second.
 - **Seating.** In `tick`, while a table has a free seat and a non-empty queue,
   take the first live entry and try to seat them as `join_table` would.
   - **Success:** remove the entry, post "X sat down (auto-sit)", and add a
@@ -188,8 +204,9 @@ When the viewer isn't seated:
 - **The toggle.** Turning it on asks for the buy-in in the existing buy-in
   dialog. The default is the last-used buy-in.
 - **While queued,** the bar shows "You're Nth in line" and the queue length.
-- **Clicking an empty seat** still works. If the player is queued here, sitting
-  manually removes them from the queue.
+- **Clicking an empty seat** still works and takes the seat even when there's a
+  queue (first click wins). If the player is queued here, sitting manually
+  removes them from the queue.
 - **When auto-sit seats the player,** a toast says "You're in! Seated at Table
   n", and the view switches to seated.
 - **When auto-sit fails,** a toast gives the reason and the toggle turns off.
@@ -207,7 +224,10 @@ When the viewer isn't seated:
   - Backend unit tests cover:
     - the join choice (fullest with space, then a new copy, caps),
     - the game-wide buy-back,
-    - queue order, expiry, failure reasons and moving between queues,
+    - queue order, expiry, the 25 s live check, failure reasons and moving
+      between queues,
+    - `join_game` skipping tables where the caller already sits,
+    - the per-currency copy caps,
     - copy closing after 60 s and never with players seated,
     - originals never closing,
     - queued tables not being taken by `join_game`.
