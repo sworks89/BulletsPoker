@@ -9,6 +9,7 @@ import { NoteEditor } from './Notes';
 import { SafetyActions } from './Safety';
 import { JackpotCelebration } from './Jackpot';
 import { Avatar } from '../art/Avatar';
+import { ItemArt } from '../art/ItemArt';
 
 /** Most a time bank can hold (matches the backend). */
 const TIME_BANK_MS = 30_000;
@@ -613,7 +614,7 @@ function PlayerCard({ seat, view, canThrow, onClose }: { seat: SeatView; view: T
     <div className="gift-grid">
       {list.map((g) => (
         <button key={g.id} className="gift-btn" title={g.description} onClick={() => use(g, kind)}>
-          <span className="icon">{g.icon}</span>
+          <ItemArt icon={g.icon} className="icon" />
           <span>{g.name}</span>
           <span className="price">{priceLabel(g, payCurrency(g, tableCurrency))}</span>
         </button>

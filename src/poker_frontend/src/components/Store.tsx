@@ -1,6 +1,8 @@
 import { useApp } from '../context';
 import { unwrap, type StoreItem } from '../ic';
 import { CHIPS, ICP, icp, type CurrencyV } from '../format';
+import { Avatar } from '../art/Avatar';
+import { ItemArt } from '../art/ItemArt';
 
 type Kind = 'Avatar' | 'CardBack' | 'Gift' | 'Throwable';
 const SECTIONS: { kind: Kind; title: string; note: string }[] = [
@@ -59,7 +61,13 @@ export function Store() {
                 const usable = sec.kind === 'Gift' || sec.kind === 'Throwable';
                 return (
                   <div key={i.id} className={`item ${equipped(i) ? 'equipped' : ''}`}>
-                    {sec.kind === 'CardBack' ? <div className="card back" style={{ background: i.icon }} /> : <div className="item-icon">{i.icon}</div>}
+                    {sec.kind === 'CardBack' ? (
+                      <div className="card back" style={{ background: i.icon }} />
+                    ) : sec.kind === 'Avatar' ? (
+                      <Avatar icon={i.icon} size="lg" />
+                    ) : (
+                      <ItemArt icon={i.icon} className="item-icon" />
+                    )}
                     <div className="item-name">{i.name}</div>
                     <div className="muted small">{i.description}</div>
                     <Prices item={i} />
