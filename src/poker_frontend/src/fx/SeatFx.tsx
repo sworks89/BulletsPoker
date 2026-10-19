@@ -82,33 +82,37 @@ export function BadBeatTag() {
   return <span className="bad-beat-tag">Bad beat</span>;
 }
 
+/** Where each chip of a burst flies: out to both sides and slightly down, never up over the hole cards. */
+export function chipBurstVectors(big: boolean): { dx: number; dy: number }[] {
+  const n = big ? 18 : 8;
+  return Array.from({ length: n }, (_, k) => {
+    const dir = k % 2 === 0 ? 1 : -1;
+    const spread = (k >> 1) / (n / 2); // 0 .. <1
+    const dist = (big ? 60 : 40) + (k % 3) * 8;
+    const angle = spread * 0.5; // 0 (level) .. ~0.5 rad below level
+    return { dx: Math.round(dir * Math.cos(angle) * dist), dy: Math.round(Math.sin(angle) * dist) };
+  });
+}
+
 /** Chips (and confetti, for a big win) bursting out of a winner. */
 export function ChipBurst({ big }: { big: boolean }) {
-  const n = big ? 18 : 8;
   const colors = ['#facc15', '#ef4444', '#22c55e', '#3b82f6', '#a855f7', '#f97316'];
   return (
     <span className={`chip-burst ${big ? 'big' : ''}`} aria-hidden="true">
-      {Array.from({ length: n }, (_, k) => {
-        // Out to the sides, never up over the hole cards.
-        const side = k % 2 === 0 ? 0 : Math.PI;
-        const angle = side + (((k >> 1) / (n / 2)) * 2 - 1) * 0.6 * (side ? -1 : 1);
-        const dist = (big ? 60 : 40) + (k % 3) * 8;
-        const confetti = big && k % 2 === 1;
-        return (
-          <i
-            key={k}
-            className={confetti ? 'confetti' : 'chip'}
-            style={
-              {
-                '--dx': `${Math.round(Math.cos(angle) * dist)}px`,
-                '--dy': `${Math.round(Math.sin(angle) * dist)}px`,
-                '--c': colors[k % colors.length],
-                animationDelay: `${(k % 4) * 0.05}s`,
-              } as CSSProperties
-            }
-          />
-        );
-      })}
+      {chipBurstVectors(big).map(({ dx, dy }, k) => (
+        <i
+          key={k}
+          className={big && k % 4 >= 2 ? 'confetti' : 'chip'}
+          style={
+            {
+              '--dx': `${dx}px`,
+              '--dy': `${dy}px`,
+              '--c': colors[k % colors.length],
+              animationDelay: `${(k % 4) * 0.05}s`,
+            } as CSSProperties
+          }
+        />
+      ))}
     </span>
   );
 }

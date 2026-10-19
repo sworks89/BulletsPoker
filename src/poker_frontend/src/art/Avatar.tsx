@@ -16,6 +16,8 @@ function hash(s: string): number {
 /**
  * A player's avatar: the item's illustration, or its emoji when there is no art.
  * `overlay` is drawn inside the clipped circle (marks); `children` outside it (gift, note mark).
+ * A new `fxKey` remounts only the art (restarting its animations), never the children;
+ * `motion` is a class on the art for whole-avatar effects (shake, bounce…).
  */
 export function Avatar({
   icon,
@@ -24,6 +26,8 @@ export function Avatar({
   className = '',
   title,
   overlay,
+  fxKey,
+  motion = '',
   children,
 }: {
   icon: string;
@@ -32,6 +36,8 @@ export function Avatar({
   className?: string;
   title?: string;
   overlay?: ReactNode;
+  fxKey?: number;
+  motion?: string;
   children?: ReactNode;
 }) {
   const uid = useSvgUid();
@@ -40,17 +46,10 @@ export function Avatar({
   const style = { '--blink-delay': `${(hash(uid) % 4000) / 1000}s` } as CSSProperties;
   return (
     <span className={`avatar ${size === 'md' ? '' : size} ${entry ? 'has-art' : ''} ${className}`} data-expr={expression} title={title}>
-      {entry ? (
-        <span className="avatar-art" style={style}>
-          <entry.Svg uid={uid} />
-          {overlay}
-        </span>
-      ) : (
-        <>
-          {icon}
-          {overlay}
-        </>
-      )}
+      <span key={fxKey} className={`avatar-art ${entry ? '' : 'fallback'} ${motion}`} style={style}>
+        {entry ? <entry.Svg uid={uid} /> : icon}
+        {overlay}
+      </span>
       {children}
     </span>
   );

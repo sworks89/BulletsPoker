@@ -100,7 +100,7 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
   // Seats whose gift is still in the air (badge hidden), just landed (pop), or just expired (fading out).
   const [giftLanding, setGiftLanding] = useState<Map<number, 'flying' | 'landed'>>(new Map());
   const [giftFading, setGiftFading] = useState<Map<number, string>>(new Map());
-  const seenGifts = useRef<Map<number, bigint> | null>(null);
+  const seenGifts = useRef<Map<string, bigint | null> | null>(null);
   const lastGiftIcons = useRef<Map<number, string>>(new Map());
   const giftFlightId = useRef(0);
   const [dismissedHit, setDismissedHit] = useState<string>('');
@@ -202,8 +202,8 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
       setTimeout(() => setGiftFading((m) => withSeat(m, seat)), 500);
     }
     for (const a of arrivals) {
-      const to = giftSpot(view, a.seat);
-      const from = a.fromSeat !== null ? giftSpot(view, a.fromSeat) : { left: to.left, top: `calc(${to.top} - 90px)` };
+      const to = giftSpot(view, a.seat, compact);
+      const from = a.fromSeat !== null ? giftSpot(view, a.fromSeat, compact) : { left: to.left, top: `calc(${to.top} - 90px)` };
       const flight = { id: ++giftFlightId.current, icon: a.icon, from, to, drop: a.fromSeat === null };
       setGiftFlights((f) => [...f, flight]);
       setGiftLanding((m) => withSeat(m, a.seat, 'flying'));
@@ -215,7 +215,7 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
     }
     // giftSpot is a pure function of the view
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, visible]);
+  }, [view, visible, compact]);
 
   // When a hand ends, winners cheer and a player who lost after being ahead on the turn gets a rain cloud.
   const reactedHand = useRef<bigint | undefined>(undefined);
@@ -488,10 +488,11 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
                       : null}
                 </div>
                 <Avatar
-                  key={fx.get(i)?.key ?? 0}
                   icon={s.avatar}
                   expression={fx.get(i)?.expression}
-                  className={`${noteColor ? `note-${noteColor}` : ''} ${fx.get(i)?.motion ?? ''} ${fx.get(i)?.cleaning ? 'cleaning' : ''}`}
+                  className={`${noteColor ? `note-${noteColor}` : ''} ${fx.get(i)?.cleaning ? 'cleaning' : ''}`}
+                  fxKey={fx.get(i)?.key}
+                  motion={fx.get(i)?.motion}
                   title={note ? note.text || 'Has a note' : undefined}
                   overlay={fx.get(i)?.overlay}
                 >
@@ -651,9 +652,9 @@ function withSeat<T>(m: Map<number, T>, seat: number, value?: T): Map<number, T>
 }
 
 /** Where a seat's gift badge sits: just below and right of the seat centre. */
-function giftSpot(view: TableView, i: number) {
+function giftSpot(view: TableView, i: number, compact: boolean) {
   const p = seatPos(view, i);
-  return { left: `calc(${p.left} + 37px)`, top: `calc(${p.top} + 2px)` };
+  return compact ? { left: `calc(${p.left} + 24px)`, top: `calc(${p.top} + 8px)` } : { left: `calc(${p.left} + 37px)`, top: `calc(${p.top} + 2px)` };
 }
 
 /** Seat position around the oval, rotated so the viewer sits at the bottom. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { THROW_FX } from './SeatFx';
+import { chipBurstVectors, THROW_FX } from './SeatFx';
 import { giftArrivals } from './gifts';
 
 type Seat = Parameters<typeof giftArrivals>[1][number];
@@ -31,10 +31,31 @@ describe('gift arrivals', () => {
     const { arrivals } = giftArrivals(a.next, [seat(0, 'ann', { icon: '🍺', from: 'bob', at: 9n }), seat(1, 'bob')]);
     expect(arrivals).toEqual([{ seat: 0, icon: '🍺', fromSeat: 1 }]);
   });
+  it('shows an old gift without an arrival when its owner sits down', () => {
+    const a = giftArrivals(null, [seat(0, 'ann'), seat(1, 'bob')]);
+    const { arrivals } = giftArrivals(a.next, [seat(0, 'ann'), seat(1, 'bob'), seat(2, 'cat', { icon: '🍺', from: 'bob', at: 3n })]);
+    expect(arrivals).toEqual([]);
+  });
+  it('does not replay a gift when its owner moves seats', () => {
+    const a = giftArrivals(null, [seat(0, 'ann', { icon: '🍺', from: 'bob', at: 5n })]);
+    const { arrivals } = giftArrivals(a.next, [seat(4, 'ann', { icon: '🍺', from: 'bob', at: 5n })]);
+    expect(arrivals).toEqual([]);
+  });
   it('does nothing while the gift is unchanged', () => {
     const a = giftArrivals(null, [seat(0, 'ann', { icon: '🍺', from: 'bob', at: 5n })]);
     const b = giftArrivals(a.next, [seat(0, 'ann', { icon: '🍺', from: 'bob', at: 5n })]);
     expect(b.arrivals).toEqual([]);
+  });
+});
+
+describe('chip burst', () => {
+  it('never sends a chip upward, where the hole cards are', () => {
+    for (const big of [false, true]) for (const v of chipBurstVectors(big)) expect(v.dy, JSON.stringify(v)).toBeGreaterThanOrEqual(0);
+  });
+  it('sends chips out to both sides', () => {
+    const v = chipBurstVectors(true);
+    expect(v.some((x) => x.dx < -20)).toBe(true);
+    expect(v.some((x) => x.dx > 20)).toBe(true);
   });
 });
 

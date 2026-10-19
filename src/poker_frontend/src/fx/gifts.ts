@@ -16,20 +16,25 @@ export interface GiftArrival {
   fromSeat: number | null;
 }
 
-/** Compares this poll's seats with the last one. `prev` is null on first load, which shows gifts without arrivals. */
-export function giftArrivals(prev: Map<number, bigint> | null, seats: GiftSeat[]): { next: Map<number, bigint>; arrivals: GiftArrival[] } {
-  const next = new Map<number, bigint>();
+/**
+ * Compares this poll's seats with the last one, by player (usernames are unique),
+ * so someone sitting down with an older gift, or moving seats, isn't a new arrival.
+ * `prev` is null on first load, which shows gifts without arrivals.
+ */
+export function giftArrivals(
+  prev: Map<string, bigint | null> | null,
+  seats: GiftSeat[],
+): { next: Map<string, bigint | null>; arrivals: GiftArrival[] } {
+  const next = new Map<string, bigint | null>();
   const arrivals: GiftArrival[] = [];
   for (const s of seats) {
-    const sentAt = s.gift_sent_at[0];
+    const sentAt = s.gift_sent_at[0] ?? null;
+    next.set(s.username, sentAt);
     const icon = s.gift[0];
-    if (sentAt === undefined || icon === undefined) continue;
-    next.set(s.seat, sentAt);
-    if (prev && prev.get(s.seat) !== sentAt) {
-      const from = s.gift_from[0];
-      const sender = seats.find((x) => x.username === from && x.seat !== s.seat);
-      arrivals.push({ seat: s.seat, icon, fromSeat: sender ? sender.seat : null });
-    }
+    if (sentAt === null || icon === undefined || !prev?.has(s.username) || prev.get(s.username) === sentAt) continue;
+    const from = s.gift_from[0];
+    const sender = seats.find((x) => x.username === from && x.seat !== s.seat);
+    arrivals.push({ seat: s.seat, icon, fromSeat: sender ? sender.seat : null });
   }
   return { next, arrivals };
 }
