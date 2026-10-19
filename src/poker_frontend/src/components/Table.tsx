@@ -653,7 +653,7 @@ function withSeat<T>(m: Map<number, T>, seat: number, value?: T): Map<number, T>
 /** Where a seat's gift badge sits: just below and right of the seat centre. */
 function giftSpot(view: TableView, i: number) {
   const p = seatPos(view, i);
-  return { left: `calc(${p.left} + 24px)`, top: `calc(${p.top} + 10px)` };
+  return { left: `calc(${p.left} + 37px)`, top: `calc(${p.top} + 2px)` };
 }
 
 /** Seat position around the oval, rotated so the viewer sits at the bottom. */
