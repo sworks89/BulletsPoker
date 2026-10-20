@@ -156,6 +156,122 @@ pub struct RewardsAccount {
     pub spins: Vec<BankedSpin>,
     pub history: VecDeque<SpinRecord>,
     pub period: PeriodCounters,
+    /// Spins taken so far (mixed into each draw). Absent in accounts saved before the wheel.
+    pub spins_taken: Option<u64>,
+}
+
+/// Wheel segments as (multiplier ×10, weight). The expected multiplier is exactly 1×.
+pub const WHEEL: [(u64, u64); 6] = [(5, 60), (10, 24), (15, 6), (20, 6), (50, 3), (100, 1)];
+/// Spin results kept in a player's history.
+pub const HISTORY_MAX: usize = 20;
+
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct TierInfo {
+    pub name: String,
+    pub from: u64,
+    pub rate_bps: u64,
+}
+
+/// What the rewards screen shows for a player.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct RewardsView {
+    pub tier: u8,
+    pub tier_name: String,
+    /// After decay.
+    pub tier_points: u64,
+    pub next_tier_at: Option<u64>,
+    pub step: u64,
+    pub meter: u64,
+    pub spins_banked: u32,
+    pub lifetime_points: u64,
+    pub days_since_earned: u64,
+    /// Days of grace left before decay starts (0 = decaying now); none without points.
+    pub decay_starts_in_days: Option<u64>,
+    pub fish_pool: u64,
+    pub history: Vec<SpinRecord>,
+    pub tiers: Vec<TierInfo>,
+}
+
+impl State {
+    /// Spins the oldest banked spin: draws a segment from secret entropy, pays
+    /// stake x tier rate x multiplier out of the Fish pool (capped by what is in it).
+    pub fn spin_wheel(&mut self, caller: Principal, now: u64) -> crate::state::R<SpinRecord> {
+        use sha2::{Digest, Sha256};
+        let entropy = self.entropy().to_vec();
+        let (spin, lifetime, taken) = {
+            let u = self.users.get(&caller).ok_or_else(|| "Please sign in first".to_string())?;
+            let a = u.rewards.unwrap_or_default();
+            if a.spins.is_empty() {
+                return Err("No spins yet".into());
+            }
+            (a.spins[0].clone(), a.lifetime_points, a.spins_taken.unwrap_or(0))
+        };
+        let mut h = Sha256::new();
+        h.update(&entropy);
+        h.update(caller.as_slice());
+        h.update(lifetime.to_le_bytes());
+        h.update(taken.to_le_bytes());
+        let d = h.finalize();
+        let total: u64 = WHEEL.iter().map(|w| w.1).sum();
+        let mut roll = u128::from_le_bytes(d[..16].try_into().unwrap()) % total as u128;
+        let mut segment = 0;
+        for (i, w) in WHEEL.iter().enumerate() {
+            if roll < w.1 as u128 {
+                segment = i;
+                break;
+            }
+            roll -= w.1 as u128;
+        }
+        let mult = WHEEL[segment].0;
+        let tier = &TIERS[(spin.tier as usize).min(TIERS.len() - 1)];
+        let prize = (spin.stake as u128 * tier.rate_bps as u128 / 10_000 * mult as u128 / 10).min(u64::MAX as u128) as u64;
+        let paid = prize.min(self.rewards().fish_pool);
+        if paid > 0 {
+            self.credit(&caller, paid)?;
+            self.rewards_mut().fish_pool -= paid;
+        }
+        let rec = SpinRecord {
+            time: now,
+            tier: tier.name.to_string(),
+            stake: spin.stake,
+            multiplier_x10: mult,
+            segment: segment as u8,
+            prize,
+            paid,
+            capped: paid < prize,
+        };
+        let mut u = self.users.get_mut(&caller).ok_or_else(|| "Please sign in first".to_string())?;
+        let a = u.rewards.get_or_insert_with(RewardsAccount::default);
+        a.spins.remove(0);
+        a.spins_taken = Some(taken + 1);
+        a.history.push_back(rec.clone());
+        while a.history.len() > HISTORY_MAX {
+            a.history.pop_front();
+        }
+        Ok(rec)
+    }
+
+    pub fn rewards_view(&self, p: &Principal, now: u64) -> RewardsView {
+        let a = self.users.get(p).and_then(|u| u.rewards).unwrap_or_default();
+        let points = decayed(a.tier_points, a.last_earned_at, now);
+        let tier = tier_index(points);
+        let days = if a.last_earned_at == 0 && a.tier_points == 0 { 0 } else { now.saturating_sub(a.last_earned_at) / DAY_NS };
+        RewardsView {
+            tier: tier as u8,
+            tier_name: TIERS[tier].name.to_string(),
+            tier_points: points,
+            next_tier_at: TIERS.get(tier + 1).map(|t| t.from),
+            step: TIERS[tier].step,
+            meter: a.meter,
+            spins_banked: a.spins.len() as u32,
+            lifetime_points: a.lifetime_points,
+            days_since_earned: days,
+            decay_starts_in_days: (points > 0).then(|| DECAY_GRACE_DAYS.saturating_sub(days)),
+            fish_pool: self.rewards().fish_pool,
+            history: a.history.iter().rev().cloned().collect(),
+            tiers: TIERS.iter().map(|t| TierInfo { name: t.name.to_string(), from: t.from, rate_bps: t.rate_bps }).collect(),
+        }
+    }
 }
 
 impl State {

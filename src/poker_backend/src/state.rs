@@ -4719,4 +4719,115 @@ mod tests {
         s.register_tournament(p(13), id, start_at + SEC).unwrap();
         assert_eq!(account(&s, p(13)).lifetime_points, fee / 1_000);
     }
+
+    // ---- Rewards: the wheel ----
+
+    fn bank_spin(s: &mut State, who: Principal, stake: u64, tier: u8) {
+        let mut u = s.users.get_mut(&who).unwrap();
+        let a = u.rewards.get_or_insert_with(Default::default);
+        a.spins.push(crate::rewards::BankedSpin { stake, tier });
+    }
+
+    #[test]
+    fn wheel_expected_value_is_exactly_one() {
+        use crate::rewards::WHEEL;
+        let ev: u64 = WHEEL.iter().map(|(m, w)| m * w).sum();
+        let weights: u64 = WHEEL.iter().map(|(_, w)| w).sum();
+        assert_eq!(ev, 10 * weights);
+        assert_eq!(WHEEL.map(|(m, _)| m), [5, 10, 15, 20, 50, 100]);
+        let min = WHEEL.iter().map(|(_, w)| *w).min().unwrap();
+        assert_eq!(WHEEL[5].1, min, "the 10x segment is the rarest");
+    }
+
+    #[test]
+    fn spin_pays_stake_times_rate_times_multiplier() {
+        let mut s = setup();
+        bank_spin(&mut s, p(1), 1_000_000, 1);
+        s.rewards_mut().fish_pool = 10 * E8S;
+        let (bal, pool) = (s.users.get(&p(1)).unwrap().balance, s.rewards().fish_pool);
+        let r = s.spin_wheel(p(1), 5 * SEC).unwrap();
+        let mult = crate::rewards::WHEEL[r.segment as usize].0;
+        assert_eq!(r.multiplier_x10, mult);
+        assert_eq!(r.prize, 1_000_000 * 1100 / 10_000 * mult / 10);
+        assert_eq!((r.paid, r.capped, r.stake, r.time), (r.prize, false, 1_000_000, 5 * SEC));
+        assert_eq!(r.tier, "Shrimp");
+        assert_eq!(s.users.get(&p(1)).unwrap().balance, bal + r.paid);
+        assert_eq!(s.rewards().fish_pool, pool - r.paid);
+        assert!(account(&s, p(1)).spins.is_empty());
+    }
+
+    #[test]
+    fn spin_is_capped_by_the_pool() {
+        let mut s = setup();
+        bank_spin(&mut s, p(1), 1_000_000, 1);
+        s.rewards_mut().fish_pool = 3;
+        let bal = s.users.get(&p(1)).unwrap().balance;
+        let r = s.spin_wheel(p(1), SEC).unwrap();
+        assert!(r.prize > 3);
+        assert_eq!((r.paid, r.capped), (3, true));
+        assert_eq!(s.rewards().fish_pool, 0);
+        assert_eq!(s.users.get(&p(1)).unwrap().balance, bal + 3);
+    }
+
+    #[test]
+    fn no_spins_is_an_error() {
+        let mut s = setup();
+        assert_eq!(s.spin_wheel(p(1), SEC).unwrap_err(), "No spins yet");
+        assert!(s.spin_wheel(p(99), SEC).is_err());
+    }
+
+    #[test]
+    fn spin_history_keeps_twenty() {
+        let mut s = setup();
+        s.rewards_mut().fish_pool = 100 * E8S;
+        for k in 0..25 {
+            bank_spin(&mut s, p(1), 1_000 + k, 0);
+        }
+        for k in 0..25 {
+            s.spin_wheel(p(1), k).unwrap();
+        }
+        let a = account(&s, p(1));
+        assert_eq!(a.history.len(), 20);
+        assert_eq!(a.history.front().unwrap().stake, 1_005, "oldest five dropped");
+        assert_eq!(a.history.back().unwrap().stake, 1_024);
+        // The draw depends on how many were taken, so spins differ.
+        let segs: std::collections::BTreeSet<u8> = a.history.iter().map(|r| r.segment).collect();
+        assert!(segs.len() > 1);
+    }
+
+    #[test]
+    fn spins_conserve_money() {
+        let mut s = setup();
+        s.rewards_mut().fish_pool = 5 * E8S;
+        for _ in 0..10 {
+            bank_spin(&mut s, p(2), 400_000_000, 3);
+        }
+        let before = (total_value(&s), house_take(&s), s.wallet_total);
+        let pool_before = s.rewards().fish_pool;
+        for k in 0..10 {
+            s.spin_wheel(p(2), k).unwrap();
+        }
+        // Wallets gained exactly what the pool lost; total liabilities are unchanged.
+        let paid = pool_before - s.rewards().fish_pool;
+        assert!(paid > 0);
+        assert_eq!(total_value(&s), before.0);
+        assert_eq!(house_take(&s), before.1 - paid);
+        assert_eq!(s.wallet_total, before.2 + paid);
+    }
+
+    #[test]
+    fn rewards_view_decays_and_zero_view_for_strangers() {
+        let mut s = setup();
+        let z = s.rewards_view(&p(77), 99 * DAY_NS);
+        assert_eq!((z.tier, z.tier_points, z.spins_banked, z.next_tier_at, z.decay_starts_in_days), (0, 0, 0, Some(500), None));
+        assert_eq!((z.tier_name.as_str(), z.step, z.tiers.len(), z.days_since_earned), ("Plankton", 100, 7, 0));
+        s.earn_rake(&p(1), 500_000, 500_000, 0);
+        let v = s.rewards_view(&p(1), 3 * DAY_NS);
+        assert_eq!((v.tier, v.tier_points, v.decay_starts_in_days, v.days_since_earned), (1, 500, Some(4), 3));
+        assert_eq!((v.spins_banked, v.meter, v.next_tier_at, v.step), (1, 100, Some(2_500), 400));
+        let v = s.rewards_view(&p(1), 30 * DAY_NS);
+        assert_eq!(v.tier_points, crate::rewards::decayed(500, 0, 30 * DAY_NS));
+        assert_eq!((v.tier, v.decay_starts_in_days), (0, Some(0)));
+        assert_eq!(v.lifetime_points, 500);
+    }
 }

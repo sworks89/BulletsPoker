@@ -500,6 +500,20 @@ fn claim_daily_chips() -> R<u64> {
     with_mut(|s| s.claim_daily(p, now()))
 }
 
+/// Spins the oldest banked Fish Buffet spin for ICP cashback.
+#[update]
+fn spin_wheel() -> R<rewards::SpinRecord> {
+    let p = active_caller()?;
+    with_mut(|s| s.spin_wheel(p, now()))
+}
+
+/// The caller's Fish Buffet standing, spins and history.
+#[query]
+fn get_rewards() -> rewards::RewardsView {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.rewards_view(&p, now()))
+}
+
 #[update]
 fn update_settings(settings: Settings) -> R<()> {
     let p = caller()?;

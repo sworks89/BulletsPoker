@@ -533,6 +533,8 @@ export type Result_14 = { 'Ok' : Array<Report> } |
   { 'Err' : string };
 export type Result_15 = { 'Ok' : Profile } |
   { 'Err' : string };
+export type Result_16 = { 'Ok' : SpinRecord } |
+  { 'Err' : string };
 export type Result_2 = { 'Ok' : Array<AuditEntry> } |
   { 'Err' : string };
 export type Result_3 = { 'Ok' : [bigint, bigint] } |
@@ -549,6 +551,30 @@ export type Result_8 = { 'Ok' : HouseStats } |
   { 'Err' : string };
 export type Result_9 = { 'Ok' : LedgerOp } |
   { 'Err' : string };
+/**
+ * What the rewards screen shows for a player.
+ */
+export interface RewardsView {
+  'tier_name' : string,
+  'meter' : bigint,
+  'tiers' : Array<TierInfo>,
+  'step' : bigint,
+  'tier' : number,
+  'next_tier_at' : [] | [bigint],
+  /**
+   * After decay.
+   */
+  'tier_points' : bigint,
+  'history' : Array<SpinRecord>,
+  'lifetime_points' : bigint,
+  'days_since_earned' : bigint,
+  /**
+   * Days of grace left before decay starts (0 = decaying now); none without points.
+   */
+  'decay_starts_in_days' : [] | [bigint],
+  'fish_pool' : bigint,
+  'spins_banked' : number,
+}
 /**
  * What the signed-in caller may administer (drives the admin page).
  */
@@ -637,6 +663,25 @@ export interface SolvencyReport {
   'surplus' : bigint,
   'unresolved_ops' : bigint,
   'checked_at' : bigint,
+}
+/**
+ * One spin of the wheel, as shown in the player's history.
+ */
+export interface SpinRecord {
+  'paid' : bigint,
+  'tier' : string,
+  'time' : bigint,
+  'multiplier_x10' : bigint,
+  'stake' : bigint,
+  /**
+   * Index into the wheel's segments (for the animation).
+   */
+  'segment' : number,
+  'capped' : boolean,
+  /**
+   * Before the pool cap.
+   */
+  'prize' : bigint,
 }
 export interface Standing {
   'table' : [] | [bigint],
@@ -807,6 +852,11 @@ export interface ThrowEvent {
   'to_seat' : number,
   'icon' : string,
   'time' : bigint,
+}
+export interface TierInfo {
+  'rate_bps' : bigint,
+  'from' : bigint,
+  'name' : string,
 }
 export interface TournamentBadge {
   'id' : bigint,
@@ -1079,6 +1129,10 @@ export interface _SERVICE {
   'get_notes' : ActorMethod<[], Array<NoteView>>,
   'get_profile' : ActorMethod<[Principal], [] | [PublicProfile]>,
   /**
+   * The caller's Fish Buffet standing, spins and history.
+   */
+  'get_rewards' : ActorMethod<[], RewardsView>,
+  /**
    * How much sign-up work a new account needs right now (see `register`).
    */
   'get_signup_challenge' : ActorMethod<[], SignupChallenge>,
@@ -1162,6 +1216,10 @@ export interface _SERVICE {
    */
   'show_cards' : ActorMethod<[bigint], Result>,
   'sit_out' : ActorMethod<[bigint, boolean], Result>,
+  /**
+   * Spins the oldest banked Fish Buffet spin for ICP cashback.
+   */
+  'spin_wheel' : ActorMethod<[], Result_16>,
   'throw_item' : ActorMethod<[bigint, Principal, number, Currency], Result>,
   'top_up' : ActorMethod<[bigint, bigint], Result>,
   /**
