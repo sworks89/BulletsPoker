@@ -371,3 +371,6 @@ user moved the house ICP tables to a ladder:
   the old blinds to the ladder. Player rooms and tournament tables keep their
   blinds, and seated players keep their chips.
 - Points were rescaled with the stakes (see Points).
+- Player-hosted ICP rooms take a big blind from 0.02 ICP (the lowest house
+  step) up to 20 ICP (10/20 blinds), above the house's top table. Rooms opened
+  before the change keep their blinds until they close.

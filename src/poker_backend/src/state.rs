@@ -1631,7 +1631,9 @@ impl State {
         let bb = args.big_blind;
         let (min_bb, max_bb) = match args.currency {
             Currency::Chips => (2, 10_000),
-            Currency::Icp => (2_000, 10_000_000),
+            // ICP rooms start at the lowest house step (0.01/0.02) and go past the
+            // house's top table, up to 10/20.
+            Currency::Icp => (E8S / 50, 20 * E8S),
         };
         if !bb.is_multiple_of(2) || bb < min_bb || bb > max_bb {
             return Err(format!("Big blind must be an even amount between {} and {}", fmt_amount(args.currency, min_bb), fmt_amount(args.currency, max_bb)));
@@ -3095,12 +3097,12 @@ mod tests {
         let id = s
             .create_room(
                 p(1),
-                RoomArgs { name: "Pools".into(), currency: Currency::Icp, big_blind: 200_000, max_seats: 6, password: None, action_timeout_secs: 30 },
+                RoomArgs { name: "Pools".into(), currency: Currency::Icp, big_blind: 2_000_000, max_seats: 6, password: None, action_timeout_secs: 30 },
                 0,
             )
             .unwrap();
-        s.join_table(p(2), id, 1, 10_000_000, None, 0).unwrap();
-        s.join_table(p(1), id, 0, 10_000_000, None, 0).unwrap();
+        s.join_table(p(2), id, 1, 100_000_000, None, 0).unwrap();
+        s.join_table(p(1), id, 0, 100_000_000, None, 0).unwrap();
         play_hands(&mut s, id, 10, SEC);
         let rake: u64 = s.stores.hands.iter().map(|e| e.value()).collect::<Vec<_>>().into_iter().filter(|h| h.table_id == id).map(|h| h.rake).sum();
         assert!(rake > 0);
@@ -3118,7 +3120,7 @@ mod tests {
         let args = |pw: Option<&str>| RoomArgs {
             name: "Mark's Game".into(),
             currency: Currency::Icp,
-            big_blind: 200_000,
+            big_blind: 2_000_000,
             max_seats: 6,
             password: pw.map(String::from),
             action_timeout_secs: 30,
@@ -3130,10 +3132,10 @@ mod tests {
         let summary = s.list_tables().into_iter().find(|t| t.id == id).unwrap();
         assert!(summary.locked);
         assert_eq!(summary.room_owner.as_deref(), Some("player1"));
-        assert!(s.join_table(p(2), id, 1, 10_000_000, None, 0).is_err());
-        assert!(s.join_table(p(2), id, 1, 10_000_000, Some("kings".into()), 0).is_err());
-        s.join_table(p(2), id, 1, 10_000_000, Some("aces".into()), 0).unwrap();
-        s.join_table(p(1), id, 0, 10_000_000, None, 0).unwrap(); // host needs no password
+        assert!(s.join_table(p(2), id, 1, 100_000_000, None, 0).is_err());
+        assert!(s.join_table(p(2), id, 1, 100_000_000, Some("kings".into()), 0).is_err());
+        s.join_table(p(2), id, 1, 100_000_000, Some("aces".into()), 0).unwrap();
+        s.join_table(p(1), id, 0, 100_000_000, None, 0).unwrap(); // host needs no password
         let before = s.house_stats().liabilities_total;
         let now = play_hands(&mut s, id, 10, SEC);
         assert_eq!(s.house_stats().liabilities_total, before);
@@ -5193,5 +5195,18 @@ mod tests {
         assert_eq!(s.rewards_view(&p(1), SEC).lifetime_points, 0);
         s.earn_rake(&p(1), 1, 0, SEC);
         assert_eq!(s.rewards_view(&p(1), SEC).lifetime_points, 1);
+    }
+
+    #[test]
+    fn icp_rooms_run_from_the_lowest_ladder_step_up_to_ten_twenty() {
+        let mut s = setup();
+        s.users.get_mut(&p(1)).unwrap().xp = 1_000_000;
+        let room = |bb: u64| RoomArgs { name: format!("Room {bb}"), currency: Currency::Icp, big_blind: bb, max_seats: 6, password: None, action_timeout_secs: 25 };
+        assert!(s.create_room(p(1), room(E8S / 50 - 2), 0).is_err(), "below 0.02 ICP");
+        assert!(s.create_room(p(1), room(20 * E8S + 2), 0).is_err(), "above 20 ICP");
+        let low = s.create_room(p(1), room(E8S / 50), 0).unwrap();
+        let high = s.create_room(p(1), room(20 * E8S), 0).unwrap();
+        assert_eq!((s.tables[&low].config.small_blind, s.tables[&low].config.big_blind), (E8S / 100, E8S / 50));
+        assert_eq!((s.tables[&high].config.small_blind, s.tables[&high].config.max_buy_in), (10 * E8S, 2_000 * E8S));
     }
 }
