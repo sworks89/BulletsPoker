@@ -203,6 +203,7 @@ fn post_upgrade() {
     state.mark_interrupted_ops(now());
     // House ICP tables deployed before the stake ladder move to the new blinds.
     state.migrate_icp_stakes();
+    state.migrate_icp_tournament_prices();
     STATE.with(|s| *s.borrow_mut() = Some(state));
     start_timers();
 }

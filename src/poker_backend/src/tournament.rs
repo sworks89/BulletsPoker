@@ -260,8 +260,9 @@ pub fn default_templates() -> Vec<TournamentTemplate> {
         sng("Chip Sit & Go · 6 max", Chips, 1_000, 0, 6, 6),
         sng("Chip Heads-Up Duel", Chips, 500, 0, 2, 2),
         sng("Chip Sit & Go · 9 max", Chips, 2_500, 0, 9, 9),
-        sng("ICP Sit & Go · 6 max", Icp, E8S / 10, E8S / 200, 6, 6),
-        sng("ICP Heads-Up Duel", Icp, E8S / 20, E8S / 400, 2, 2),
+        // ICP events are priced for the cash stake ladder (5% fee).
+        sng("ICP Sit & Go · 6 max", Icp, E8S, E8S / 20, 6, 6),
+        sng("ICP Heads-Up Duel", Icp, E8S / 2, E8S / 40, 2, 2),
         TournamentTemplate {
             name: "Hourly Freeroll".into(),
             kind: Scheduled,
@@ -304,8 +305,8 @@ pub fn default_templates() -> Vec<TournamentTemplate> {
             name: "ICP Nightly".into(),
             kind: Scheduled,
             currency: Icp,
-            buy_in: E8S / 2,
-            fee: E8S / 40,
+            buy_in: 2 * E8S,
+            fee: E8S / 10,
             guarantee: 0,
             starting_stack: 5_000,
             min_players: 3,
@@ -316,7 +317,7 @@ pub fn default_templates() -> Vec<TournamentTemplate> {
             late_reg_levels: 4,
             rebuy_levels: 3,
             max_rebuys: 2,
-            addon_cost: E8S / 2,
+            addon_cost: 2 * E8S,
             addon_chips: 7_500,
         },
     ]
@@ -402,6 +403,40 @@ impl State {
 
     fn seat_table_of(&self, t: &Tournament, p: &Principal) -> Option<u64> {
         t.tables.iter().copied().find(|tid| self.tables.get(tid).is_some_and(|tb| tb.seat_of(p).is_some()))
+    }
+
+    /// Moves ICP event formats still on their pre-ladder prices to the current
+    /// ones, along with open events nobody has entered yet. Events with entries
+    /// keep the price their players paid. Returns how many changed; running it
+    /// again changes nothing.
+    pub fn migrate_icp_tournament_prices(&mut self) -> usize {
+        // (name, old buy-in) before the stake ladder (2026-10-21).
+        const OLD: [(&str, u64); 3] = [("ICP Sit & Go · 6 max", E8S / 10), ("ICP Heads-Up Duel", E8S / 20), ("ICP Nightly", E8S / 2)];
+        let defaults = default_templates();
+        let current = |t: &TournamentTemplate| {
+            let old = t.currency == Currency::Icp && OLD.iter().any(|(n, b)| *n == t.name && *b == t.buy_in);
+            defaults.iter().find(|d| d.name == t.name).filter(|_| old)
+        };
+        let reprice = |t: &mut TournamentTemplate, d: &TournamentTemplate| {
+            (t.buy_in, t.fee, t.addon_cost) = (d.buy_in, d.fee, d.addon_cost);
+        };
+        let mut changed = 0;
+        for t in self.templates.iter_mut() {
+            if let Some(d) = current(t) {
+                reprice(t, d);
+                changed += 1;
+            }
+        }
+        for t in self.tournaments.values_mut() {
+            if t.status != TournamentStatus::Registering || !t.entrants.is_empty() {
+                continue;
+            }
+            if let Some(d) = current(&t.template) {
+                reprice(&mut t.template, d);
+                changed += 1;
+            }
+        }
+        changed
     }
 
     /// Opens a registering instance for every template that doesn't have one.

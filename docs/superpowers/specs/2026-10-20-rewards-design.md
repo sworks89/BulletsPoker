@@ -371,6 +371,11 @@ user moved the house ICP tables to a ladder:
   the old blinds to the ladder. Player rooms and tournament tables keep their
   blinds, and seated players keep their chips.
 - Points were rescaled with the stakes (see Points).
+- ICP tournaments were repriced to match, keeping the 5% fee: Heads-Up Duel
+  0.5 + 0.025, Sit & Go 6-max 1 + 0.05, Nightly 2 + 0.1 (rebuys and add-on 2).
+  Blinds inside tournaments are in tournament chips and did not change. On
+  upgrade, `migrate_icp_tournament_prices` reprices the saved formats and open
+  events nobody has entered; events with entries keep the price paid.
 - Player-hosted ICP rooms take a big blind from 0.02 ICP (the lowest house
   step) up to 20 ICP (10/20 blinds), above the house's top table. Rooms opened
   before the change keep their blinds until they close.

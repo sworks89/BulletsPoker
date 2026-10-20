@@ -3022,7 +3022,7 @@ mod tests {
         assert_eq!(s.house_stats().liabilities_total, before);
         run_until(&mut s, 2 * SEC, 5_000, |s| s.tournaments[&id].status == Finished);
         assert_eq!(s.house_stats().liabilities_total, before);
-        let fee = E8S / 400;
+        let fee = E8S / 40;
         assert_eq!(house_take(&s), 2 * fee);
         let balances = s.users.get(&p(10)).unwrap().balance + s.users.get(&p(11)).unwrap().balance;
         assert_eq!(balances, 20 * E8S - 2 * fee);
@@ -3382,7 +3382,7 @@ mod tests {
         many_players(&mut s, 4);
         let (id, start_at) = start_scheduled(&mut s, "ICP Nightly", 10..13);
         let (treasury, fish, total) = (s.treasury, s.rewards().fish_pool, s.treasury + s.rewards().pools_total());
-        let fee = E8S / 40;
+        let fee = E8S / 10;
         s.register_tournament(p(13), id, start_at + SEC).unwrap();
         assert_eq!(s.rewards().fish_pool, fish + fee * 3_000 / 10_000);
         assert_eq!(s.treasury, treasury + fee * 6_000 / 10_000);
@@ -3474,9 +3474,9 @@ mod tests {
         let t = &s.tournaments[&id];
         assert_eq!(s.house_stats().liabilities_total, before);
         // The fee is charged once per player: rebuys and add-ons go entirely into the pool.
-        assert_eq!(house_take(&s), 4 * (E8S / 40));
+        assert_eq!(house_take(&s), 4 * (E8S / 10));
         let addons = t.entrants.iter().filter(|e| e.addon).count() as u64;
-        assert_eq!(t.collected, t.entries() as u64 * (E8S / 2) + addons * (E8S / 2));
+        assert_eq!(t.collected, t.entries() as u64 * (2 * E8S) + addons * (2 * E8S));
         assert_eq!(t.paid, t.prize_pool);
     }
 
@@ -3491,7 +3491,7 @@ mod tests {
             s.register_tournament(p(k), id, SEC).unwrap();
         }
         assert_eq!(s.treasury, 0);
-        assert_eq!(s.tournaments[&id].fees_held, 2 * (E8S / 40));
+        assert_eq!(s.tournaments[&id].fees_held, 2 * (E8S / 10));
         assert_eq!(s.house_stats().liabilities_total, before);
         // One unregisters and gets everything back.
         s.unregister_tournament(p(11), id).unwrap();
@@ -3507,7 +3507,7 @@ mod tests {
         // When an event does start, the fees move to the treasury.
         let (id, _) = start_scheduled(&mut s, "ICP Nightly", 10..13);
         assert_eq!(s.tournaments[&id].fees_held, 0);
-        assert_eq!(house_take(&s), 3 * (E8S / 40));
+        assert_eq!(house_take(&s), 3 * (E8S / 10));
         assert_eq!(s.house_stats().liabilities_total, before);
     }
 
@@ -3526,7 +3526,7 @@ mod tests {
         assert_eq!(s.rewards().pools_total(), 0, "a cancelled event funds nothing");
 
         let (_, _) = start_scheduled(&mut s, "ICP Nightly", 10..13);
-        let fees = 3 * (E8S / 40);
+        let fees = 3 * (E8S / 10);
         let r = s.rewards();
         assert_eq!(r.fish_pool, fees * 30 / 100);
         assert_eq!(r.board_pools, [fees / 40; 4]);
@@ -3555,9 +3555,9 @@ mod tests {
         s.tables.get_mut(&table).unwrap().seats.iter_mut().flatten().find(|x| x.player == p(10)).unwrap().stack = 1_000;
         let before = s.users.get(&p(10)).unwrap().balance;
         s.rebuy(p(10), id, start_at + SEC).unwrap();
-        assert_eq!(s.users.get(&p(10)).unwrap().balance, before - E8S / 2, "buy-in only");
+        assert_eq!(s.users.get(&p(10)).unwrap().balance, before - 2 * E8S, "buy-in only");
         assert_eq!(s.treasury, treasury);
-        assert_eq!(s.tournament_badge(id, Some(p(10))).unwrap().rebuy_cost, E8S / 2);
+        assert_eq!(s.tournament_badge(id, Some(p(10))).unwrap().rebuy_cost, 2 * E8S);
     }
 
     #[test]
@@ -4642,7 +4642,7 @@ mod tests {
         let id = open_tournament(&mut s, "ICP Heads-Up Duel");
         s.register_tournament(p(16), id, SEC).unwrap();
         s.register_tournament(p(17), id, SEC).unwrap();
-        let fee = E8S / 400;
+        let fee = E8S / 40;
         run_until(&mut s, 2 * SEC, 5_000, |s| s.tournaments[&id].status == Finished);
         for k in 16..18 {
             let a = account(&s, p(k));
@@ -4653,7 +4653,7 @@ mod tests {
             assert_eq!(a.period.w_hands as u64, hands);
             // Tournament chips are not ICP won or lost; the event's prize minus its costs is.
             let prize = s.tournaments[&id].entrants.iter().find(|e| e.player == p(k)).unwrap().prize;
-            assert_eq!(a.period.w_net, prize as i64 - (E8S / 20 + fee) as i64);
+            assert_eq!(a.period.w_net, prize as i64 - (E8S / 2 + fee) as i64);
         }
     }
 
@@ -4777,7 +4777,7 @@ mod tests {
         use crate::tournament::TournamentStatus::*;
         let mut s = setup();
         many_players(&mut s, 4);
-        let fee = E8S / 40;
+        let fee = E8S / 10;
         let id = open_tournament(&mut s, "ICP Nightly");
         for k in 10..12 {
             s.register_tournament(p(k), id, SEC).unwrap();
@@ -5208,5 +5208,41 @@ mod tests {
         let high = s.create_room(p(1), room(20 * E8S), 0).unwrap();
         assert_eq!((s.tables[&low].config.small_blind, s.tables[&low].config.big_blind), (E8S / 100, E8S / 50));
         assert_eq!((s.tables[&high].config.small_blind, s.tables[&high].config.max_buy_in), (10 * E8S, 2_000 * E8S));
+    }
+
+    #[test]
+    fn icp_tournaments_are_priced_for_the_stake_ladder() {
+        let s = setup();
+        let price = |name: &str| {
+            let t = s.templates.iter().find(|t| t.name == name).unwrap();
+            (t.buy_in, t.fee, t.addon_cost)
+        };
+        assert_eq!(price("ICP Heads-Up Duel"), (E8S / 2, E8S / 40, 0));
+        assert_eq!(price("ICP Sit & Go · 6 max"), (E8S, E8S / 20, 0));
+        assert_eq!(price("ICP Nightly"), (2 * E8S, E8S / 10, 2 * E8S));
+    }
+
+    #[test]
+    fn upgrade_reprices_old_icp_tournaments_but_not_paid_entries() {
+        let mut s = setup();
+        // Formats and open events as a canister deployed before the change has them.
+        let old = [("ICP Heads-Up Duel", E8S / 20, E8S / 400, 0), ("ICP Sit & Go · 6 max", E8S / 10, E8S / 200, 0), ("ICP Nightly", E8S / 2, E8S / 40, E8S / 2)];
+        let reprice = |t: &mut crate::tournament::TournamentTemplate| {
+            if let Some((_, b, f, a)) = old.iter().find(|(n, ..)| *n == t.name) {
+                (t.buy_in, t.fee, t.addon_cost) = (*b, *f, *a);
+            }
+        };
+        s.templates.iter_mut().for_each(reprice);
+        s.ensure_tournaments(0);
+        let open = |s: &State, name: &str| s.tournaments.values().find(|t| t.template.name == name && t.status == crate::tournament::TournamentStatus::Registering).unwrap().id;
+        let (duel, sng) = (open(&s, "ICP Heads-Up Duel"), open(&s, "ICP Sit & Go · 6 max"));
+        assert_eq!(s.tournaments[&duel].template.buy_in, E8S / 20);
+        s.register_tournament(p(1), sng, 0).unwrap(); // someone already paid the old price
+
+        assert_eq!(s.migrate_icp_tournament_prices(), 3 + 2, "three formats and the two empty open events");
+        assert_eq!(s.templates.iter().find(|t| t.name == "ICP Nightly").unwrap().addon_cost, 2 * E8S);
+        assert_eq!((s.tournaments[&duel].template.buy_in, s.tournaments[&duel].template.fee), (E8S / 2, E8S / 40));
+        assert_eq!(s.tournaments[&sng].template.buy_in, E8S / 10, "an event with entries keeps the price they paid");
+        assert_eq!(s.migrate_icp_tournament_prices(), 0, "running it again changes nothing");
     }
 }
