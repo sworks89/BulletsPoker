@@ -47,19 +47,21 @@ pub const DECAY_KEEP_PCT: u128 = 95;
 /// points, and the wheel's expected value as a rate of the spin's stake.
 pub struct Tier {
     pub name: &'static str,
+    /// Shown in the tier-up chat line.
+    pub icon: &'static str,
     pub from: u64,
     pub step: u64,
     pub rate_bps: u64,
 }
 
 pub const TIERS: [Tier; 7] = [
-    Tier { name: "Plankton", from: 0, step: 100, rate_bps: 800 },
-    Tier { name: "Shrimp", from: 500, step: 400, rate_bps: 1_100 },
-    Tier { name: "Crab", from: 2_500, step: 1_500, rate_bps: 1_400 },
-    Tier { name: "Octopus", from: 10_000, step: 6_000, rate_bps: 1_700 },
-    Tier { name: "Dolphin", from: 40_000, step: 20_000, rate_bps: 2_000 },
-    Tier { name: "Orca", from: 150_000, step: 70_000, rate_bps: 2_400 },
-    Tier { name: "Shark", from: 500_000, step: 200_000, rate_bps: 2_800 },
+    Tier { name: "Plankton", icon: "🦠", from: 0, step: 100, rate_bps: 800 },
+    Tier { name: "Shrimp", icon: "🦐", from: 500, step: 400, rate_bps: 1_100 },
+    Tier { name: "Crab", icon: "🦀", from: 2_500, step: 1_500, rate_bps: 1_400 },
+    Tier { name: "Octopus", icon: "🐙", from: 10_000, step: 6_000, rate_bps: 1_700 },
+    Tier { name: "Dolphin", icon: "🐬", from: 40_000, step: 20_000, rate_bps: 2_000 },
+    Tier { name: "Orca", icon: "🐋", from: 150_000, step: 70_000, rate_bps: 2_400 },
+    Tier { name: "Shark", icon: "🦈", from: 500_000, step: 200_000, rate_bps: 2_800 },
 ];
 
 /// The tier reached with `points` tier points.
@@ -127,6 +129,14 @@ pub struct PeriodCounters {
     pub m_hands: u32,
     pub w_rake: u64,
     pub m_rake: u64,
+    /// The house's share of the rake paid (after a room host's cut; tournament
+    /// fees in full): the cap on a winnings prize. Absent in counters saved before it.
+    pub w_house_rake: Option<u64>,
+    pub m_house_rake: Option<u64>,
+    /// (month, e8s): weekly winnings prizes paid to the player during that
+    /// month, which come off that month's winnings cap. Keyed by its own month
+    /// so paying a week never has to roll the month's counters.
+    pub m_weekly_prizes: Option<(u64, u64)>,
 }
 
 impl PeriodCounters {
@@ -134,11 +144,22 @@ impl PeriodCounters {
     pub fn roll(&mut self, now: u64) {
         let (week, month) = (week_of(now), month_of(now));
         if self.week != week {
-            (self.week, self.w_points, self.w_net, self.w_hands, self.w_rake) = (week, 0, 0, 0, 0);
+            (self.week, self.w_points, self.w_net, self.w_hands, self.w_rake, self.w_house_rake) = (week, 0, 0, 0, 0, None);
         }
         if self.month != month {
-            (self.month, self.m_points, self.m_net, self.m_hands, self.m_rake) = (month, 0, 0, 0, 0);
+            (self.month, self.m_points, self.m_net, self.m_hands, self.m_rake, self.m_house_rake) = (month, 0, 0, 0, 0, None);
         }
+    }
+
+    /// Weekly winnings prizes paid to the player during `month`.
+    pub fn weekly_prizes_in(&self, month: u64) -> u64 {
+        self.m_weekly_prizes.filter(|w| w.0 == month).map_or(0, |w| w.1)
+    }
+
+    /// Counts a weekly winnings prize against the month it is paid in.
+    pub fn add_weekly_prize(&mut self, month: u64, prize: u64) {
+        let total = self.weekly_prizes_in(month).saturating_add(prize);
+        self.m_weekly_prizes = Some((month, total));
     }
 }
 
@@ -305,14 +326,19 @@ impl State {
     /// Credits a player with rake they paid: `rake_e8s` earns points (1 per
     /// 1,000 e8s, leftovers carried), `house_e8s` is the house's share of it
     /// and stakes the spins the points bank. Unregistered players are ignored.
-    pub(crate) fn earn_rake(&mut self, p: &Principal, rake_e8s: u64, house_e8s: u64, now: u64) {
+    ///
+    /// Returns the tier reached when it rose (after decay on both sides), for
+    /// the caller to announce where the player sits.
+    pub(crate) fn earn_rake(&mut self, p: &Principal, rake_e8s: u64, house_e8s: u64, now: u64) -> Option<usize> {
         if rake_e8s == 0 && house_e8s == 0 {
-            return;
+            return None;
         }
         self.close_periods(now);
+        let risen;
         {
-            let Some(mut u) = self.users.get_mut(p) else { return };
+            let mut u = self.users.get_mut(p)?;
             let a = u.rewards.get_or_insert_with(RewardsAccount::default);
+            let before = tier_index(decayed(a.tier_points, a.last_earned_at, now));
             a.period.roll(now);
             a.carry_e8s += rake_e8s;
             let points = a.carry_e8s / E8S_PER_POINT;
@@ -328,6 +354,8 @@ impl State {
             a.period.m_points += points;
             a.period.w_rake += rake_e8s;
             a.period.m_rake += rake_e8s;
+            a.period.w_house_rake = Some(a.period.w_house_rake.unwrap_or(0).saturating_add(house_e8s));
+            a.period.m_house_rake = Some(a.period.m_house_rake.unwrap_or(0).saturating_add(house_e8s));
 
             // The meter banks a spin for each step crossed at the tier reached now.
             a.meter = a.meter.saturating_add(points);
@@ -336,17 +364,33 @@ impl State {
             let step = TIERS[tier].step;
             let crossed = a.meter / step;
             if crossed > 0 {
+                let total = a.meter;
                 a.meter %= step;
-                let stake = a.meter_stake / crossed;
+                // The points left on the meter keep their part of the stake;
+                // the spins share the rest evenly.
+                let keep = (a.meter_stake as u128 * a.meter as u128 / total as u128) as u64;
+                let rest = a.meter_stake - keep;
+                let stake = rest / crossed;
                 // The division's remainder stays toward the next spin.
-                a.meter_stake %= crossed;
+                a.meter_stake = keep + rest % crossed;
                 let room = MAX_SPINS.saturating_sub(a.spins.len()) as u64;
                 for _ in 0..crossed.min(room) {
                     a.spins.push(BankedSpin { stake, tier: tier as u8 });
                 }
             }
+            let after = tier_index(decayed(a.tier_points, a.last_earned_at, now));
+            risen = (after > before).then_some(after);
         }
         self.on_points(p, now);
+        risen
+    }
+
+    /// Posts "🐬 Name reached Dolphin in the Fish Buffet!" in `ch`.
+    pub(crate) fn announce_tier_up(&mut self, p: &Principal, tier: usize, ch: crate::state::Channel, now: u64) {
+        let Some(name) = self.users.get(p).map(|u| u.username.clone()) else { return };
+        let t = &TIERS[tier.min(TIERS.len() - 1)];
+        let text = format!("{} {name} reached {} in the Fish Buffet!", t.icon, t.name);
+        self.post(ch, None, String::new(), text, crate::state::MessageKind::System, now);
     }
 
     /// Counts a hand toward the player's period counters, with its net ICP

@@ -478,11 +478,13 @@ impl State {
         }
         let (currency, buy_in, fee) = (t.template.currency, t.template.buy_in, t.template.fee);
         self.debit_in(&caller, currency, buy_in.checked_add(fee).ok_or("Amount too large")?)?;
+        let mut risen = None;
         if currency == Currency::Icp {
             if late {
-                // Late entries can't be refunded: the fee is the house's at once.
+                // Late entries can't be refunded: the fee is final at once, so
+                // it is split between the reward pools and the treasury now.
                 self.fund_rewards(fee);
-                self.earn_rake(&caller, fee, fee, now);
+                risen = self.earn_rake(&caller, fee, fee, now);
             } else {
                 self.tournament_mut(id)?.fees_held += fee;
             }
@@ -505,6 +507,9 @@ impl State {
             let tid = self.seat_entrant(id, caller, stack);
             let name = self.users.get(&caller).map(|u| u.username.clone()).unwrap_or_default();
             self.post(Channel::Table(tid), None, String::new(), format!("{name} joins late"), MessageKind::System, now);
+            if let Some(tier) = risen {
+                self.announce_tier_up(&caller, tier, Channel::Table(tid), now);
+            }
             return Ok(());
         }
         let t = self.tournament_mut(id)?;
@@ -584,20 +589,23 @@ impl State {
         }
         let t = self.tournaments.get_mut(&id).unwrap();
         t.status = TournamentStatus::Running;
-        // Entries are final now: the fees become house revenue.
+        // Entries are final now: the fees are split between the reward pools and the treasury.
         let fees = std::mem::take(&mut t.fees_held);
         t.started_at = now;
         t.level = 0;
         t.level_started_at = now;
-        t.tables = table_ids;
+        t.tables = table_ids.clone();
         t.recompute_payouts();
         let name = t.template.name.clone();
         let (currency, fee) = (t.template.currency, t.template.fee);
         self.fund_rewards(fees);
         // Each entrant's fee is now final rake paid: it earns them points.
         if currency == Currency::Icp {
-            for p in &order {
-                self.earn_rake(p, fee, fee, now);
+            // order[i] sits at table_ids[i % tables] (dealt round-robin above).
+            for (i, p) in order.iter().enumerate() {
+                if let Some(tier) = self.earn_rake(p, fee, fee, now) {
+                    self.announce_tier_up(p, tier, Channel::Table(table_ids[i % table_ids.len()]), now);
+                }
             }
         }
         self.post(Channel::Lobby, None, String::new(), format!("🏁 {name} is under way with {n} players"), MessageKind::System, now);

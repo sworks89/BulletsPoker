@@ -123,7 +123,9 @@ rollers reach Shark within about a day.
   house tables, and the 80% left after the host's cut in hosted rooms (*my
   call*). Points still count the full rake. Because of this, a spin from a
   hosted room is funded at the same 30% as any other spin, so no tier costs more
-  than it brings in.
+  than it brings in. When one hand crosses one or more steps, the points left on
+  the meter keep their proportional part of the stake, and the banked spins
+  share the rest equally (the rounding remainder stays in the meter).
 - **Banking.** Banked spins wait until you spin them, up to 50. After that, the
   meter keeps filling but no new spins are banked.
 - **Prize.** prize = stake × tier rate × wheel multiplier.
@@ -161,9 +163,22 @@ rollers reach Shark within about a day.
   - Any unpaid share (fewer than 10 qualifiers, or the guard below) stays in that
     board's quarter for the next period. It never goes to the house.
 - **The chip-dumping guard (winnings boards only).** A prize can't exceed the
-  rake that player paid in that period.
+  house's share of the rake that player paid in that period: the rake minus the
+  room host's 20% cut when the hand was at a hosted room (tournament fees count
+  in full).
+  - A monthly winnings prize is further capped at that month's house-share rake
+    minus the weekly winnings prizes already paid to the player during the
+    month (a weekly prize counts against the month it is paid in). So the same
+    rake can't back both a weekly and a monthly prize.
+  - Counting only the house's share means a ring that hosts its own room can't
+    count the host cut it gets back.
   - This makes dumping chips between your own accounts unprofitable at best.
   - An honest winner rarely hits the limit.
+  - Known edge: a week that straddles two months is paid in the new month, so
+    rake from the old month's last days can back both that week's prize and the
+    old month's prize. The overlap is at most six days of rake.
+- **Suspended players** (an active ban at the moment a period closes) are not
+  qualified and are not paid; their share rolls over like any unpaid share.
 - **Bragging rights:**
   - The top 3 on each board get a profile medal naming the board and period, for
     example "Weekly Shark 🥇 · Wk 42 2026". Medals use the existing `medals`

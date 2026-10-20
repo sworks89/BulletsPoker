@@ -2142,7 +2142,9 @@ impl State {
         for (pr, (who, share)) in result.players.iter().zip(shares) {
             if share > 0 {
                 let house = if hosted { share - share * HOST_RAKE_SHARE_BPS / 10_000 } else { share };
-                self.earn_rake(&who, share, house, now);
+                if let Some(tier) = self.earn_rake(&who, share, house, now) {
+                    self.announce_tier_up(&who, tier, Channel::Table(id), now);
+                }
             }
             self.record_icp_hand(&who, pr.won as i64 - pr.committed as i64, now);
         }
@@ -4710,7 +4712,9 @@ mod tests {
         s.earn_rake(&p(1), 500_000, 500_000, 0);
         let a = account(&s, p(1));
         assert_eq!(tier_index(a.tier_points), 1);
-        assert_eq!(a.spins, vec![BankedSpin { stake: 500_000, tier: 1 }]);
+        // 500 points cross one 400-point step; the 100 left on the meter keep their fifth of the stake.
+        assert_eq!(a.spins, vec![BankedSpin { stake: 400_000, tier: 1 }]);
+        assert_eq!(a.meter_stake, 100_000);
         assert_eq!(a.meter, 100, "Shrimp steps are 400 points");
         // Sub-point rake neither earns points nor restarts the decay clock.
         s.earn_rake(&p(1), 500, 500, 20 * DAY_NS);
@@ -4721,7 +4725,7 @@ mod tests {
         assert_eq!(tier_index(a.tier_points), 0, "back to Plankton");
         assert_eq!(a.lifetime_points, 501);
         assert_eq!(a.last_earned_at, 30 * DAY_NS);
-        assert_eq!(a.spins[0], BankedSpin { stake: 500_000, tier: 1 }, "banked spins are kept");
+        assert_eq!(a.spins[0], BankedSpin { stake: 400_000, tier: 1 }, "banked spins are kept");
         // The meter follows lifetime points: 100 + 1 crosses a Plankton step.
         assert_eq!(a.spins.len(), 2);
         assert_eq!(a.spins[1].tier, 0);
@@ -4748,6 +4752,7 @@ mod tests {
             assert_eq!(a.lifetime_points, fee / 1_000);
             assert_eq!(a.carry_e8s, 0);
             assert_eq!(a.period.w_rake, fee);
+            assert_eq!(a.period.w_house_rake, Some(fee), "a tournament fee is all the house's");
         }
         // A late entry's fee is final at once, so it earns at registration.
         s.register_tournament(p(13), id, start_at + SEC).unwrap();
@@ -4863,5 +4868,229 @@ mod tests {
         assert_eq!(v.tier_points, crate::rewards::decayed(500, 0, 30 * DAY_NS));
         assert_eq!((v.tier, v.decay_starts_in_days), (0, Some(0)));
         assert_eq!(v.lifetime_points, 500);
+    }
+
+    // ---- Rewards: final-review fixes ----
+
+    #[test]
+    fn spin_stake_leaves_the_meters_share_behind() {
+        use crate::rewards::BankedSpin;
+        let mut s = setup();
+        s.earn_rake(&p(1), 99_000, 99_000, SEC);
+        s.earn_rake(&p(1), 150_000, 150_000, 2 * SEC);
+        let a = account(&s, p(1));
+        // 249 points cross two 100-point steps; the 49 left keep 49/249 of the stake.
+        assert_eq!(a.spins, vec![BankedSpin { stake: 100_000, tier: 0 }; 2]);
+        assert_eq!((a.meter, a.meter_stake), (49, 49_000));
+        // Uneven stakes: the division's remainder stays in the meter, nothing is lost.
+        let mut s = setup();
+        s.earn_rake(&p(2), 250_000, 250_001, SEC);
+        let a = account(&s, p(2));
+        let stakes: u64 = a.spins.iter().map(|x| x.stake).sum();
+        assert_eq!(a.spins.len(), 2);
+        assert!(a.spins.iter().all(|x| x.stake == a.spins[0].stake));
+        assert_eq!(a.meter, 50);
+        assert_eq!(stakes + a.meter_stake, 250_001);
+        let keep = 250_001 * 50 / 250;
+        assert_eq!(a.meter_stake, keep + (250_001 - keep) % 2);
+    }
+
+    #[test]
+    fn earn_rake_reports_a_tier_rise_after_decay() {
+        let mut s = setup();
+        assert_eq!(s.earn_rake(&p(1), 499_000, 499_000, 0), None);
+        assert_eq!(s.earn_rake(&p(1), 1_000, 1_000, SEC), Some(1), "500 points: Shrimp");
+        assert_eq!(s.earn_rake(&p(1), 1_000, 1_000, 2 * SEC), None);
+        // Decayed back to Plankton: sub-point rake is no rise...
+        let later = 30 * DAY_NS;
+        assert_eq!(crate::rewards::tier_index(crate::rewards::decayed(501, 2 * SEC, later)), 0);
+        assert_eq!(s.earn_rake(&p(1), 500, 500, later), None);
+        // ...but earning back to Shrimp is.
+        assert_eq!(s.earn_rake(&p(1), 500_000, 500_000, later), Some(1));
+        assert_eq!(s.earn_rake(&p(99), 500_000, 500_000, later), None, "unregistered");
+    }
+
+    #[test]
+    fn tier_up_posts_a_line_at_the_table() {
+        let mut s = setup();
+        let table = 7; // Low Rollers
+        {
+            let mut u = s.users.get_mut(&p(1)).unwrap();
+            let a = u.rewards.get_or_insert_with(Default::default);
+            (a.tier_points, a.lifetime_points, a.last_earned_at, a.carry_e8s) = (499, 499, SEC, 999);
+        }
+        let buy = s.tables[&table].config.max_buy_in;
+        for (k, seat) in [(1, 0), (2, 3), (3, 5)] {
+            s.join_table(p(k), table, seat, buy, None, 0).unwrap();
+        }
+        play_hands(&mut s, table, 6, SEC);
+        assert!(account(&s, p(1)).tier_points >= 500, "the test should reach Shrimp");
+        let lines: Vec<String> = s.chat_since(Channel::Table(table), 0).into_iter().filter(|m| m.kind == MessageKind::System).map(|m| m.text).collect();
+        let ups: Vec<&String> = lines.iter().filter(|t| t.contains("in the Fish Buffet")).collect();
+        assert_eq!(ups, vec!["🦐 player1 reached Shrimp in the Fish Buffet!"], "{lines:?}");
+        assert!(s.chat_since(Channel::Lobby, 0).iter().all(|m| !m.text.contains("Fish Buffet")), "only at the table");
+    }
+
+    #[test]
+    fn house_rake_counters_hosted_vs_house_tables() {
+        // A house table: the house's share is all of it.
+        let mut s = setup();
+        let table = 7;
+        let buy = s.tables[&table].config.max_buy_in;
+        s.join_table(p(1), table, 0, buy, None, 0).unwrap();
+        s.join_table(p(2), table, 3, buy, None, 0).unwrap();
+        play_hands(&mut s, table, 6, SEC);
+        let shares = attributed(&table_hands(&s, table), false);
+        for k in 1..=2 {
+            let c = account(&s, p(k)).period;
+            assert!(shares[&p(k)] > 0);
+            assert_eq!((c.w_house_rake, c.m_house_rake), (Some(shares[&p(k)]), Some(shares[&p(k)])));
+            assert_eq!(c.w_rake, shares[&p(k)]);
+        }
+        // A hosted room: the host's 20% is not the house's.
+        let mut s = setup();
+        s.user_mut(&p(1)).unwrap().xp = 50;
+        let id = s
+            .create_room(
+                p(1),
+                RoomArgs { name: "Ring".into(), currency: Currency::Icp, big_blind: 2_000_000, max_seats: 6, password: None, action_timeout_secs: 30 },
+                0,
+            )
+            .unwrap();
+        s.join_table(p(2), id, 1, 100_000_000, None, 0).unwrap();
+        s.join_table(p(1), id, 0, 100_000_000, None, 0).unwrap();
+        play_hands(&mut s, id, 10, SEC);
+        let hands = table_hands(&s, id);
+        let (shares, house_of) = (attributed(&hands, false), attributed(&hands, true));
+        for k in 1..=2 {
+            let c = account(&s, p(k)).period;
+            assert!(house_of[&p(k)] < shares[&p(k)]);
+            assert_eq!(c.w_rake, shares[&p(k)]);
+            assert_eq!((c.w_house_rake, c.m_house_rake), (Some(house_of[&p(k)]), Some(house_of[&p(k)])));
+        }
+    }
+
+    #[test]
+    fn stored_accounts_without_the_new_fields_still_decode() {
+        use crate::rewards::{BankedSpin, PeriodCounters, RewardsAccount, SpinRecord};
+        #[derive(CandidType)]
+        struct OldCounters {
+            week: u64,
+            month: u64,
+            w_points: u64,
+            m_points: u64,
+            w_net: i64,
+            m_net: i64,
+            w_hands: u32,
+            m_hands: u32,
+            w_rake: u64,
+            m_rake: u64,
+        }
+        #[derive(CandidType)]
+        struct OldAccount {
+            tier_points: u64,
+            lifetime_points: u64,
+            last_earned_at: u64,
+            carry_e8s: u64,
+            meter: u64,
+            meter_stake: u64,
+            spins: Vec<BankedSpin>,
+            history: VecDeque<SpinRecord>,
+            period: OldCounters,
+        }
+        let old = OldAccount {
+            tier_points: 600,
+            lifetime_points: 700,
+            last_earned_at: 5,
+            carry_e8s: 9,
+            meter: 50,
+            meter_stake: 50_000,
+            spins: vec![BankedSpin { stake: 1, tier: 1 }],
+            history: VecDeque::new(),
+            period: OldCounters { week: 3, month: 4, w_points: 1, m_points: 2, w_net: -3, m_net: 4, w_hands: 5, m_hands: 6, w_rake: 7, m_rake: 8 },
+        };
+        let a: RewardsAccount = candid::decode_one(&candid::encode_one(&old).unwrap()).unwrap();
+        assert_eq!((a.tier_points, a.lifetime_points, a.meter_stake, a.spins_taken), (600, 700, 50_000, None));
+        let c: PeriodCounters = a.period;
+        assert_eq!((c.week, c.month, c.w_net, c.m_rake), (3, 4, -3, 8));
+        assert_eq!((c.w_house_rake, c.m_house_rake, c.m_weekly_prizes), (None, None, None));
+        assert_eq!(c.weekly_prizes_in(4), 0);
+
+        // A user saved before rewards existed.
+        #[derive(CandidType)]
+        struct OldUser {
+            username: String,
+            status: String,
+            balance: u64,
+            chips: u64,
+            settings: Settings,
+            history: VecDeque<u64>,
+            daily_streak: u32,
+            last_daily_at: u64,
+            last_throw_at: u64,
+            medals: BTreeMap<String, u64>,
+            gifts_sent: u64,
+            throws_made: u64,
+            ops: Vec<u64>,
+            blocked: BTreeSet<Principal>,
+            ban: Option<Ban>,
+            chat_muted_until: u64,
+            reports_day: u64,
+            reports_today: u32,
+            avatar: u32,
+            card_back: u32,
+            inventory: Vec<u32>,
+            friends: BTreeSet<Principal>,
+            friend_requests: BTreeSet<Principal>,
+            stats: Stats,
+            xp: u64,
+            gift: Option<ActiveGift>,
+            created_at: u64,
+            last_seen: u64,
+            last_chat_at: u64,
+        }
+        let mut s = setup();
+        let u = s.users.get(&p(1)).unwrap();
+        let old = OldUser {
+            username: u.username.clone(),
+            status: u.status.clone(),
+            balance: u.balance,
+            chips: u.chips,
+            settings: u.settings.clone(),
+            history: u.history.clone(),
+            daily_streak: u.daily_streak,
+            last_daily_at: u.last_daily_at,
+            last_throw_at: u.last_throw_at,
+            medals: u.medals.clone(),
+            gifts_sent: u.gifts_sent,
+            throws_made: u.throws_made,
+            ops: u.ops.clone(),
+            blocked: u.blocked.clone(),
+            ban: u.ban.clone(),
+            chat_muted_until: u.chat_muted_until,
+            reports_day: u.reports_day,
+            reports_today: u.reports_today,
+            avatar: u.avatar,
+            card_back: u.card_back,
+            inventory: u.inventory.clone(),
+            friends: u.friends.clone(),
+            friend_requests: u.friend_requests.clone(),
+            stats: u.stats.clone(),
+            xp: u.xp,
+            gift: u.gift.clone(),
+            created_at: u.created_at,
+            last_seen: u.last_seen,
+            last_chat_at: u.last_chat_at,
+        };
+        drop(u);
+        let back: User = candid::decode_one(&candid::encode_one(&old).unwrap()).unwrap();
+        assert_eq!((back.username.as_str(), back.balance), ("player1", 10 * E8S));
+        assert!(back.rewards.is_none());
+        // ...and reads as a zero account that can start earning.
+        s.users.insert(p(1), back);
+        let v = s.rewards_view(&p(1), SEC);
+        assert_eq!((v.tier, v.tier_points, v.spins_banked), (0, 0, 0));
+        s.earn_rake(&p(1), 1_000, 1_000, SEC);
+        assert_eq!(account(&s, p(1)).period.w_house_rake, Some(1_000));
     }
 }

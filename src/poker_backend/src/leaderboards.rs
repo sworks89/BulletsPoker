@@ -83,10 +83,6 @@ fn weekly(board: usize) -> bool {
     board < 2
 }
 
-fn winnings(board: usize) -> bool {
-    board % 2 == 1
-}
-
 /// The board's period (week or month) containing `now`.
 pub fn period_of(board: usize, now: u64) -> u64 {
     if weekly(board) {
@@ -179,15 +175,19 @@ pub struct BoardView {
     pub last_winners: Vec<BoardRow>,
 }
 
-/// A player's (value, hands, rake paid) on `board` for `period`, or `None`
+/// A player's (value, hands, prize cap) on `board` for `period`, or `None`
 /// when their counters belong to another period.
+///
+/// The cap is the chip-dumping guard of the winnings boards: the house's share
+/// of the rake the player paid in the period, and for a month less the weekly
+/// winnings prizes already paid to them during it. Points boards have no cap.
 fn period_counters(c: &PeriodCounters, board: usize, period: u64) -> Option<(i64, u32, u64)> {
     let points = |x: u64| i64::try_from(x).unwrap_or(i64::MAX);
     match board {
-        0 => (c.week == period).then(|| (points(c.w_points), c.w_hands, c.w_rake)),
-        1 => (c.week == period).then_some((c.w_net, c.w_hands, c.w_rake)),
-        2 => (c.month == period).then(|| (points(c.m_points), c.m_hands, c.m_rake)),
-        _ => (c.month == period).then_some((c.m_net, c.m_hands, c.m_rake)),
+        0 => (c.week == period).then(|| (points(c.w_points), c.w_hands, u64::MAX)),
+        1 => (c.week == period).then(|| (c.w_net, c.w_hands, c.w_house_rake.unwrap_or(0))),
+        2 => (c.month == period).then(|| (points(c.m_points), c.m_hands, u64::MAX)),
+        _ => (c.month == period).then(|| (c.m_net, c.m_hands, c.m_house_rake.unwrap_or(0).saturating_sub(c.weekly_prizes_in(period)))),
     }
 }
 
@@ -240,7 +240,7 @@ impl State {
         let pool = self.rewards.as_ref().map_or(0, |r| r.board_pools[b]);
         let label = period_label(b, closed.period);
         let winners: Vec<BoardRow> = self
-            .standings(b, closed, pool)
+            .standings(b, closed, pool, now)
             .into_iter()
             .filter(|r| r.qualified)
             .take(PRIZE_PCT.len())
@@ -250,6 +250,12 @@ impl State {
             w.rank = i as u32 + 1;
             if w.prize > 0 && self.credit(&w.player, w.prize).is_ok() {
                 self.rewards_mut().board_pools[b] -= w.prize;
+                if b == 1 {
+                    // A weekly winnings prize comes off the cap of the month it is paid in.
+                    if let Some(mut u) = self.users.get_mut(&w.player) {
+                        u.rewards.get_or_insert_with(Default::default).period.add_weekly_prize(month_of(now), w.prize);
+                    }
+                }
             } else {
                 w.prize = 0;
             }
@@ -275,8 +281,9 @@ impl State {
     }
 
     /// Every row of a board's list as shown: its place on the list, whether it
-    /// qualifies and the prize it would get from `pool` (in qualifier order).
-    fn standings(&self, b: usize, list: &BoardList, pool: u64) -> Vec<BoardRow> {
+    /// qualifies (a suspended player never does) and the prize it would get
+    /// from `pool` (in qualifier order).
+    fn standings(&self, b: usize, list: &BoardList, pool: u64, now: u64) -> Vec<BoardRow> {
         let mut qualifiers = 0;
         list.rows
             .iter()
@@ -284,16 +291,12 @@ impl State {
             .map(|(i, &(player, value, _))| {
                 let u = self.users.get(&player);
                 let c = u.as_ref().and_then(|u| u.rewards.as_ref()).and_then(|a| period_counters(&a.period, b, list.period));
-                let qualified = value > 0 && c.is_some_and(|c| c.1 >= min_hands(b));
+                let qualified = value > 0 && c.is_some_and(|c| c.1 >= min_hands(b)) && !self.is_banned(&player, now);
                 let prize = if qualified {
                     let s = share(pool, qualifiers);
                     qualifiers += 1;
-                    // The chip-dumping guard: a winnings prize never exceeds the rake paid.
-                    if winnings(b) {
-                        s.min(c.map_or(0, |c| c.2))
-                    } else {
-                        s
-                    }
+                    // The chip-dumping guard (see `period_counters`).
+                    s.min(c.map_or(0, |c| c.2))
                 } else {
                     0
                 };
@@ -363,7 +366,7 @@ impl State {
                 let fresh = BoardList { period: period_of(b, now), rows: vec![] };
                 let list = r.and_then(|r| r.boards.as_ref()).map_or(&fresh, |l| &l[b]);
                 let pool = r.map_or(0, |r| r.board_pools[b]);
-                let mut rows = self.standings(b, list, pool);
+                let mut rows = self.standings(b, list, pool, now);
                 let me = caller.and_then(|c| {
                     rows.iter().find(|row| row.player == c).cloned().or_else(|| {
                         let u = self.users.get(&c)?;
@@ -556,21 +559,21 @@ mod tests {
         let mut s = setup(4);
         let t = JUNE + DAY_NS;
         s.rewards_mut().board_pools[1] = 10 * E8S;
-        // p1: a big winner with 199 hands. p2: a loser. p3: a winner who paid 0.01 ICP of rake.
-        set(&mut s, p(1), t, |c| (c.w_hands, c.w_net, c.w_rake) = (199, 5 * E8S as i64, E8S));
-        set(&mut s, p(2), t, |c| (c.w_hands, c.w_net, c.w_rake) = (500, -(E8S as i64), E8S));
-        set(&mut s, p(3), t, |c| (c.w_hands, c.w_net, c.w_rake) = (200, E8S as i64, E8S / 100));
+        // p1: a big winner with 199 hands. p2: a loser. p3: a winner whose rake left the house 0.01 ICP (the cap, not the full 2 ICP of rake).
+        set(&mut s, p(1), t, |c| (c.w_hands, c.w_net, c.w_rake, c.w_house_rake) = (199, 5 * E8S as i64, E8S, Some(E8S)));
+        set(&mut s, p(2), t, |c| (c.w_hands, c.w_net, c.w_rake, c.w_house_rake) = (500, -(E8S as i64), E8S, Some(E8S)));
+        set(&mut s, p(3), t, |c| (c.w_hands, c.w_net, c.w_rake, c.w_house_rake) = (200, E8S as i64, 2 * E8S, Some(E8S / 100)));
         let v = board(&s, 1, t);
         assert_eq!(values(&v), vec![(p(1), 5 * E8S as i64), (p(3), E8S as i64)], "the loser is not listed");
         assert_eq!((v.rows[0].qualified, v.rows[0].hands, v.rows[0].prize), (false, 199, 0));
-        assert_eq!((v.rows[1].qualified, v.rows[1].prize), (true, E8S / 100), "first qualifier, capped at rake");
+        assert_eq!((v.rows[1].qualified, v.rows[1].prize), (true, E8S / 100), "first qualifier, capped at the house share of the rake");
         assert_eq!(v.pool, 10 * E8S);
 
         let before = (balance(&s, p(1)), balance(&s, p(2)), balance(&s, p(3)));
         s.tick(JUNE + WEEK);
         assert_eq!(balance(&s, p(1)), before.0, "199 hands get nothing");
         assert_eq!(balance(&s, p(2)), before.1);
-        assert_eq!(balance(&s, p(3)), before.2 + E8S / 100, "at most the rake paid");
+        assert_eq!(balance(&s, p(3)), before.2 + E8S / 100, "at most the house share of the rake paid");
         assert_eq!(s.rewards().board_pools[1], 10 * E8S - E8S / 100, "the rest stays in the quarter");
         let v = board(&s, 1, JUNE + WEEK);
         assert_eq!(v.last_winners.len(), 1);
@@ -584,8 +587,8 @@ mod tests {
         let mut s = setup(3);
         let t = JUNE + DAY_NS;
         s.rewards_mut().board_pools[3] = E8S;
-        set(&mut s, p(1), t, |c| (c.m_hands, c.m_net, c.m_rake) = (499, 10, E8S));
-        set(&mut s, p(2), t, |c| (c.m_hands, c.m_net, c.m_rake) = (500, 5, E8S));
+        set(&mut s, p(1), t, |c| (c.m_hands, c.m_net, c.m_house_rake) = (499, 10, Some(E8S)));
+        set(&mut s, p(2), t, |c| (c.m_hands, c.m_net, c.m_house_rake) = (500, 5, Some(E8S)));
         let v = board(&s, 3, t);
         assert_eq!(v.rows.iter().map(|r| r.qualified).collect::<Vec<_>>(), vec![false, true]);
         assert_eq!(v.label, "2026-06");
@@ -687,5 +690,115 @@ mod tests {
         assert_eq!(lines.len(), 2, "{lobby:?}");
         assert!(lines[0].contains("2026-W23") && lines[0].contains("player1") && lines[0].contains("0.3 ICP"), "{}", lines[0]);
         assert!(lines[0].contains("player2") && lines[0].contains("0.2 ICP"), "{}", lines[0]);
+    }
+
+    /// A chip-dumping ring: `a` loses `hands` hands to `b`, both paying rake,
+    /// through the real counter paths. `hosted`: the table is a room `a` owns,
+    /// so 20% of the rake goes back to `a` and only 80% is the house's.
+    /// Returns the house share of the rake the ring paid.
+    fn dump(s: &mut State, a: Principal, b: Principal, hands: u32, hosted: bool, start: u64) -> u64 {
+        let rake = 10_000; // per hand, 5,000 attributed to each
+        let house = if hosted { 4_000 } else { 5_000 };
+        for h in 0..hands as u64 {
+            let now = start + h * SEC;
+            s.earn_rake(&a, rake / 2, house, now);
+            s.earn_rake(&b, rake / 2, house, now);
+            s.record_icp_hand(&a, -100_000, now);
+            s.record_icp_hand(&b, 100_000, now);
+        }
+        2 * house * hands as u64
+    }
+
+    #[test]
+    fn a_chip_dumping_ring_gets_back_less_than_the_house_rake_it_paid() {
+        for hosted in [true, false] {
+            let mut s = setup(2);
+            let (a, b) = (p(1), p(2));
+            // Big winnings pools, so only the guard limits the prizes (points boards empty).
+            s.rewards_mut().board_pools = [0, 100 * E8S, 0, 100 * E8S];
+            let t = JUNE + DAY_NS;
+            let house_paid = dump(&mut s, a, b, 500, hosted, t);
+            let b_house = house_paid / 2;
+            assert_eq!(s.users.get(&b).unwrap().rewards.unwrap().period.w_house_rake, Some(b_house));
+            let start = balance(&s, b);
+            s.tick(JUNE + WEEK);
+            let weekly = balance(&s, b) - start;
+            assert_eq!(weekly, b_house, "weekly capped at the house share (hosted: {hosted})");
+            s.tick(JUNE + 30 * DAY_NS); // 2026-07-01
+            let total = balance(&s, b) - start;
+            assert_eq!(total, b_house, "the monthly cap is used up by the weekly prize (hosted: {hosted})");
+            assert!(total <= house_paid);
+            assert_eq!(balance(&s, a), 0, "the dumper wins nothing");
+        }
+    }
+
+    #[test]
+    fn monthly_winnings_cap_subtracts_weekly_prizes_paid_that_month() {
+        let mut s = setup(2);
+        let (a, b) = (p(1), p(2));
+        // The weekly pool pays B 0.3 x 1,000,000 = 300,000, below B's house rake.
+        s.rewards_mut().board_pools = [0, 1_000_000, 0, 100 * E8S];
+        let house_paid = dump(&mut s, a, b, 500, true, JUNE + DAY_NS);
+        let b_house = house_paid / 2; // 2,000,000
+        let start = balance(&s, b);
+        s.tick(JUNE + WEEK);
+        assert_eq!(balance(&s, b) - start, 300_000);
+        let c = s.users.get(&b).unwrap().rewards.unwrap().period;
+        assert_eq!(c.m_weekly_prizes, Some((month_of(JUNE), 300_000)));
+        // The month's board shows (and later pays) the remaining 1,700,000.
+        let v = board(&s, 3, JUNE + WEEK);
+        assert_eq!((v.rows[0].player, v.rows[0].prize), (b, b_house - 300_000));
+        s.tick(JUNE + 30 * DAY_NS);
+        assert_eq!(balance(&s, b) - start, b_house, "weekly + monthly = the house rake B paid");
+    }
+
+    #[test]
+    fn a_week_and_a_month_closing_together_both_pay() {
+        // 2026-06-01 is a Monday: week 2026-W22 and May close at the same tick.
+        let may25 = JUNE - WEEK;
+        let mut s = setup(2);
+        let (a, b) = (p(1), p(2));
+        s.rewards_mut().board_pools = [0, 1_000_000, 0, 100 * E8S];
+        let house_paid = dump(&mut s, a, b, 500, false, may25 + DAY_NS);
+        let b_house = house_paid / 2; // 2,500,000
+        let start = balance(&s, b);
+        s.tick(JUNE);
+        // Paying the week must not wipe May's counters before May is paid.
+        let last = |s: &State, b: usize| board(s, b, JUNE).last_winners.iter().map(|w| (w.player, w.prize)).collect::<Vec<_>>();
+        assert_eq!(last(&s, 1), vec![(b, 300_000)]);
+        assert_eq!(last(&s, 3), vec![(b, b_house)], "May's cap is May's house rake: the weekly prize was paid in June");
+        assert_eq!(balance(&s, b) - start, 300_000 + b_house);
+        let c = s.users.get(&b).unwrap().rewards.unwrap().period;
+        assert_eq!(c.m_weekly_prizes, Some((month_of(JUNE), 300_000)), "counted against June");
+    }
+
+
+    #[test]
+    fn suspended_players_are_not_paid_and_their_share_rolls_over() {
+        use crate::moderation::Ban;
+        let mut s = setup(3);
+        let t = JUNE + DAY_NS;
+        s.rewards_mut().board_pools[0] = E8S;
+        s.earn_rake(&p(1), 300_000, 0, t);
+        s.earn_rake(&p(2), 200_000, 0, t);
+        s.earn_rake(&p(3), 100_000, 0, t);
+        // p1: suspended until after the close. p3: a ban that ended before it.
+        s.users.get_mut(&p(1)).unwrap().ban = Some(Ban { until: JUNE + 2 * WEEK, reason: "chip dumping".into() });
+        s.users.get_mut(&p(3)).unwrap().ban = Some(Ban { until: JUNE + WEEK - SEC, reason: "spam".into() });
+        let v = board(&s, 0, t);
+        assert_eq!(v.rows.iter().map(|r| (r.qualified, r.prize)).collect::<Vec<_>>(), vec![(false, 0), (true, 30 * E8S / 100), (false, 0)], "p3 is still banned now");
+        let before: Vec<u64> = (1..=3).map(|k| balance(&s, p(k))).collect();
+        s.tick(JUNE + WEEK);
+        assert_eq!(balance(&s, p(1)), before[0], "a suspended player is not paid");
+        assert_eq!(balance(&s, p(2)), before[1] + 30 * E8S / 100, "the next player takes first place");
+        assert_eq!(balance(&s, p(3)), before[2] + 20 * E8S / 100);
+        assert_eq!(s.rewards().board_pools[0], E8S - 50 * E8S / 100, "the rest stays in the pool");
+        let w = &board(&s, 0, JUNE + WEEK).last_winners;
+        assert_eq!(w.iter().map(|w| (w.player, w.rank)).collect::<Vec<_>>(), vec![(p(2), 1), (p(3), 2)]);
+        assert!(!s.users.get(&p(1)).unwrap().medals.keys().any(|k| k.starts_with("lb:")));
+        // A permanent ban counts too.
+        s.users.get_mut(&p(2)).unwrap().ban = Some(Ban { until: 0, reason: "x".into() });
+        s.earn_rake(&p(2), 100_000, 0, JUNE + WEEK + SEC);
+        assert!(!board(&s, 0, JUNE + WEEK + SEC).rows[0].qualified);
     }
 }

@@ -200,6 +200,11 @@ impl State {
         self.moderators.contains(p)
     }
 
+    /// Is the player currently suspended?
+    pub fn is_banned(&self, p: &Principal, now: u64) -> bool {
+        self.check_not_banned(p, now).is_err()
+    }
+
     /// Err if the player is currently suspended.
     pub fn check_not_banned(&self, p: &Principal, now: u64) -> R<()> {
         if let Some(ban) = self.users.get(p).and_then(|u| u.ban) {
