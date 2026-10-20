@@ -218,3 +218,113 @@ rollers reach Shark within about a day.
 - Animation details, the creature drawings themselves, and the layout of the
   Rewards page within the existing style.
 - How the cycle measurement is done.
+
+## Measured (local, 2026-10-20)
+
+Measured on the local icp-cli network (PocketIC) with the `rewards` branch
+freshly deployed. Two bots played heads-up at **Low Rollers** (0.001/0.002 ICP,
+house table, no host cut). They mostly checked and called, with occasional
+min-raises.
+
+- **Hands:** 100 completed (877 actions, about 10 s per hand). About 94 had a
+  flop. That is estimated from the total rake; 49 of the 50 hand records
+  checked had a flop.
+- **Reading cycles:** single `icp canister status` reads are noisy by up to
+  about 85 B cycles. The likely cause is cycles reserved for calls that are
+  still in flight. So the balance was sampled every 1–2 s and a trend line
+  fitted through the samples, rather than taking two reads and subtracting.
+
+### Cycles
+
+| What | Measured |
+|---|---|
+| Idle burn (no players seated, 10 min) | **≈ 1.2 B cycles/min** (1.22–1.26 B fitted; an earlier two-read window gave 1.12 B) ≈ 1.8 T/day |
+| Burn while playing (100 hands, 1,034 s) | 34.6 B in total, ≈ 2.0–2.3 B/min |
+| **Extra per hand** (play minus idle for the same time) | **≈ 0.15 B cycles** (0.13–0.18 B) |
+| Storage-only "idle cycles burned per day" from the status output | 2.7 B/day (negligible) |
+
+The idle burn comes from the canister's timers. By inference, most of it is the
+1-second `tick` (about 20 M cycles per second). This was not isolated. The other
+timers are rare:
+- `retry_unknown_ops`, every 60 s;
+- `refresh_entropy`, one `raw_rand` every 300 s;
+- the solvency check, which calls the ledger every 600 s.
+
+**Converting to USD.** 1 T cycles = 1 XDR ≈ $1.35.
+- One hand costs about $0.0002 (range $0.00018–0.00024).
+- Idle costs about $2.4 a day, or **about $70 a month**.
+- The local clock runs about 9% fast. If the timer fires per canister-second,
+  the wall-clock figure is about 9% high, which gives about $65 a month.
+
+### Rake per hand
+
+**Low Rollers (measured):** 2,390,000 e8s of rake over 100 hands, so **23,900 e8s
+(0.000239 ICP) per hand**. The average heads-up pot was about 5 BB.
+
+**Penny Lane (derived):** blinds and cap are exactly 0.1×, and the cap never
+binds on these pots, so **2,390 e8s per hand**.
+
+The ICP price below is **an assumption**, not a measurement: a range of $3–$10.
+
+| Table | Rake per hand | House 60% per hand | Marginal cycles per hand | Does the 60% cover it? |
+|---|---|---|---|---|
+| Penny Lane | $0.000072–0.00024 | $0.000043–0.00014 | ≈ $0.0002 | **No** (0.2–0.7×). Even 100% of the rake covers it only when ICP is above about $8.4. |
+| Low Rollers | $0.00072–0.0024 | $0.00043–0.0014 | ≈ $0.0002 | **Yes** (2–7×) |
+| High Roller (scaled ×100) | $0.07–0.24 | $0.04–0.14 | ≈ $0.0002 | Yes, by a wide margin |
+
+### Verdict
+
+- **The 30/10/60 split stands**, and it worked exactly as specified:
+  - The fish pool got 717,000 e8s (30.0%), the leaderboard pool 239,000 e8s
+    (10.0%, i.e. 59,750 per board) and the treasury 1,434,000 e8s (60.0%).
+  - Penny Lane's shortfall comes from its stakes, not the split, while ICP is
+    below about $8.4: there, even 100% of the rake falls short of the per-hand
+    cycle cost. Between about $8.4 and $10, 100% would cover it and 60% does
+    not, so only in that band is the split the lever.
+- **Penny Lane is not break-even on cycles**, unlike the estimate above. Each
+  hand loses a little, so treat it as a funnel for new players.
+- **The fixed cost is underestimated.**
+  - Measured locally, the 1-second timer costs about $70 a month, against the
+    $5–10 estimate above.
+  - The house share covers it after roughly 60k–300k Low Rollers hands a month
+    (depending on the ICP price), or about 500–1,700 High Roller hands.
+  - Making the idle timers cheaper is the larger saving. The candidate is
+    `tick` (inferred, not isolated): skip work when no table is active, or slow
+    it down when idle. Profile it on mainnet before acting.
+- **Caveats:**
+  - PocketIC's cycle charging may differ from a mainnet 13-node subnet. This has
+    not been confirmed on mainnet, so re-measure there before relying on these
+    figures.
+  - These were heads-up hands with about 9 actions each. A full 9-max hand has
+    more actions and costs more cycles, but it also builds bigger pots and so
+    more rake.
+  - The bots played at about 10 s a hand. Any per-second cost of an active
+    table is folded into the per-hand figure at that pace. Human-paced hands of
+    30–60 s may cost more per hand.
+
+### Observed end to end
+
+- **Points:** each bot earned 1,195 points. That is 2,390,000 e8s ÷ 1,000 in
+  total, split evenly because both bots contributed equally.
+- **Tiers and spins:** both bots reached Shrimp and banked 5 spins:
+  - 4 spins at Plankton (step 100);
+  - 1 spin at Shrimp (step 400) after passing 500 tier points.
+  - Their meters were at 395.
+- **The wheel:** all 5 of FishBot2's spins paid stake × tier rate × multiplier
+  exactly. Not one was capped.
+  - Each time, the fish pool fell by the payout and the balance rose by the
+    same amount. The history grew to 5.
+  - The stakes were 105k, 95k, 100k, 100k (Plankton) and 420k (Shrimp). A spin's
+    stake includes the house share of the points left over in the meter, so
+    individual stakes vary around step × 1,000 but sum correctly.
+- **Leaderboards:**
+  - Both bots appear on the weekly and monthly points boards, with live prizes
+    of 30% and 20% of the 59,750 e8s quarter.
+  - The bots tied on 1,195 points, reached on the same hand. "First to reach"
+    could not separate them, so `row_order` fell back to principal order. A
+    same-hand tie is therefore decided by an incidental order, worth 10% of the
+    board's quarter.
+  - The winnings boards show only the winner (+169,450 e8s), marked "needs 99
+    more hands". The losing bot sees its own row: −3,491,550 e8s, rank 0.
+- **Solvency:** the automatic check passed after the run, with ledger balance =
+  liabilities (pools and jackpot included). Nothing was paused.
