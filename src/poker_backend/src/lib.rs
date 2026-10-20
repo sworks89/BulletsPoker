@@ -3,6 +3,7 @@
 
 pub mod cards;
 pub mod jackpot;
+pub mod leaderboards;
 pub mod ledger;
 pub mod medals;
 pub mod metrics;

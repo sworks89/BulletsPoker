@@ -175,6 +175,8 @@ pub struct User {
     pub created_at: u64,
     pub last_seen: u64,
     pub last_chat_at: u64,
+    /// Fish Buffet points and banked spins; created on first earn.
+    pub rewards: Option<crate::rewards::RewardsAccount>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq)]
@@ -879,6 +881,7 @@ impl State {
                 created_at: now,
                 last_seen: now,
                 last_chat_at: 0,
+                rewards: None,
             },
         );
         Ok(self.profile(&caller).unwrap())
@@ -2085,6 +2088,7 @@ impl State {
         for (p, net) in leader_updates {
             self.update_leader(p, net);
         }
+        self.apply_hand_rewards(id, currency, in_tournament, &result, now);
         for w in &result.winners {
             let name = self.users.get(&w.player).map(|u| u.username.clone()).unwrap_or_default();
             let text = if in_tournament {
@@ -2107,6 +2111,40 @@ impl State {
             self.after_tournament_hand(id, now);
         } else {
             self.auto_top_up(id);
+        }
+    }
+
+    /// Fish Buffet points and leaderboard counters for a finished hand.
+    /// - ICP cash: the rake is attributed by contribution and earns points;
+    ///   spins are staked with the house's part (after a room host's cut).
+    /// - ICP tournaments: the hand counts toward qualifying, with no net.
+    /// - Chip tables and chip tournaments: nothing.
+    fn apply_hand_rewards(&mut self, id: u64, currency: Currency, in_tournament: bool, result: &HandResult, now: u64) {
+        if in_tournament {
+            let icp_event = self
+                .table_tournament
+                .get(&id)
+                .and_then(|tid| self.tournaments.get(tid))
+                .is_some_and(|t| t.template.currency == Currency::Icp);
+            if icp_event {
+                for pr in &result.players {
+                    self.record_icp_hand(&pr.player, 0, now);
+                }
+            }
+            return;
+        }
+        if currency != Currency::Icp {
+            return;
+        }
+        let hosted = self.rooms.contains_key(&id);
+        let committed: Vec<(Principal, u64)> = result.players.iter().map(|r| (r.player, r.committed)).collect();
+        let shares = crate::rewards::attribute(result.rake, &committed);
+        for (pr, (who, share)) in result.players.iter().zip(shares) {
+            if share > 0 {
+                let house = if hosted { share - share * HOST_RAKE_SHARE_BPS / 10_000 } else { share };
+                self.earn_rake(&who, share, house, now);
+            }
+            self.record_icp_hand(&who, pr.won as i64 - pr.committed as i64, now);
         }
     }
 
@@ -4451,5 +4489,234 @@ mod tests {
         assert_eq!(s.tables[&c].player_count(), 0);
         s.tick(5 * COPY_IDLE_CLOSE_NS);
         assert!(s.tables.contains_key(&c), "seats still hold chips in a live hand");
+    }
+
+    // ---- Rewards: points, tiers, decay and the spin meter ----
+
+    fn account(s: &State, who: Principal) -> crate::rewards::RewardsAccount {
+        s.users.get(&who).unwrap().rewards.unwrap_or_default()
+    }
+
+    fn table_hands(s: &State, table: u64) -> Vec<HandRecord> {
+        s.stores.hands.iter().map(|e| e.value()).filter(|h| h.table_id == table).collect()
+    }
+
+    /// Each player's attributed rake summed over the given hands, in full or
+    /// as the house's part (after a room host's cut).
+    fn attributed(hands: &[HandRecord], house_only: bool) -> BTreeMap<Principal, u64> {
+        let mut out = BTreeMap::new();
+        for h in hands {
+            let committed: Vec<(Principal, u64)> = h.players.iter().map(|x| (x.player, x.committed)).collect();
+            for (who, share) in crate::rewards::attribute(h.rake, &committed) {
+                let part = if house_only { share - share * HOST_RAKE_SHARE_BPS / 10_000 } else { share };
+                *out.entry(who).or_default() += part;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn icp_hand_earns_points_by_contribution() {
+        let mut s = setup();
+        let table = 7; // Low Rollers
+        let buy = s.tables[&table].config.max_buy_in;
+        for (k, seat) in [(1, 0), (2, 3), (3, 5)] {
+            s.join_table(p(k), table, seat, buy, None, 0).unwrap();
+        }
+        play_hands(&mut s, table, 6, SEC);
+        let hands = table_hands(&s, table);
+        let rake: u64 = hands.iter().map(|h| h.rake).sum();
+        assert!(rake > 0);
+        let shares = attributed(&hands, false);
+        let mut earned = 0;
+        for k in 1..=3 {
+            let a = account(&s, p(k));
+            let u = s.users.get(&p(k)).unwrap();
+            assert_eq!(a.lifetime_points * 1_000 + a.carry_e8s, shares[&p(k)]);
+            assert_eq!(a.tier_points, a.lifetime_points);
+            assert_eq!(a.period.w_points, a.lifetime_points);
+            assert_eq!(a.period.m_points, a.lifetime_points);
+            assert_eq!(a.period.w_rake, shares[&p(k)]);
+            assert_eq!(a.period.w_hands as u64, u.stats.hands_played);
+            assert_eq!(a.period.m_hands as u64, u.stats.hands_played);
+            assert_eq!(a.period.w_net, u.stats.net_winnings);
+            assert_eq!(a.period.m_net, u.stats.net_winnings);
+            earned += a.lifetime_points * 1_000 + a.carry_e8s;
+        }
+        // Only the attribution's rounding remainder goes to no one.
+        assert!(earned <= rake && rake - earned < 3 * hands.len() as u64, "earned {earned} of {rake}");
+    }
+
+    #[test]
+    fn chip_and_tournament_hands_earn_no_points() {
+        use crate::tournament::TournamentStatus::*;
+        let mut s = setup();
+        let chip_table = 1;
+        s.join_table(p(1), chip_table, 0, 1_000, None, 0).unwrap();
+        s.join_table(p(2), chip_table, 1, 1_000, None, 0).unwrap();
+        play_hands(&mut s, chip_table, 5, SEC);
+        assert!(s.users.get(&p(1)).unwrap().stats.hands_played > 0);
+        assert!(s.users.get(&p(1)).unwrap().rewards.is_none());
+        assert!(s.users.get(&p(2)).unwrap().rewards.is_none());
+
+        // A chip tournament: nothing at all.
+        many_players(&mut s, 8);
+        let id = open_tournament(&mut s, "Chip Sit & Go · 6 max");
+        for k in 10..16 {
+            s.register_tournament(p(k), id, SEC).unwrap();
+        }
+        run_until(&mut s, 2 * SEC, 5_000, |s| s.tournaments[&id].status == Finished);
+        for k in 10..16 {
+            assert!(s.users.get(&p(k)).unwrap().rewards.is_none());
+        }
+
+        // An ICP tournament: the fee earns points, its hands only count as hands.
+        let id = open_tournament(&mut s, "ICP Heads-Up Duel");
+        s.register_tournament(p(16), id, SEC).unwrap();
+        s.register_tournament(p(17), id, SEC).unwrap();
+        let fee = E8S / 400;
+        run_until(&mut s, 2 * SEC, 5_000, |s| s.tournaments[&id].status == Finished);
+        for k in 16..18 {
+            let a = account(&s, p(k));
+            assert_eq!(a.lifetime_points, fee / 1_000);
+            assert_eq!(a.period.w_rake, fee);
+            let hands = s.users.get(&p(k)).unwrap().stats.hands_played;
+            assert!(hands > 0);
+            assert_eq!(a.period.w_hands as u64, hands);
+            assert_eq!(a.period.w_net, 0, "tournament chips are not ICP won or lost");
+        }
+    }
+
+    #[test]
+    fn crossing_a_step_banks_a_spin_at_the_current_tier() {
+        use crate::rewards::BankedSpin;
+        let mut s = setup();
+        s.earn_rake(&p(1), 99_000, 99_000, SEC);
+        let a = account(&s, p(1));
+        assert_eq!((a.lifetime_points, a.meter, a.meter_stake), (99, 99, 99_000));
+        assert!(a.spins.is_empty());
+        let mut s = setup();
+        s.earn_rake(&p(1), 100_000, 100_000, SEC);
+        let a = account(&s, p(1));
+        assert_eq!(a.lifetime_points, 100);
+        assert_eq!(a.tier_points, 100);
+        assert_eq!(a.spins, vec![BankedSpin { stake: 100_000, tier: 0 }]);
+        assert_eq!((a.meter, a.meter_stake), (0, 0));
+        assert_eq!(a.last_earned_at, SEC);
+        // Leftover e8s carry forward.
+        s.earn_rake(&p(1), 1_500, 1_500, 2 * SEC);
+        s.earn_rake(&p(1), 600, 600, 3 * SEC);
+        let a = account(&s, p(1));
+        assert_eq!((a.lifetime_points, a.carry_e8s, a.meter), (102, 100, 2));
+        // Unregistered players are ignored.
+        s.earn_rake(&p(99), 100_000, 100_000, SEC);
+        assert!(s.users.get(&p(99)).is_none());
+    }
+
+    #[test]
+    fn one_big_pot_banks_several_spins_and_caps_at_fifty() {
+        let mut s = setup();
+        let house = 1_000 * E8S;
+        s.earn_rake(&p(1), house, house, SEC);
+        let a = account(&s, p(1));
+        assert_eq!(a.lifetime_points, house / 1_000);
+        assert_eq!(a.spins.len(), crate::rewards::MAX_SPINS);
+        assert_eq!(a.spins.len(), 50);
+        let stakes: u64 = a.spins.iter().map(|x| x.stake).sum();
+        assert!(stakes > 0 && stakes <= house, "stakes {stakes}");
+        assert!(a.spins.iter().all(|x| x.stake == a.spins[0].stake && x.tier == 6));
+        // A full bank stays full; the meter keeps filling below a step.
+        s.earn_rake(&p(1), house, house, 2 * SEC);
+        let b = account(&s, p(1));
+        assert_eq!(b.spins, a.spins);
+        assert!(b.meter < crate::rewards::TIERS[6].step);
+        assert_eq!(b.lifetime_points, 2 * house / 1_000);
+        // Several spins in one call, below the cap: the stake is split evenly.
+        let mut s = setup();
+        s.earn_rake(&p(2), 300_000, 300_000, SEC);
+        let a = account(&s, p(2));
+        assert_eq!(a.spins.iter().map(|x| x.stake).collect::<Vec<_>>(), vec![100_000; 3]);
+    }
+
+    #[test]
+    fn hosted_room_spin_stake_is_the_house_share() {
+        let mut s = setup();
+        s.user_mut(&p(1)).unwrap().xp = 50;
+        let id = s
+            .create_room(
+                p(1),
+                RoomArgs { name: "Spins".into(), currency: Currency::Icp, big_blind: 2_000_000, max_seats: 6, password: None, action_timeout_secs: 30 },
+                0,
+            )
+            .unwrap();
+        s.join_table(p(2), id, 1, 100_000_000, None, 0).unwrap();
+        s.join_table(p(1), id, 0, 100_000_000, None, 0).unwrap();
+        play_hands(&mut s, id, 10, SEC);
+        let hands = table_hands(&s, id);
+        let shares = attributed(&hands, false);
+        let house_of = attributed(&hands, true);
+        let mut banked = 0;
+        for k in 1..=2 {
+            let a = account(&s, p(k));
+            // Points count the full rake...
+            assert_eq!(a.lifetime_points * 1_000 + a.carry_e8s, shares[&p(k)]);
+            // ...spins are staked with the house's 80%.
+            let stakes: u64 = a.spins.iter().map(|x| x.stake).sum();
+            assert_eq!(stakes + a.meter_stake, house_of[&p(k)]);
+            assert!(house_of[&p(k)] < shares[&p(k)]);
+            banked += a.spins.len();
+        }
+        assert!(banked > 0, "the test should bank at least one spin");
+    }
+
+    #[test]
+    fn decay_lowers_the_tier_but_keeps_spins() {
+        use crate::rewards::{tier_index, BankedSpin};
+        let mut s = setup();
+        s.earn_rake(&p(1), 500_000, 500_000, 0);
+        let a = account(&s, p(1));
+        assert_eq!(tier_index(a.tier_points), 1);
+        assert_eq!(a.spins, vec![BankedSpin { stake: 500_000, tier: 1 }]);
+        assert_eq!(a.meter, 100, "Shrimp steps are 400 points");
+        // Sub-point rake neither earns points nor restarts the decay clock.
+        s.earn_rake(&p(1), 500, 500, 20 * DAY_NS);
+        assert_eq!(account(&s, p(1)).last_earned_at, 0);
+        s.earn_rake(&p(1), 500, 500, 30 * DAY_NS);
+        let a = account(&s, p(1));
+        assert_eq!(a.tier_points, crate::rewards::decayed(500, 0, 30 * DAY_NS) + 1);
+        assert_eq!(tier_index(a.tier_points), 0, "back to Plankton");
+        assert_eq!(a.lifetime_points, 501);
+        assert_eq!(a.last_earned_at, 30 * DAY_NS);
+        assert_eq!(a.spins[0], BankedSpin { stake: 500_000, tier: 1 }, "banked spins are kept");
+        // The meter follows lifetime points: 100 + 1 crosses a Plankton step.
+        assert_eq!(a.spins.len(), 2);
+        assert_eq!(a.spins[1].tier, 0);
+    }
+
+    #[test]
+    fn tournament_fee_earns_points_at_start_only() {
+        use crate::tournament::TournamentStatus::*;
+        let mut s = setup();
+        many_players(&mut s, 4);
+        let fee = E8S / 40;
+        let id = open_tournament(&mut s, "ICP Nightly");
+        for k in 10..12 {
+            s.register_tournament(p(k), id, SEC).unwrap();
+        }
+        assert!(s.users.get(&p(10)).unwrap().rewards.is_none(), "registering earns nothing");
+        s.tick(s.tournaments[&id].start_at);
+        assert_eq!(s.tournaments[&id].status, Cancelled);
+        assert!(s.users.get(&p(10)).unwrap().rewards.is_none(), "a cancelled event earns nothing");
+
+        let (id, start_at) = start_scheduled(&mut s, "ICP Nightly", 10..13);
+        for k in 10..13 {
+            let a = account(&s, p(k));
+            assert_eq!(a.lifetime_points, fee / 1_000);
+            assert_eq!(a.carry_e8s, 0);
+            assert_eq!(a.period.w_rake, fee);
+        }
+        // A late entry's fee is final at once, so it earns at registration.
+        s.register_tournament(p(13), id, start_at + SEC).unwrap();
+        assert_eq!(account(&s, p(13)).lifetime_points, fee / 1_000);
     }
 }

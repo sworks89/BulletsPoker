@@ -482,6 +482,7 @@ impl State {
             if late {
                 // Late entries can't be refunded: the fee is the house's at once.
                 self.fund_rewards(fee);
+                self.earn_rake(&caller, fee, fee, now);
             } else {
                 self.tournament_mut(id)?.fees_held += fee;
             }
@@ -591,7 +592,14 @@ impl State {
         t.tables = table_ids;
         t.recompute_payouts();
         let name = t.template.name.clone();
+        let (currency, fee) = (t.template.currency, t.template.fee);
         self.fund_rewards(fees);
+        // Each entrant's fee is now final rake paid: it earns them points.
+        if currency == Currency::Icp {
+            for p in &order {
+                self.earn_rake(p, fee, fee, now);
+            }
+        }
         self.post(Channel::Lobby, None, String::new(), format!("🏁 {name} is under way with {n} players"), MessageKind::System, now);
     }
 

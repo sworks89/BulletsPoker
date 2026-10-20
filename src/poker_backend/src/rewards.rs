@@ -4,8 +4,10 @@
 //! Board index order everywhere: 0 weekly points, 1 weekly winnings,
 //! 2 monthly points, 3 monthly winnings.
 
+use crate::leaderboards::{month_of, week_of, DAY_NS};
 use crate::state::State;
-use candid::{CandidType, Deserialize};
+use candid::{CandidType, Deserialize, Principal};
+use std::collections::VecDeque;
 
 /// Share of the house's rake that funds the Fish Buffet cashback pool (30%).
 pub const FISH_POOL_BPS: u64 = 3_000;
@@ -28,6 +30,134 @@ impl RewardsState {
     }
 }
 
+/// Attributed rake (e8s) per point.
+pub const E8S_PER_POINT: u64 = 1_000;
+/// Banked spins wait up to this many; further steps bank nothing.
+pub const MAX_SPINS: usize = 50;
+/// Days without earning before tier points start to decay.
+pub const DECAY_GRACE_DAYS: u64 = 7;
+/// Tier points kept per day of decay, out of 100.
+pub const DECAY_KEEP_PCT: u128 = 95;
+
+/// A Fish Buffet tier: reached at `from` tier points, a spin every `step`
+/// points, and the wheel's expected value as a rate of the spin's stake.
+pub struct Tier {
+    pub name: &'static str,
+    pub from: u64,
+    pub step: u64,
+    pub rate_bps: u64,
+}
+
+pub const TIERS: [Tier; 7] = [
+    Tier { name: "Plankton", from: 0, step: 100, rate_bps: 800 },
+    Tier { name: "Shrimp", from: 500, step: 400, rate_bps: 1_100 },
+    Tier { name: "Crab", from: 2_500, step: 1_500, rate_bps: 1_400 },
+    Tier { name: "Octopus", from: 10_000, step: 6_000, rate_bps: 1_700 },
+    Tier { name: "Dolphin", from: 40_000, step: 20_000, rate_bps: 2_000 },
+    Tier { name: "Orca", from: 150_000, step: 70_000, rate_bps: 2_400 },
+    Tier { name: "Shark", from: 500_000, step: 200_000, rate_bps: 2_800 },
+];
+
+/// The tier reached with `points` tier points.
+pub fn tier_index(points: u64) -> usize {
+    TIERS.iter().rposition(|t| points >= t.from).unwrap_or(0)
+}
+
+/// Tier points after decay: unchanged for 7 days after `last_earned_at`, then
+/// ×0.95 (rounded down) per whole extra day.
+pub fn decayed(points: u64, last_earned_at: u64, now: u64) -> u64 {
+    let days = now.saturating_sub(last_earned_at) / DAY_NS;
+    let mut p = points as u128;
+    for _ in DECAY_GRACE_DAYS..days {
+        if p == 0 {
+            break;
+        }
+        p = p * DECAY_KEEP_PCT / 100;
+    }
+    p as u64
+}
+
+/// Splits `rake` over the players in proportion to what each committed,
+/// rounding down. The remainder goes to no one.
+pub fn attribute(rake: u64, players: &[(Principal, u64)]) -> Vec<(Principal, u64)> {
+    let total: u128 = players.iter().map(|(_, c)| *c as u128).sum();
+    players
+        .iter()
+        .map(|(p, c)| (*p, if total == 0 { 0 } else { (rake as u128 * *c as u128 / total) as u64 }))
+        .collect()
+}
+
+/// A spin waiting to be taken: its stake (house-share e8s) and the tier it was banked at.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BankedSpin {
+    pub stake: u64,
+    pub tier: u8,
+}
+
+/// One spin of the wheel, as shown in the player's history.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SpinRecord {
+    pub time: u64,
+    pub tier: String,
+    pub stake: u64,
+    pub multiplier_x10: u64,
+    /// Index into the wheel's segments (for the animation).
+    pub segment: u8,
+    /// Before the pool cap.
+    pub prize: u64,
+    pub paid: u64,
+    pub capped: bool,
+}
+
+/// A player's leaderboard counters for the current week and month. They reset
+/// lazily when `week` or `month` no longer matches the current period.
+#[derive(CandidType, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct PeriodCounters {
+    pub week: u64,
+    pub month: u64,
+    pub w_points: u64,
+    pub m_points: u64,
+    pub w_net: i64,
+    pub m_net: i64,
+    pub w_hands: u32,
+    pub m_hands: u32,
+    pub w_rake: u64,
+    pub m_rake: u64,
+}
+
+impl PeriodCounters {
+    /// Starts new counters for any period that has changed since they were written.
+    pub fn roll(&mut self, now: u64) {
+        let (week, month) = (week_of(now), month_of(now));
+        if self.week != week {
+            (self.week, self.w_points, self.w_net, self.w_hands, self.w_rake) = (week, 0, 0, 0, 0);
+        }
+        if self.month != month {
+            (self.month, self.m_points, self.m_net, self.m_hands, self.m_rake) = (month, 0, 0, 0, 0);
+        }
+    }
+}
+
+/// A player's Fish Buffet account.
+#[derive(CandidType, Deserialize, Clone, Debug, Default)]
+pub struct RewardsAccount {
+    /// Decaying points that decide the tier (decay is applied when points are earned).
+    pub tier_points: u64,
+    /// Points ever earned; never decay.
+    pub lifetime_points: u64,
+    /// When points were last earned (and decay last applied).
+    pub last_earned_at: u64,
+    /// Attributed rake (e8s) not yet worth a whole point.
+    pub carry_e8s: u64,
+    /// Points toward the next spin.
+    pub meter: u64,
+    /// House-share e8s gathered toward the next spin.
+    pub meter_stake: u64,
+    pub spins: Vec<BankedSpin>,
+    pub history: VecDeque<SpinRecord>,
+    pub period: PeriodCounters,
+}
+
 impl State {
     pub(crate) fn rewards(&self) -> RewardsState {
         self.rewards.clone().unwrap_or_default()
@@ -48,5 +178,116 @@ impl State {
             *p += board;
         }
         self.treasury += house_rake - fish - board * BOARDS as u64;
+    }
+
+    /// Credits a player with rake they paid: `rake_e8s` earns points (1 per
+    /// 1,000 e8s, leftovers carried), `house_e8s` is the house's share of it
+    /// and stakes the spins the points bank. Unregistered players are ignored.
+    pub(crate) fn earn_rake(&mut self, p: &Principal, rake_e8s: u64, house_e8s: u64, now: u64) {
+        if rake_e8s == 0 && house_e8s == 0 {
+            return;
+        }
+        self.close_periods(now);
+        {
+            let Some(mut u) = self.users.get_mut(p) else { return };
+            let a = u.rewards.get_or_insert_with(RewardsAccount::default);
+            a.period.roll(now);
+            a.carry_e8s += rake_e8s;
+            let points = a.carry_e8s / E8S_PER_POINT;
+            a.carry_e8s %= E8S_PER_POINT;
+            if points > 0 {
+                // Decay is applied (and its clock restarted) only when whole
+                // points are earned, so no stretch of idle days decays twice.
+                a.tier_points = decayed(a.tier_points, a.last_earned_at, now).saturating_add(points);
+                a.last_earned_at = now;
+            }
+            a.lifetime_points = a.lifetime_points.saturating_add(points);
+            a.period.w_points += points;
+            a.period.m_points += points;
+            a.period.w_rake += rake_e8s;
+            a.period.m_rake += rake_e8s;
+
+            // The meter banks a spin for each step crossed at the tier reached now.
+            a.meter = a.meter.saturating_add(points);
+            a.meter_stake = a.meter_stake.saturating_add(house_e8s);
+            let tier = tier_index(a.tier_points);
+            let step = TIERS[tier].step;
+            let crossed = a.meter / step;
+            if crossed > 0 {
+                a.meter %= step;
+                let stake = a.meter_stake / crossed;
+                // The division's remainder stays toward the next spin.
+                a.meter_stake %= crossed;
+                let room = MAX_SPINS.saturating_sub(a.spins.len()) as u64;
+                for _ in 0..crossed.min(room) {
+                    a.spins.push(BankedSpin { stake, tier: tier as u8 });
+                }
+            }
+        }
+        self.on_points(p, now);
+    }
+
+    /// Counts a hand toward the player's period counters, with its net ICP
+    /// result (0 for tournament hands). Unregistered players are ignored.
+    pub(crate) fn record_icp_hand(&mut self, p: &Principal, net: i64, now: u64) {
+        self.close_periods(now);
+        {
+            let Some(mut u) = self.users.get_mut(p) else { return };
+            let a = u.rewards.get_or_insert_with(RewardsAccount::default);
+            a.period.roll(now);
+            a.period.w_hands += 1;
+            a.period.m_hands += 1;
+            a.period.w_net += net;
+            a.period.m_net += net;
+        }
+        self.on_net(p, now);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::leaderboards::DAY_NS as DAY;
+    use candid::Principal;
+
+    fn p(n: u8) -> Principal {
+        Principal::from_slice(&[n; 10])
+    }
+
+    #[test]
+    fn tier_thresholds() {
+        assert_eq!(tier_index(0), 0);
+        assert_eq!(tier_index(499), 0);
+        assert_eq!(tier_index(500), 1);
+        assert_eq!(tier_index(2_500), 2);
+        assert_eq!(tier_index(499_999), 5);
+        assert_eq!(tier_index(500_000), 6);
+        assert_eq!(tier_index(u64::MAX), 6);
+        assert_eq!(TIERS[0].name, "Plankton");
+        assert_eq!(TIERS[6].name, "Shark");
+    }
+
+    #[test]
+    fn decay_waits_seven_days_then_drops_five_percent_a_day() {
+        assert_eq!(decayed(10_000, 0, 7 * DAY), 10_000);
+        assert_eq!(decayed(10_000, 0, 8 * DAY - 1), 10_000);
+        assert_eq!(decayed(10_000, 0, 8 * DAY), 9_500);
+        assert_eq!(decayed(10_000, 0, 9 * DAY), 9_025);
+        assert_eq!(decayed(10_000, 0, 400 * DAY), 0);
+        assert_eq!(decayed(u64::MAX, 0, 8 * DAY), (u64::MAX as u128 * 95 / 100) as u64);
+        assert_eq!(decayed(u64::MAX, 0, 100_000 * DAY), 0);
+        // A clock that runs backwards never decays.
+        assert_eq!(decayed(10_000, 9 * DAY, 0), 10_000);
+    }
+
+    #[test]
+    fn attribute_splits_by_contribution() {
+        let (a, b, c) = (p(1), p(2), p(3));
+        assert_eq!(attribute(100, &[(a, 300), (b, 100)]), vec![(a, 75), (b, 25)]);
+        assert_eq!(attribute(10, &[(a, 1), (b, 1), (c, 1)]), vec![(a, 3), (b, 3), (c, 3)]);
+        assert_eq!(attribute(10, &[(a, 0), (b, 0)]), vec![(a, 0), (b, 0)]);
+        // Big pots don't overflow.
+        let big = 100_000_000_000_000u64;
+        assert_eq!(attribute(big, &[(a, big), (b, big)]), vec![(a, big / 2), (b, big / 2)]);
     }
 }
