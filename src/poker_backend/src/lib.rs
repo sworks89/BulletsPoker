@@ -514,6 +514,14 @@ fn get_rewards() -> rewards::RewardsView {
     with(|s| s.rewards_view(&p, now()))
 }
 
+/// The four weekly and monthly leaderboards, with the caller's own row.
+#[query]
+fn get_leaderboards() -> Vec<leaderboards::BoardView> {
+    let p = ic_cdk::api::msg_caller();
+    let me = (p != candid::Principal::anonymous()).then_some(p);
+    with(|s| s.leaderboards(me, now()))
+}
+
 #[update]
 fn update_settings(settings: Settings) -> R<()> {
     let p = caller()?;

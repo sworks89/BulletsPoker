@@ -948,9 +948,17 @@ impl State {
             t.payouts.get(place as usize - 1).copied().unwrap_or(0).min(t.prize_pool - t.paid)
         };
         let currency = t.template.currency;
+        let mut cost: u128 = 0;
         if let Some(e) = t.entrants.iter_mut().find(|e| e.player == *p) {
             e.place = Some(place);
             e.prize = prize;
+            // What the player paid: entry (buy-in + fee), each rebuy at the
+            // buy-in (see `rebuy`) and the add-on.
+            let tpl = &t.template;
+            cost = tpl.buy_in as u128 + tpl.fee as u128 + e.rebuys as u128 * tpl.buy_in as u128;
+            if e.addon {
+                cost += tpl.addon_cost as u128;
+            }
         }
         t.paid += prize;
         let name = t.template.name.clone();
@@ -966,6 +974,10 @@ impl State {
                 format!("{username} finishes #{place}")
             };
             self.post(Channel::Table(tid), None, String::new(), text, MessageKind::System, now);
+        }
+        if currency == Currency::Icp {
+            let net = (prize as i128 - cost as i128).clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+            self.record_icp_net(p, net, now);
         }
     }
 

@@ -334,6 +334,25 @@ export const idlFactory = ({ IDL }) => {
     'stats' : Stats,
     'avatar' : IDL.Text,
   });
+  const BoardRow = IDL.Record({
+    'username' : IDL.Text,
+    'hands' : IDL.Nat32,
+    'value' : IDL.Int64,
+    'player' : IDL.Principal,
+    'rank' : IDL.Nat32,
+    'prize' : IDL.Nat64,
+    'qualified' : IDL.Bool,
+    'avatar' : IDL.Text,
+  });
+  const BoardView = IDL.Record({
+    'me' : IDL.Opt(BoardRow),
+    'ends_at' : IDL.Nat64,
+    'pool' : IDL.Nat64,
+    'rows' : IDL.Vec(BoardRow),
+    'label' : IDL.Text,
+    'last_winners' : IDL.Vec(BoardRow),
+    'board' : IDL.Text,
+  });
   const Ban = IDL.Record({ 'until' : IDL.Nat64, 'reason' : IDL.Text });
   const Settings = IDL.Record({
     'auto_top_up' : IDL.Bool,
@@ -741,6 +760,7 @@ export const idlFactory = ({ IDL }) => {
       ),
     'get_jackpots' : IDL.Func([], [JackpotInfo], ['query']),
     'get_leaderboard' : IDL.Func([], [IDL.Vec(LeaderboardEntry)], ['query']),
+    'get_leaderboards' : IDL.Func([], [IDL.Vec(BoardView)], ['query']),
     'get_my_ledger_ops' : IDL.Func([], [IDL.Vec(LedgerOp)], ['query']),
     'get_my_profile' : IDL.Func([], [IDL.Opt(Profile)], ['query']),
     'get_my_roles' : IDL.Func([], [Roles], ['query']),

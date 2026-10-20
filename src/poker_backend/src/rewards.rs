@@ -22,6 +22,10 @@ pub struct RewardsState {
     pub fish_pool: u64,
     /// ICP (e8s) prize pool per leaderboard.
     pub board_pools: [u64; BOARDS],
+    /// The live list of each leaderboard. Absent in snapshots saved before the boards.
+    pub boards: Option<[crate::leaderboards::BoardList; BOARDS]>,
+    /// The paid winners of each board's last closed period.
+    pub last_winners: Option<[Vec<crate::leaderboards::BoardRow>; BOARDS]>,
 }
 
 impl RewardsState {
@@ -225,7 +229,7 @@ impl State {
         let mult = WHEEL[segment].0;
         let tier = &TIERS[(spin.tier as usize).min(TIERS.len() - 1)];
         let prize = (spin.stake as u128 * tier.rate_bps as u128 / 10_000 * mult as u128 / 10).min(u64::MAX as u128) as u64;
-        let paid = prize.min(self.rewards().fish_pool);
+        let paid = prize.min(self.rewards.as_ref().map_or(0, |r| r.fish_pool));
         if paid > 0 {
             self.credit(&caller, paid)?;
             self.rewards_mut().fish_pool -= paid;
@@ -267,7 +271,7 @@ impl State {
             lifetime_points: a.lifetime_points,
             days_since_earned: days,
             decay_starts_in_days: (points > 0).then(|| DECAY_GRACE_DAYS.saturating_sub(days)),
-            fish_pool: self.rewards().fish_pool,
+            fish_pool: self.rewards.as_ref().map_or(0, |r| r.fish_pool),
             history: a.history.iter().rev().cloned().collect(),
             tiers: TIERS.iter().map(|t| TierInfo { name: t.name.to_string(), from: t.from, rate_bps: t.rate_bps }).collect(),
         }
@@ -275,6 +279,8 @@ impl State {
 }
 
 impl State {
+    /// A copy of the reward pools (tests only; code reads `self.rewards.as_ref()`).
+    #[cfg(test)]
     pub(crate) fn rewards(&self) -> RewardsState {
         self.rewards.clone().unwrap_or_default()
     }
@@ -353,6 +359,20 @@ impl State {
             a.period.roll(now);
             a.period.w_hands += 1;
             a.period.m_hands += 1;
+            a.period.w_net += net;
+            a.period.m_net += net;
+        }
+        self.on_net(p, now);
+    }
+
+    /// Adds a net ICP result that is not a hand (an ICP tournament's prize
+    /// minus its costs) to the player's period counters.
+    pub(crate) fn record_icp_net(&mut self, p: &Principal, net: i64, now: u64) {
+        self.close_periods(now);
+        {
+            let Some(mut u) = self.users.get_mut(p) else { return };
+            let a = u.rewards.get_or_insert_with(RewardsAccount::default);
+            a.period.roll(now);
             a.period.w_net += net;
             a.period.m_net += net;
         }

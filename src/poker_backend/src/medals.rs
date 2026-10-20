@@ -51,14 +51,10 @@ pub fn medal_defs() -> Vec<MedalDef> {
         .collect()
 }
 
-fn medal(id: &str) -> Option<&'static (&'static str, &'static str, &'static str, &'static str)> {
-    MEDALS.iter().find(|m| m.0 == id)
-}
-
 impl State {
     /// Awards a medal once. Announces it in `channel` when given.
     pub fn award(&mut self, p: &Principal, id: &str, channel: Option<Channel>, now: u64) {
-        let Some((_, name, icon, _)) = medal(id) else { return };
+        let Some(MedalDef { name, icon, .. }) = medal_def(id) else { return };
         let username = {
             let Some(mut u) = self.users.get_mut(p) else { return };
             if u.medals.contains_key(id) {
@@ -122,4 +118,37 @@ impl State {
             }
         }
     }
+}
+
+/// A medal's definition: the static medals, and the leaderboard medals
+/// `lb:<board>:<rank 1-3>:<period label>` synthesised from their id.
+pub fn medal_def(id: &str) -> Option<MedalDef> {
+    if let Some(rest) = id.strip_prefix("lb:") {
+        use crate::leaderboards::{BOARD_IDS, BOARD_NAMES};
+        let mut parts = rest.splitn(3, ':');
+        let (board, rank, label) = (parts.next()?, parts.next()?, parts.next()?);
+        let b = BOARD_IDS.iter().position(|x| *x == board)?;
+        let (icon, place) = match rank {
+            "1" => ("🥇", "1st"),
+            "2" => ("🥈", "2nd"),
+            "3" => ("🥉", "3rd"),
+            _ => return None,
+        };
+        if label.is_empty() {
+            return None;
+        }
+        let name = BOARD_NAMES[b];
+        return Some(MedalDef {
+            id: id.to_string(),
+            name: format!("{name} {icon} · {label}"),
+            icon: icon.to_string(),
+            description: format!("Finish {place} on the {name} board ({label})"),
+        });
+    }
+    MEDALS.iter().find(|m| m.0 == id).map(|(id, name, icon, description)| MedalDef {
+        id: id.to_string(),
+        name: name.to_string(),
+        icon: icon.to_string(),
+        description: description.to_string(),
+    })
 }

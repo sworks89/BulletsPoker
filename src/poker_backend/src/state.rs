@@ -1272,7 +1272,7 @@ impl State {
             .filter(|t| t.config.currency == Currency::Icp)
             .map(|t| t.chips_in_play() + t.rake_accrued + t.jackpot_accrued)
             .sum();
-        let rewards_pools = self.rewards().pools_total();
+        let rewards_pools = self.rewards.as_ref().map_or(0, |r| r.pools_total());
         HouseStats {
             users: self.users.len() as u64,
             wallet_balances,
@@ -2274,6 +2274,7 @@ impl State {
 
     /// Times out slow players and reports tables that need a new hand dealt.
     pub fn tick(&mut self, now: u64) -> Vec<u64> {
+        self.close_periods(now);
         self.tournament_tick(now);
         self.close_idle_rooms(now);
         self.close_empty_copies(now);
@@ -3524,6 +3525,37 @@ mod tests {
     }
 
     #[test]
+    fn icp_tournament_finish_counts_net() {
+        let mut s = setup();
+        many_players(&mut s, 3);
+        let (id, start_at) = start_scheduled(&mut s, "ICP Nightly", 10..13);
+        let table = s.tournaments[&id].tables[0];
+        s.tables.get_mut(&table).unwrap().seats.iter_mut().flatten().find(|x| x.player == p(10)).unwrap().stack = 1_000;
+        s.rebuy(p(10), id, start_at + SEC).unwrap();
+        play_rebuy_event(&mut s, id, start_at + 2 * SEC);
+        let t = &s.tournaments[&id];
+        let (buy_in, fee, addon_cost) = (t.template.buy_in, t.template.fee, t.template.addon_cost);
+        assert!(t.entrants.iter().find(|e| e.player == p(10)).unwrap().rebuys >= 1);
+        let mut winner = None;
+        for e in &t.entrants {
+            // Entry is buy-in + fee; each rebuy costs the buy-in; the add-on its price.
+            let cost = buy_in + fee + e.rebuys as u64 * buy_in + if e.addon { addon_cost } else { 0 };
+            let net = e.prize as i64 - cost as i64;
+            let a = account(&s, e.player);
+            assert_eq!((a.period.w_net, a.period.m_net), (net, net), "entrant {:?}", e.player);
+            if e.place == Some(1) {
+                winner = Some((e.player, net));
+            }
+        }
+        let (w, net) = winner.unwrap();
+        assert!(net > 0);
+        let v = &s.leaderboards(None, start_at)[1];
+        assert_eq!(v.rows[0].player, w);
+        assert_eq!(v.rows[0].value, net);
+        assert!(v.rows.iter().all(|r| r.value > 0), "losers are not listed");
+    }
+
+    #[test]
     fn addon_window_and_limits() {
         let mut s = setup();
         many_players(&mut s, 3);
@@ -4583,7 +4615,9 @@ mod tests {
             let hands = s.users.get(&p(k)).unwrap().stats.hands_played;
             assert!(hands > 0);
             assert_eq!(a.period.w_hands as u64, hands);
-            assert_eq!(a.period.w_net, 0, "tournament chips are not ICP won or lost");
+            // Tournament chips are not ICP won or lost; the event's prize minus its costs is.
+            let prize = s.tournaments[&id].entrants.iter().find(|e| e.player == p(k)).unwrap().prize;
+            assert_eq!(a.period.w_net, prize as i64 - (E8S / 20 + fee) as i64);
         }
     }
 

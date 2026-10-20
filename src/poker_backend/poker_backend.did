@@ -34,6 +34,41 @@ type Ban = record {
   until : nat64;
   reason : text;
 };
+// A row of a board as shown.
+type BoardRow = record {
+  username : text;
+  // Hands played in the period.
+  hands : nat32;
+  // Points, or net ICP won (e8s).
+  value : int64;
+  player : principal;
+  // Position on the live list (1-based), the paid place for past winners, or
+  // 0 for a player outside the list.
+  rank : nat32;
+  // The prize if the period ended now; for past winners, what was paid.
+  prize : nat64;
+  // Can be paid: in the period, with a value above zero, and (winnings
+  // boards) enough hands.
+  qualified : bool;
+  avatar : text;
+};
+// One leaderboard as shown.
+type BoardView = record {
+  // The caller's row (rank 0 when outside the list).
+  me : opt BoardRow;
+  // When the period ends (ns).
+  ends_at : nat64;
+  // The board's prize pool (e8s).
+  pool : nat64;
+  // The top 10.
+  rows : vec BoardRow;
+  // The period: "2026-W43" or "2026-11".
+  label : text;
+  // The paid winners of the last closed period.
+  last_winners : vec BoardRow;
+  // "weekly_points", "weekly_winnings", "monthly_points" or "monthly_winnings".
+  board : text;
+};
 type Channel = variant { Lobby; Table : nat64 };
 type ChatMessage = record {
   id : nat64;
@@ -807,6 +842,8 @@ service : (opt InitArgs) -> {
   // Current bad-beat jackpots, the rules and recent hits.
   get_jackpots : () -> (JackpotInfo) query;
   get_leaderboard : () -> (vec LeaderboardEntry) query;
+  // The four weekly and monthly leaderboards, with the caller's own row.
+  get_leaderboards : () -> (vec BoardView) query;
   // Your recent deposits and withdrawals, newest first.
   get_my_ledger_ops : () -> (vec LedgerOp) query;
   get_my_profile : () -> (opt Profile) query;

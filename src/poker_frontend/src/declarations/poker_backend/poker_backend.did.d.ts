@@ -67,6 +67,69 @@ export interface Ban {
   'until' : bigint,
   'reason' : string,
 }
+/**
+ * A row of a board as shown.
+ */
+export interface BoardRow {
+  'username' : string,
+  /**
+   * Hands played in the period.
+   */
+  'hands' : number,
+  /**
+   * Points, or net ICP won (e8s).
+   */
+  'value' : bigint,
+  'player' : Principal,
+  /**
+   * Position on the live list (1-based), the paid place for past winners, or
+   * 0 for a player outside the list.
+   */
+  'rank' : number,
+  /**
+   * The prize if the period ended now; for past winners, what was paid.
+   */
+  'prize' : bigint,
+  /**
+   * Can be paid: in the period, with a value above zero, and (winnings
+   * boards) enough hands.
+   */
+  'qualified' : boolean,
+  'avatar' : string,
+}
+/**
+ * One leaderboard as shown.
+ */
+export interface BoardView {
+  /**
+   * The caller's row (rank 0 when outside the list).
+   */
+  'me' : [] | [BoardRow],
+  /**
+   * When the period ends (ns).
+   */
+  'ends_at' : bigint,
+  /**
+   * The board's prize pool (e8s).
+   */
+  'pool' : bigint,
+  /**
+   * The top 10.
+   */
+  'rows' : Array<BoardRow>,
+  /**
+   * The period: "2026-W43" or "2026-11".
+   */
+  'label' : string,
+  /**
+   * The paid winners of the last closed period.
+   */
+  'last_winners' : Array<BoardRow>,
+  /**
+   * "weekly_points", "weekly_winnings", "monthly_points" or "monthly_winnings".
+   */
+  'board' : string,
+}
 export type Channel = { 'Lobby' : null } |
   { 'Table' : bigint };
 export interface ChatMessage {
@@ -1117,6 +1180,10 @@ export interface _SERVICE {
    */
   'get_jackpots' : ActorMethod<[], JackpotInfo>,
   'get_leaderboard' : ActorMethod<[], Array<LeaderboardEntry>>,
+  /**
+   * The four weekly and monthly leaderboards, with the caller's own row.
+   */
+  'get_leaderboards' : ActorMethod<[], Array<BoardView>>,
   /**
    * Your recent deposits and withdrawals, newest first.
    */
