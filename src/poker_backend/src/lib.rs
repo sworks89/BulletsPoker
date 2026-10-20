@@ -8,6 +8,7 @@ pub mod medals;
 pub mod metrics;
 pub mod moderation;
 pub mod ratelimit;
+pub mod rewards;
 pub mod signup;
 pub mod state;
 pub mod store;

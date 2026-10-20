@@ -116,6 +116,8 @@ type HouseStats = record {
   // ICP bad-beat jackpot.
   jackpot : nat64;
   wallet_balances : nat64;
+  // Fish and leaderboard prize pools, owed to players.
+  rewards_pools : nat64;
   users : nat64;
   treasury : nat64;
 };

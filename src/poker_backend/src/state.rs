@@ -370,6 +370,8 @@ heap_state! {
     /// One-shot results of auto-sit (seated, or dropped and why), read by the
     /// player's next `auto_sit_ping`.
     auto_sit_outcomes: Option<BTreeMap<Principal, AutoSitStatus>>,
+    /// Reward pools (see `crate::rewards`).
+    rewards: Option<crate::rewards::RewardsState>,
 }
 
 /// Monotonic counters exported as metrics.
@@ -601,6 +603,8 @@ pub struct HouseStats {
     pub jackpot: u64,
     /// What the canister's main ledger account must hold to cover everything.
     pub liabilities_total: u64,
+    /// Fish and leaderboard prize pools, owed to players.
+    pub rewards_pools: u64,
 }
 
 pub fn level_for_xp(xp: u64) -> u32 {
@@ -764,6 +768,7 @@ impl State {
             signup_pow_bits: crate::signup::DEFAULT_POW_BITS,
             cashouts: BTreeMap::new(),
             auto_sit_outcomes: None,
+            rewards: None,
             entropy: vec![],
         };
         let mut s = State::from_snapshot(users, stores, snap);
@@ -1264,6 +1269,7 @@ impl State {
             .filter(|t| t.config.currency == Currency::Icp)
             .map(|t| t.chips_in_play() + t.rake_accrued + t.jackpot_accrued)
             .sum();
+        let rewards_pools = self.rewards().pools_total();
         HouseStats {
             users: self.users.len() as u64,
             wallet_balances,
@@ -1274,7 +1280,9 @@ impl State {
                 + chips_on_tables
                 + self.treasury
                 + self.icp_in_tournaments()
-                + self.jackpot(Currency::Icp),
+                + self.jackpot(Currency::Icp)
+                + rewards_pools,
+            rewards_pools,
         }
     }
 
@@ -2013,7 +2021,7 @@ impl State {
                     self.treasury += host_cut;
                 }
             }
-            self.treasury += rake - host_cut;
+            self.fund_rewards(rake - host_cut);
         }
         if let Some(r) = self.rooms.get_mut(&id) {
             r.last_active = now;
@@ -2499,6 +2507,11 @@ mod tests {
         s.house_stats().liabilities_total
     }
 
+    /// Everything the house holds as its own or earmarked: treasury plus reward pools.
+    fn house_take(s: &State) -> u64 {
+        s.treasury + s.house_stats().rewards_pools
+    }
+
     #[test]
     fn registration_rules() {
         let mut s = setup();
@@ -2604,7 +2617,7 @@ mod tests {
         assert_eq!(played, 60);
         let net: i64 = (1..=3).map(|k| s.users.get(&p(k)).unwrap().stats.net_winnings).sum();
         // Players' combined losses are exactly the rake plus the jackpot drop.
-        assert_eq!(net, -((s.treasury + s.jackpot(Currency::Icp)) as i64));
+        assert_eq!(net, -((house_take(&s) + s.jackpot(Currency::Icp)) as i64));
         assert!(s.jackpot(Currency::Icp) > 0, "cash pots feed the jackpot");
 
         // Hole cards are private until showdown.
@@ -2621,7 +2634,7 @@ mod tests {
         assert_eq!(s.tables[&table].player_count(), 0);
         assert_eq!(total_value(&s), before);
         let wallets: u64 = (1..=3).map(|k| s.users.get(&p(k)).unwrap().balance).sum();
-        assert_eq!(wallets + s.treasury + s.jackpot(Currency::Icp), 30 * E8S);
+        assert_eq!(wallets + house_take(&s) + s.jackpot(Currency::Icp), 30 * E8S);
     }
 
     fn play_hands(s: &mut State, table: u64, hands: u8, start: u64) -> u64 {
@@ -2935,7 +2948,7 @@ mod tests {
         run_until(&mut s, 2 * SEC, 5_000, |s| s.tournaments[&id].status == Finished);
         assert_eq!(s.house_stats().liabilities_total, before);
         let fee = E8S / 400;
-        assert_eq!(s.treasury, 2 * fee);
+        assert_eq!(house_take(&s), 2 * fee);
         let balances = s.users.get(&p(10)).unwrap().balance + s.users.get(&p(11)).unwrap().balance;
         assert_eq!(balances, 20 * E8S - 2 * fee);
     }
@@ -3003,6 +3016,30 @@ mod tests {
     }
 
     #[test]
+    fn hosted_room_pools_come_from_the_house_share() {
+        let mut s = setup();
+        s.user_mut(&p(1)).unwrap().xp = 50;
+        let id = s
+            .create_room(
+                p(1),
+                RoomArgs { name: "Pools".into(), currency: Currency::Icp, big_blind: 200_000, max_seats: 6, password: None, action_timeout_secs: 30 },
+                0,
+            )
+            .unwrap();
+        s.join_table(p(2), id, 1, 10_000_000, None, 0).unwrap();
+        s.join_table(p(1), id, 0, 10_000_000, None, 0).unwrap();
+        play_hands(&mut s, id, 10, SEC);
+        let rake: u64 = s.stores.hands.iter().map(|e| e.value()).collect::<Vec<_>>().into_iter().filter(|h| h.table_id == id).map(|h| h.rake).sum();
+        assert!(rake > 0);
+        // The host's cut is taken per hand before the house share is split.
+        let host_cut: u64 = s.stores.hands.iter().map(|e| e.value()).collect::<Vec<_>>().into_iter().filter(|h| h.table_id == id).map(|h| h.rake * HOST_RAKE_SHARE_BPS / 10_000).sum();
+        let r = s.rewards();
+        assert!(r.fish_pool > 0);
+        assert_eq!(s.treasury + r.fish_pool + r.board_pools.iter().sum::<u64>(), rake - host_cut);
+        assert!(r.fish_pool * 10 / 3 <= rake - host_cut);
+    }
+
+    #[test]
     fn player_rooms() {
         let mut s = setup();
         let args = |pw: Option<&str>| RoomArgs {
@@ -3031,7 +3068,7 @@ mod tests {
         let rakes: Vec<u64> = s.stores.hands.iter().map(|e| e.value()).collect::<Vec<_>>().into_iter().filter(|h| h.table_id == id).map(|h| h.rake).collect();
         assert!(rakes.iter().sum::<u64>() > 0);
         let host_cut: u64 = rakes.iter().map(|r| r * HOST_RAKE_SHARE_BPS / 10_000).sum();
-        assert_eq!(s.treasury, rakes.iter().sum::<u64>() - host_cut);
+        assert_eq!(house_take(&s), rakes.iter().sum::<u64>() - host_cut);
         let net_play: i64 = (1..=2).map(|k| s.users.get(&p(k)).unwrap().stats.net_winnings).sum();
         // This room is the only ICP table in play, so it fed the whole ICP jackpot.
         let drops = s.jackpot(Currency::Icp);
@@ -3349,7 +3386,7 @@ mod tests {
         let t = &s.tournaments[&id];
         assert_eq!(s.house_stats().liabilities_total, before);
         // The fee is charged once per player: rebuys and add-ons go entirely into the pool.
-        assert_eq!(s.treasury, 4 * (E8S / 40));
+        assert_eq!(house_take(&s), 4 * (E8S / 40));
         let addons = t.entrants.iter().filter(|e| e.addon).count() as u64;
         assert_eq!(t.collected, t.entries() as u64 * (E8S / 2) + addons * (E8S / 2));
         assert_eq!(t.paid, t.prize_pool);
@@ -3382,8 +3419,42 @@ mod tests {
         // When an event does start, the fees move to the treasury.
         let (id, _) = start_scheduled(&mut s, "ICP Nightly", 10..13);
         assert_eq!(s.tournaments[&id].fees_held, 0);
-        assert_eq!(s.treasury, 3 * (E8S / 40));
+        assert_eq!(house_take(&s), 3 * (E8S / 40));
         assert_eq!(s.house_stats().liabilities_total, before);
+    }
+
+    #[test]
+    fn tournament_fees_fund_the_pools_at_start() {
+        let mut s = setup();
+        many_players(&mut s, 3);
+        let id = open_tournament(&mut s, "ICP Nightly");
+        for k in 10..12 {
+            s.register_tournament(p(k), id, SEC).unwrap();
+        }
+        assert_eq!(s.rewards().pools_total(), 0, "held fees are not funded yet");
+        s.unregister_tournament(p(11), id).unwrap();
+        s.tick(s.tournaments[&id].start_at);
+        assert_eq!(s.tournaments[&id].status, crate::tournament::TournamentStatus::Cancelled);
+        assert_eq!(s.rewards().pools_total(), 0, "a cancelled event funds nothing");
+
+        let (_, _) = start_scheduled(&mut s, "ICP Nightly", 10..13);
+        let fees = 3 * (E8S / 40);
+        let r = s.rewards();
+        assert_eq!(r.fish_pool, fees * 30 / 100);
+        assert_eq!(r.board_pools, [fees / 40; 4]);
+        assert_eq!(s.treasury, fees * 60 / 100);
+    }
+
+    #[test]
+    fn liabilities_include_reward_pools() {
+        let mut s = setup();
+        let before = s.house_stats();
+        assert_eq!(before.rewards_pools, 0);
+        s.fund_rewards(10_000);
+        let after = s.house_stats();
+        assert_eq!(after.rewards_pools, 4_000);
+        assert_eq!(after.treasury, before.treasury + 6_000);
+        assert_eq!(after.liabilities_total, before.liabilities_total + 10_000);
     }
 
     #[test]
@@ -3505,6 +3576,41 @@ mod tests {
             let shown = s.table_view(table, Some(p(3)), 4).unwrap().last_result.unwrap().shown;
             assert_eq!(shown.iter().any(|sh| sh.player == p(1)), !muck);
         }
+    }
+
+    #[test]
+    fn rake_is_split_between_pools_and_treasury() {
+        let mut s = setup();
+        s.fund_rewards(10_000);
+        let r = s.rewards();
+        assert_eq!(r.fish_pool, 3_000);
+        assert_eq!(r.board_pools, [250; 4]);
+        assert_eq!(s.treasury, 6_000);
+        // Rounding goes to the treasury and nothing is lost.
+        let mut s = setup();
+        s.fund_rewards(7);
+        let r = s.rewards();
+        assert_eq!(r.fish_pool, 2);
+        assert_eq!(r.board_pools, [0; 4]);
+        assert_eq!(s.treasury, 5);
+        assert_eq!(s.treasury + r.pools_total(), 7);
+    }
+
+    #[test]
+    fn icp_hand_rake_funds_the_pools() {
+        let mut s = setup();
+        let table = 7; // Low Rollers
+        let buy = s.tables[&table].config.max_buy_in;
+        s.join_table(p(1), table, 0, buy, None, 0).unwrap();
+        s.join_table(p(2), table, 3, buy, None, 0).unwrap();
+        play_hands(&mut s, table, 20, SEC);
+        let rake: u64 = s.stores.hands.iter().map(|e| e.value()).collect::<Vec<_>>().into_iter().filter(|h| h.table_id == table).map(|h| h.rake).sum();
+        assert!(rake > 0);
+        let r = s.rewards();
+        assert_eq!(s.treasury + r.pools_total(), rake);
+        // Each hand rounds separately, so the pool is within a few e8s of 30%.
+        assert!((r.fish_pool * 10 / 3).abs_diff(rake) <= 40, "fish {} of rake {}", r.fish_pool, rake);
+        assert!(r.board_pools.iter().all(|&b| b == r.board_pools[0] && b > 0));
     }
 
     #[test]

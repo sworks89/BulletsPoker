@@ -590,8 +590,8 @@ impl State {
         t.level_started_at = now;
         t.tables = table_ids;
         t.recompute_payouts();
-        self.treasury += fees;
         let name = t.template.name.clone();
+        self.fund_rewards(fees);
         self.post(Channel::Lobby, None, String::new(), format!("🏁 {name} is under way with {n} players"), MessageKind::System, now);
     }
 

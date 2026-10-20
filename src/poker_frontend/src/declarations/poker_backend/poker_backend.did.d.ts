@@ -167,6 +167,10 @@ export interface HouseStats {
    */
   'jackpot' : bigint,
   'wallet_balances' : bigint,
+  /**
+   * Fish and leaderboard prize pools, owed to players.
+   */
+  'rewards_pools' : bigint,
   'users' : bigint,
   'treasury' : bigint,
 }

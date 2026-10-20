@@ -135,6 +135,7 @@ export const idlFactory = ({ IDL }) => {
     'chips_on_tables' : IDL.Nat64,
     'jackpot' : IDL.Nat64,
     'wallet_balances' : IDL.Nat64,
+    'rewards_pools' : IDL.Nat64,
     'users' : IDL.Nat64,
     'treasury' : IDL.Nat64,
   });
