@@ -18,7 +18,7 @@ export function Radial({ id, a, b, cx = 0.4, cy = 0.35 }: { id: string; a: strin
   );
 }
 
-function Frame({ uid, bg, children, defs }: { uid: string; bg: [string, string]; children: ReactNode; defs?: ReactNode }) {
+export function Frame({ uid, bg, children, defs }: { uid: string; bg: [string, string]; children: ReactNode; defs?: ReactNode }) {
   return (
     <svg className="art avatar-svg" viewBox="0 0 120 120" aria-hidden="true">
       <defs>

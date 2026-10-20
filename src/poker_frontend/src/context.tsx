@@ -14,6 +14,8 @@ export type View =
   | { name: 'wallet' }
   | { name: 'store' }
   | { name: 'friends' }
+  | { name: 'rewards' }
+  /** The Rewards page, opened on its Leaderboards tab. */
   | { name: 'leaderboard' }
   | { name: 'history' }
   | { name: 'tournaments'; id?: bigint }

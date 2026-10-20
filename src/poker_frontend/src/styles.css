@@ -604,3 +604,45 @@ input.narrow { width: 80px; flex: none; }
 .watch-bar { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; }
 .watch-bar .toggle { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; font-weight: 600; }
 .watch-bar .toggle input { width: auto; accent-color: var(--accent); }
+
+/* ---- Rewards: Fish Buffet and leaderboards ---- */
+.rewards { display: flex; flex-direction: column; gap: 14px; }
+.rewards-head { flex-wrap: wrap; gap: 14px; }
+.rewards-head h2 { margin: 0; }
+.tier-panel .row { align-items: center; }
+.avatar.tier-creature { width: 104px; height: 104px; border: 3px solid var(--accent); box-shadow: 0 0 18px rgba(245, 185, 26, 0.35); }
+.tier-name { margin: 0; font-size: 26px; color: var(--accent-2); }
+.decay-hint { background: #3a2c07; border: 1px solid #7c5a0b; color: var(--accent-2); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+.xpbar.meter div { background: linear-gradient(90deg, #38bdf8, #a855f7); }
+.tiers tr.current td { background: #2a2410; }
+.tiers tr.current td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+.tier-badge { background: none; border: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 0; color: var(--accent-2); font-weight: 700; }
+.tier-badge:hover .avatar { border-color: var(--accent); }
+
+/* the wheel */
+.wheel-panel { align-items: center; text-align: center; }
+.wheel-panel .xpbar { width: 100%; }
+.wheel { position: relative; width: min(260px, 80vw); aspect-ratio: 1; margin: 6px auto 0; }
+.wheel-disc { width: 100%; height: 100%; display: block; border-radius: 50%; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5), 0 0 0 4px #3b2412; transition: transform 4.2s cubic-bezier(0.15, 0.85, 0.2, 1.02); }
+.wheel-label { font-size: 15px; font-weight: 800; fill: #fff; paint-order: stroke; stroke: #1b1b1b; stroke-width: 3px; stroke-linejoin: round; }
+.wheel-label.big { font-size: 18px; fill: #fff7d6; }
+.wheel-pointer { position: absolute; top: -10px; left: 50%; width: 30px; height: 34px; transform: translateX(-50%); filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.6)); z-index: 1; }
+.wheel.spinning .wheel-pointer { animation: tick 0.12s ease-in-out infinite alternate; }
+@keyframes tick { from { transform: translateX(-50%) rotate(-8deg); } to { transform: translateX(-50%) rotate(8deg); } }
+.spin-btn { font-size: 17px; padding: 11px 28px; }
+.spin-result { min-height: 40px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.spin-result b { font-size: 20px; animation: giftPop 0.5s cubic-bezier(.2,1.6,.4,1); }
+@media (prefers-reduced-motion: reduce) {
+  .wheel-disc { transition: none; }
+  .wheel.spinning .wheel-pointer, .spin-result b { animation: none; }
+}
+
+/* leaderboards */
+.board-pool b { color: var(--accent-2); }
+.board .grid td { padding: 7px 6px; }
+.board tr.you td { background: #1d2a1a; }
+.board tr.unqualified td { color: var(--muted); }
+.board tr.gap-row td { text-align: center; color: var(--muted); padding: 2px; }
+.board .prize { color: var(--accent-2); font-weight: 700; }
+.last-winners { border-top: 1px solid var(--line); padding-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.last-winners .winner { display: flex; align-items: center; gap: 6px; }

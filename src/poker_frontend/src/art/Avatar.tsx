@@ -1,6 +1,7 @@
 import { useId, type CSSProperties, type ReactNode } from 'react';
 import { artFor, type Expression } from './registry';
 import './avatars';
+import './creatures';
 
 /** A `useId()` value made safe for svg ids and `url(#…)` references. */
 export function useSvgUid(): string {

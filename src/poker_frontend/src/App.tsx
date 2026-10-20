@@ -11,7 +11,8 @@ import { TablesProvider, useTables } from './tables';
 import { Wallet } from './components/Wallet';
 import { Store } from './components/Store';
 import { Friends } from './components/Friends';
-import { Leaderboard, ProfilePage, Register } from './components/Profile';
+import { ProfilePage, Register } from './components/Profile';
+import { Rewards } from './components/Rewards';
 import { AccountNotice } from './components/Safety';
 import { Admin } from './components/Admin';
 import { Avatar } from './art/Avatar';
@@ -22,7 +23,7 @@ const NAV: { name: View['name']; label: string }[] = [
   { name: 'store', label: 'Store' },
   { name: 'friends', label: 'Friends & Notes' },
   { name: 'history', label: 'History' },
-  { name: 'leaderboard', label: 'Leaderboard' },
+  { name: 'rewards', label: 'Rewards' },
   { name: 'wallet', label: 'Wallet' },
 ];
 
@@ -56,7 +57,7 @@ function Shell() {
         </div>
         <nav>
           {NAV.map((n) => (
-            <button key={n.name} className={`nav ${view.name === n.name ? 'active' : ''}`} onClick={() => go({ name: n.name } as View)}>
+            <button key={n.name} className={`nav ${view.name === n.name || (n.name === 'rewards' && view.name === 'leaderboard') ? 'active' : ''}`} onClick={() => go({ name: n.name } as View)}>
               {n.label}
               {n.name === 'friends' && requests > 0 && <span className="badge">{requests}</span>}
             </button>
@@ -119,7 +120,9 @@ function Shell() {
         {view.name === 'wallet' && <Wallet />}
         {view.name === 'store' && <Store />}
         {view.name === 'friends' && <Friends />}
-        {view.name === 'leaderboard' && <Leaderboard />}
+        {(view.name === 'rewards' || view.name === 'leaderboard') && (
+          <Rewards key={view.name} initial={view.name === 'leaderboard' ? 'boards' : 'fish'} />
+        )}
         {view.name === 'history' && <History />}
         {view.name === 'tournaments' && <Tournaments key={String(view.id ?? '')} initial={view.id} />}
         {view.name === 'profile' && <ProfilePage />}
