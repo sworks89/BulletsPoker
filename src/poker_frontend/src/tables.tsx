@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useApp, usePoll } from './context';
 import type { TableView } from './ic';
 import { isMyTurn } from './turn';
+import { afterClosing } from './tablesNav';
 
 export { isMyTurn };
 
@@ -90,11 +91,14 @@ export function TablesProvider({ children }: { children: ReactNode }) {
 
   const closeTable = useCallback(
     (id: bigint) => {
-      const rest = open.filter((x) => x !== id);
-      setOpen(rest);
-      if (active === id) go(rest.length ? { name: 'table', id: rest[rest.length - 1] } : { name: 'lobby' });
+      // Closing a table you're waiting at takes you out of its auto-sit line,
+      // so you're never seated (and charged) at a table you closed.
+      if (views.get(String(id))?.my_auto_sit.length) backend.auto_sit(id, []).catch(() => {});
+      const next = afterClosing(open, active, [id]);
+      setOpen(next.open);
+      if (next.goTo !== null) go(next.goTo === 'lobby' ? { name: 'lobby' } : { name: 'table', id: next.goTo });
     },
-    [open, active, go],
+    [open, active, go, views, backend],
   );
 
   const requested = useRef<bigint[]>([]);
@@ -141,9 +145,9 @@ export function TablesProvider({ children }: { children: ReactNode }) {
     const gone = requested.current.filter((id) => !views.has(String(id)));
     if (gone.length === 0) return;
     notify(gone.length === 1 ? 'A table you had open has closed.' : `${gone.length} tables you had open have closed.`);
-    const left = open.filter((id) => !gone.includes(id));
-    setOpen(left);
-    if (left.length === 0 && view.name === 'table') go({ name: 'lobby' });
+    const next = afterClosing(open, active, gone);
+    setOpen(next.open);
+    if (next.goTo !== null) go(next.goTo === 'lobby' ? { name: 'lobby' } : { name: 'table', id: next.goTo });
     // only react to fresh server data
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [views]);

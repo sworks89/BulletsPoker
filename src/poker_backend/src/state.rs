@@ -1552,7 +1552,9 @@ impl State {
     fn close_empty_copies(&mut self, now: u64) {
         let mut done = vec![];
         for t in self.tables.values_mut().filter(|t| t.game.is_some()) {
-            if t.player_count() > 0 {
+            // Seats of players who left mid-hand still hold chips until the hand ends.
+            let empty = t.seats.iter().all(Option::is_none) && !t.phase.is_betting();
+            if !empty {
                 t.empty_since = None;
             } else if now.saturating_sub(*t.empty_since.get_or_insert(now)) >= COPY_IDLE_CLOSE_NS {
                 done.push(t.id);
@@ -1693,16 +1695,16 @@ impl State {
         if !self.can_watch(id, Some(caller)) {
             self.unlock_room(caller, id, password.unwrap_or_default())?;
         }
-        // Check funds before seating so a failed debit can't leave chips on the table.
-        self.debit_in(&caller, currency, buy_in)?;
+        // Every refusal comes before the debit, so a refused join never takes money.
         let required = self.min_return_buy_in(id, &caller, now);
         if buy_in < required {
-            let currency = self.table_currency(id)?;
             return Err(format!(
                 "You left this table less than 30 minutes ago with {}: buy back in for at least that much",
                 fmt_amount(currency, required)
             ));
         }
+        // Check funds before seating so a failed debit can't leave chips on the table.
+        self.debit_in(&caller, currency, buy_in)?;
         if let Err(e) = self.table_mut(id)?.sit_with_minimum(caller, seat, buy_in, required) {
             self.credit_in(&caller, currency, buy_in)?;
             return Err(e);
@@ -1740,8 +1742,14 @@ impl State {
             }
             return Ok(AutoSitStatus::NotQueued);
         };
+        if self.pause.joins {
+            return Err(self.paused_msg("New seats"));
+        }
         let currency = self.table_currency(table)?;
         self.check_not_banned(&caller, now)?;
+        if !self.can_watch(table, Some(caller)) {
+            return Err("Enter the table password first".into());
+        }
         let t = &self.tables[&table];
         if t.seat_of(&caller).is_some() {
             return Err("You're already at this table".into());
@@ -1764,6 +1772,10 @@ impl State {
         };
         if have < buy_in {
             return Err("Not enough funds for that buy-in".into());
+        }
+        // A result from an earlier line is old news now.
+        if let Some(m) = self.auto_sit_outcomes.as_mut() {
+            m.remove(&caller);
         }
         // Out of every other line; keep this line's place if already in it.
         for t in self.tables.values_mut().filter(|t| t.id != table) {
@@ -1907,7 +1919,10 @@ impl State {
         let chips = self.table_mut(id)?.stand(&caller, now)?;
         self.credit_in(&caller, currency, chips)?;
         if !self.table_tournament.contains_key(&id) {
-            self.cashouts.insert((self.game_of(id), caller), (chips, now));
+            // Per game: leaving another table of it can't lower what you must bring back.
+            let key = (self.game_of(id), caller);
+            let kept = self.cashouts.get(&key).filter(|(_, at)| now < at + RETURN_WINDOW_NS).map_or(0, |(c, _)| *c);
+            self.cashouts.insert(key, (chips.max(kept), now));
         }
         let name = self.user(&caller)?.username.clone();
         self.post(Channel::Table(id), None, String::new(), format!("{name} left the table"), MessageKind::System, now);
@@ -4227,5 +4242,95 @@ mod tests {
         let mut r = State::restore(mem);
         assert!(matches!(r.auto_sit_ping(p(4), HU, 2 * SEC), AutoSitStatus::Dropped { .. }), "outcome survives");
         assert!(r.tables[&HU].seat_of(&p(3)).is_some());
+    }
+
+    // ---------------------------------------------------------- review fixes
+
+    #[test]
+    fn a_refused_buy_back_never_takes_the_buy_in() {
+        let mut s = setup();
+        s.join_table(p(1), HU, 0, 3_000, None, 0).unwrap();
+        s.leave_table(p(1), HU, SEC).unwrap();
+        let before = s.users.get(&p(1)).unwrap().chips;
+        let c = s.open_copy(HU, SEC).unwrap();
+        assert!(s.join_table(p(1), c, 0, 1_000, None, 2 * SEC).is_err());
+        assert_eq!(s.users.get(&p(1)).unwrap().chips, before, "nothing debited");
+    }
+
+    #[test]
+    fn auto_sit_refused_by_the_buy_back_rule_keeps_the_money() {
+        let mut s = full_hu(); // p1, p2 at HU
+        let c = s.open_copy(HU, 0).unwrap();
+        s.join_table(p(3), c, 0, 1_000, None, 0).unwrap();
+        s.join_table(p(4), c, 1, 1_000, None, 0).unwrap();
+        // p1 waits for the copy with a small buy-in, then leaves HU with more.
+        s.auto_sit(p(1), c, Some(1_000), 0).unwrap();
+        s.users.get(&p(1)).unwrap();
+        s.tables.get_mut(&HU).unwrap().seats[0].as_mut().unwrap().stack = 4_000;
+        s.leave_table(p(1), HU, SEC).unwrap();
+        let before = s.users.get(&p(1)).unwrap().chips;
+        s.leave_table(p(4), c, SEC).unwrap();
+        s.tick(2 * SEC);
+        assert!(matches!(s.auto_sit_ping(p(1), c, 2 * SEC), AutoSitStatus::Dropped { .. }));
+        assert_eq!(s.users.get(&p(1)).unwrap().chips, before, "nothing debited");
+    }
+
+    #[test]
+    fn leaving_copies_in_any_order_keeps_the_biggest_stack_for_buy_back() {
+        let mut s = setup();
+        s.join_table(p(1), HU, 0, 5_000, None, 0).unwrap();
+        let c = s.open_copy(HU, 0).unwrap();
+        s.join_table(p(1), c, 0, 1_000, None, 0).unwrap();
+        s.leave_table(p(1), HU, SEC).unwrap(); // 5,000
+        s.leave_table(p(1), c, 2 * SEC).unwrap(); // 1,000 must not lower the minimum
+        assert!(s.join_game(p(1), HU, 1_000, 3 * SEC).unwrap_err().contains("30 minutes"));
+        assert_eq!(s.min_return_buy_in(HU, &p(1), 3 * SEC), 5_000);
+    }
+
+    #[test]
+    fn joining_a_new_line_forgets_an_old_line_result() {
+        let mut s = full_hu();
+        let c = s.open_copy(HU, 0).unwrap();
+        s.auto_sit(p(3), HU, Some(1_000), 0).unwrap();
+        s.user_mut(&p(3)).unwrap().chips = 10;
+        s.leave_table(p(2), HU, SEC).unwrap();
+        s.tick(SEC); // p3 dropped at HU (can't afford it)
+        s.user_mut(&p(3)).unwrap().chips = 5_000;
+        s.join_table(p(4), c, 0, 1_000, None, SEC).unwrap();
+        s.join_table(p(2), c, 1, 1_000, None, SEC).unwrap();
+        s.auto_sit(p(3), c, Some(1_000), 2 * SEC).unwrap();
+        assert!(queued(1)(&s.auto_sit_ping(p(3), c, 3 * SEC)), "no stale Dropped from the old line");
+    }
+
+    #[test]
+    fn auto_sit_respects_locked_rooms_and_the_joins_pause() {
+        let mut s = setup();
+        s.user_mut(&p(1)).unwrap().xp = 50;
+        let room = s
+            .create_room(
+                p(1),
+                RoomArgs { name: "Locked".into(), currency: Currency::Chips, big_blind: 50, max_seats: 2, password: Some("aces".into()), action_timeout_secs: 30 },
+                0,
+            )
+            .unwrap();
+        assert!(s.auto_sit(p(2), room, Some(1_000), 0).is_err(), "not a guest of the locked room");
+        s.pause.joins = true;
+        assert!(s.auto_sit(p(2), HU, Some(1_000), 0).is_err(), "joins are paused");
+    }
+
+    #[test]
+    fn a_copy_with_a_live_pot_never_closes() {
+        let mut s = setup();
+        let c = s.open_copy(HU, 0).unwrap();
+        s.join_table(p(1), c, 0, 1_000, None, 0).unwrap();
+        s.join_table(p(2), c, 1, 1_000, None, 0).unwrap();
+        s.start_hand(c, [9; 32], 0);
+        // Both marked as gone while the hand is still running (e.g. all-in, then left).
+        for seat in s.tables.get_mut(&c).unwrap().seats.iter_mut().flatten() {
+            seat.left = true;
+        }
+        assert_eq!(s.tables[&c].player_count(), 0);
+        s.tick(5 * COPY_IDLE_CLOSE_NS);
+        assert!(s.tables.contains_key(&c), "seats still hold chips in a live hand");
     }
 }
