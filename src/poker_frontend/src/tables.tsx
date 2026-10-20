@@ -135,10 +135,15 @@ export function TablesProvider({ children }: { children: ReactNode }) {
     };
   }, [refresh]);
 
-  // Tables that no longer exist (closed rooms, finished tournaments) drop out.
+  // Tables that no longer exist (closed rooms, emptied table copies, finished
+  // tournaments) drop out, with a word about it; with none left, back to the lobby.
   useEffect(() => {
     const gone = requested.current.filter((id) => !views.has(String(id)));
-    if (gone.length) setOpen((o) => o.filter((id) => !gone.includes(id)));
+    if (gone.length === 0) return;
+    notify(gone.length === 1 ? 'A table you had open has closed.' : `${gone.length} tables you had open have closed.`);
+    const left = open.filter((id) => !gone.includes(id));
+    setOpen(left);
+    if (left.length === 0 && view.name === 'table') go({ name: 'lobby' });
     // only react to fresh server data
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [views]);

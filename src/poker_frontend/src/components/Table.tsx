@@ -90,7 +90,6 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
   const { backend, profile, run, refreshProfile, go } = useApp();
   const { open, views, clockOffset, refresh, closeTable, focus } = useTables();
   const view = views.get(String(id)) ?? null;
-  const hadView = useRef(false);
   const [, setTick] = useState(0);
   const [buyInSeat, setBuyInSeat] = useState<number | null>(null);
   const [selected, setSelected] = useState<SeatView | null>(null);
@@ -253,27 +252,7 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
     }
   }, [view, visible, play]);
 
-  if (!view) {
-    if (!visible) return null;
-    // A table copy closes a minute after it empties: say so instead of loading forever.
-    return hadView.current ? (
-      <div className="splash">
-        <p>This table closed.</p>
-        <button
-          className="btn"
-          onClick={() => {
-            closeTable(id);
-            go({ name: 'lobby' });
-          }}
-        >
-          Back to lobby
-        </button>
-      </div>
-    ) : (
-      <div className="splash">Loading table…</div>
-    );
-  }
-  hadView.current = true;
+  if (!view) return visible ? <div className="splash">Loading table…</div> : null;
 
   const currency = view.config.currency;
   const tourney = view.tournament[0];
