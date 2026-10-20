@@ -692,14 +692,25 @@ pub fn default_tables() -> Vec<TableConfig> {
         t("Chip Chasers", Chips, 25, 6),
         t("Heads Up Hangout", Chips, 25, 2),
         t("Big Stack Saloon", Chips, 250, 9),
-        t("Penny Lane", Icp, 10_000, 9),
-        t("Micro Madness", Icp, 10_000, 6),
-        t("Low Rollers", Icp, 100_000, 9),
-        t("Heads Up Arena", Icp, 100_000, 2),
-        t("Mid Stakes Saloon", Icp, 1_000_000, 6),
-        t("High Roller Lounge", Icp, 10_000_000, 6),
+        // ICP stake ladder: 0.01/0.02, 0.05/0.1, 0.25/0.5 and 1/2 ICP.
+        t("Penny Lane", Icp, E8S / 100, 9),
+        t("Micro Madness", Icp, E8S / 100, 6),
+        t("Low Rollers", Icp, E8S / 20, 9),
+        t("Heads Up Arena", Icp, E8S / 20, 2),
+        t("Mid Stakes Saloon", Icp, E8S / 4, 6),
+        t("High Roller Lounge", Icp, E8S, 6),
     ]
 }
+
+/// Small blinds the house ICP tables used before the stake ladder (2026-10-21).
+const OLD_ICP_SMALL_BLINDS: [(&str, u64); 6] = [
+    ("Penny Lane", 10_000),
+    ("Micro Madness", 10_000),
+    ("Low Rollers", 100_000),
+    ("Heads Up Arena", 100_000),
+    ("Mid Stakes Saloon", 1_000_000),
+    ("High Roller Lounge", 10_000_000),
+];
 
 /// Daily chip bonus for a given streak day (1-based): grows each day up to a week.
 pub fn daily_amount(streak: u32) -> u64 {
@@ -711,6 +722,26 @@ impl State {
     pub fn save(&self) {
         let bytes = candid::encode_one(self.snapshot()).expect("encode heap snapshot");
         save_blob(&self.stores.heap_mem, &bytes);
+    }
+
+    /// Moves the house ICP tables (and their copies) still on the old blinds to
+    /// the current stake ladder. Player rooms and tournament tables keep theirs,
+    /// and seated players keep their chips. Returns how many tables changed;
+    /// running it again changes nothing.
+    pub fn migrate_icp_stakes(&mut self) -> usize {
+        let defaults = default_tables();
+        let mut changed = 0;
+        for (id, t) in self.tables.iter_mut() {
+            if t.config.currency != Currency::Icp || self.rooms.contains_key(id) || self.table_tournament.contains_key(id) {
+                continue;
+            }
+            let was_old = OLD_ICP_SMALL_BLINDS.iter().any(|(n, sb)| *n == t.config.name && *sb == t.config.small_blind);
+            if let Some(cfg) = defaults.iter().find(|c| c.name == t.config.name).filter(|_| was_old) {
+                t.config = cfg.clone();
+                changed += 1;
+            }
+        }
+        changed
     }
 
     /// Reopens state from stable memory after an upgrade.
@@ -2528,6 +2559,7 @@ pub fn fmt_icp(e8s: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rewards::E8S_PER_POINT;
 
     const SEC: u64 = 1_000_000_000;
 
@@ -2578,7 +2610,7 @@ mod tests {
         let beer = s.items.values().find(|i| i.name == "Beer").unwrap().id;
         let icp_table = 5; // Penny Lane
         assert!(s.send_gift(p(1), icp_table, p(2), beer, Currency::Icp, 0).is_err()); // p2 not seated
-        s.join_table(p(2), icp_table, 0, 1_000_000, None, 0).unwrap();
+        s.join_table(p(2), icp_table, 0, 40_000_000, None, 0).unwrap();
         s.send_gift(p(1), icp_table, p(2), beer, Currency::Icp, 0).unwrap();
         let v = s.table_view(icp_table, None, 1).unwrap();
         assert_eq!(v.seats[0].as_ref().unwrap().gift.as_deref(), Some("🍺"));
@@ -2623,7 +2655,7 @@ mod tests {
     fn full_game_flow_conserves_value() {
         let mut s = setup();
         let before = total_value(&s);
-        let table = 7; // Low Rollers: 0.001/0.002 ICP
+        let table = 7; // Low Rollers: 0.05/0.1 ICP
         let buy = s.tables[&table].config.max_buy_in;
         s.join_table(p(1), table, 0, buy, None, 0).unwrap();
         s.join_table(p(2), table, 3, buy, None, 0).unwrap();
@@ -3626,7 +3658,7 @@ mod tests {
                 s.register(p(k), format!("player{k}"), 0).unwrap();
                 s.credit(&p(k), 10 * E8S).unwrap();
             }
-            s.join_table(p(k), table, k - 1, 1_000_000, None, 0).unwrap();
+            s.join_table(p(k), table, k - 1, 40_000_000, None, 0).unwrap();
         }
         let t = s.tables.get_mut(&table).unwrap();
         t.hand_no = 7;
@@ -3796,7 +3828,7 @@ mod tests {
         s.send_dm(p(1), p(2), "hi".into(), 10 * SEC).unwrap();
         let table = 7;
         for k in 1..=3 {
-            s.join_table(p(k), table, k - 1, 10_000_000, None, 0).unwrap();
+            s.join_table(p(k), table, k - 1, 200_000_000, None, 0).unwrap();
         }
         let now = play_hands(&mut s, table, 5, 20 * SEC);
         s.set_pause(crate::wallet::PauseFlags { withdrawals: true, reason: Some("test".into()), ..Default::default() });
@@ -3825,7 +3857,7 @@ mod tests {
         let mut s = setup();
         let table = 7;
         for k in 1..=3 {
-            s.join_table(p(k), table, k - 1, 10_000_000, None, 0).unwrap();
+            s.join_table(p(k), table, k - 1, 200_000_000, None, 0).unwrap();
         }
         let now = run_until(&mut s, SEC, 2_000, |s| s.tables[&table].hand_no >= 15 || s.tables[&table].eligible_count() < 2);
         let ninja = s.items.values().find(|i| i.name == "Ninja").unwrap().id;
@@ -3948,7 +3980,7 @@ mod tests {
     fn bans_stand_players_up_but_allow_withdrawals() {
         let mut s = setup();
         let table = 7;
-        let buy = s.tables[&table].config.max_buy_in;
+        let buy = s.tables[&table].config.min_buy_in;
         s.join_table(p(1), table, 0, buy, None, 0).unwrap();
         s.join_table(p(2), table, 1, buy, None, 0).unwrap();
         let before = s.users.get(&p(1)).unwrap().balance;
@@ -4566,7 +4598,7 @@ mod tests {
         for k in 1..=3 {
             let a = account(&s, p(k));
             let u = s.users.get(&p(k)).unwrap();
-            assert_eq!(a.lifetime_points * 1_000 + a.carry_e8s, shares[&p(k)]);
+            assert_eq!(a.lifetime_points * E8S_PER_POINT + a.carry_e8s, shares[&p(k)]);
             assert_eq!(a.tier_points, a.lifetime_points);
             assert_eq!(a.period.w_points, a.lifetime_points);
             assert_eq!(a.period.m_points, a.lifetime_points);
@@ -4575,7 +4607,7 @@ mod tests {
             assert_eq!(a.period.m_hands as u64, u.stats.hands_played);
             assert_eq!(a.period.w_net, u.stats.net_winnings);
             assert_eq!(a.period.m_net, u.stats.net_winnings);
-            earned += a.lifetime_points * 1_000 + a.carry_e8s;
+            earned += a.lifetime_points * E8S_PER_POINT + a.carry_e8s;
         }
         // Only the attribution's rounding remainder goes to no one.
         assert!(earned <= rake && rake - earned < 3 * hands.len() as u64, "earned {earned} of {rake}");
@@ -4612,7 +4644,7 @@ mod tests {
         run_until(&mut s, 2 * SEC, 5_000, |s| s.tournaments[&id].status == Finished);
         for k in 16..18 {
             let a = account(&s, p(k));
-            assert_eq!(a.lifetime_points, fee / 1_000);
+            assert_eq!(a.lifetime_points, fee / E8S_PER_POINT);
             assert_eq!(a.period.w_rake, fee);
             let hands = s.users.get(&p(k)).unwrap().stats.hands_played;
             assert!(hands > 0);
@@ -4627,35 +4659,36 @@ mod tests {
     fn crossing_a_step_banks_a_spin_at_the_current_tier() {
         use crate::rewards::BankedSpin;
         let mut s = setup();
-        s.earn_rake(&p(1), 99_000, 99_000, SEC);
+        s.earn_rake(&p(1), 99 * E8S_PER_POINT, 99 * E8S_PER_POINT, SEC);
         let a = account(&s, p(1));
-        assert_eq!((a.lifetime_points, a.meter, a.meter_stake), (99, 99, 99_000));
+        assert_eq!((a.lifetime_points, a.meter, a.meter_stake), (99, 99, 99 * E8S_PER_POINT));
         assert!(a.spins.is_empty());
         let mut s = setup();
-        s.earn_rake(&p(1), 100_000, 100_000, SEC);
+        s.earn_rake(&p(1), 100 * E8S_PER_POINT, 100 * E8S_PER_POINT, SEC);
         let a = account(&s, p(1));
         assert_eq!(a.lifetime_points, 100);
         assert_eq!(a.tier_points, 100);
-        assert_eq!(a.spins, vec![BankedSpin { stake: 100_000, tier: 0 }]);
+        assert_eq!(a.spins, vec![BankedSpin { stake: 100 * E8S_PER_POINT, tier: 0 }]);
         assert_eq!((a.meter, a.meter_stake), (0, 0));
         assert_eq!(a.last_earned_at, SEC);
         // Leftover e8s carry forward.
-        s.earn_rake(&p(1), 1_500, 1_500, 2 * SEC);
-        s.earn_rake(&p(1), 600, 600, 3 * SEC);
+        let (x, y) = (E8S_PER_POINT * 3 / 2, E8S_PER_POINT * 6 / 10);
+        s.earn_rake(&p(1), x, x, 2 * SEC);
+        s.earn_rake(&p(1), y, y, 3 * SEC);
         let a = account(&s, p(1));
-        assert_eq!((a.lifetime_points, a.carry_e8s, a.meter), (102, 100, 2));
+        assert_eq!((a.lifetime_points, a.carry_e8s, a.meter), (102, E8S_PER_POINT / 10, 2));
         // Unregistered players are ignored.
-        s.earn_rake(&p(99), 100_000, 100_000, SEC);
+        s.earn_rake(&p(99), 100 * E8S_PER_POINT, 100 * E8S_PER_POINT, SEC);
         assert!(s.users.get(&p(99)).is_none());
     }
 
     #[test]
     fn one_big_pot_banks_several_spins_and_caps_at_fifty() {
         let mut s = setup();
-        let house = 1_000 * E8S;
+        let house = 20_000 * E8S;
         s.earn_rake(&p(1), house, house, SEC);
         let a = account(&s, p(1));
-        assert_eq!(a.lifetime_points, house / 1_000);
+        assert_eq!(a.lifetime_points, house / E8S_PER_POINT);
         assert_eq!(a.spins.len(), crate::rewards::MAX_SPINS);
         assert_eq!(a.spins.len(), 50);
         let stakes: u64 = a.spins.iter().map(|x| x.stake).sum();
@@ -4666,12 +4699,12 @@ mod tests {
         let b = account(&s, p(1));
         assert_eq!(b.spins, a.spins);
         assert!(b.meter < crate::rewards::TIERS[6].step);
-        assert_eq!(b.lifetime_points, 2 * house / 1_000);
+        assert_eq!(b.lifetime_points, 2 * house / E8S_PER_POINT);
         // Several spins in one call, below the cap: the stake is split evenly.
         let mut s = setup();
-        s.earn_rake(&p(2), 300_000, 300_000, SEC);
+        s.earn_rake(&p(2), 300 * E8S_PER_POINT, 300 * E8S_PER_POINT, SEC);
         let a = account(&s, p(2));
-        assert_eq!(a.spins.iter().map(|x| x.stake).collect::<Vec<_>>(), vec![100_000; 3]);
+        assert_eq!(a.spins.iter().map(|x| x.stake).collect::<Vec<_>>(), vec![100 * E8S_PER_POINT; 3]);
     }
 
     #[test]
@@ -4687,6 +4720,12 @@ mod tests {
             .unwrap();
         s.join_table(p(2), id, 1, 100_000_000, None, 0).unwrap();
         s.join_table(p(1), id, 0, 100_000_000, None, 0).unwrap();
+        // Rake at a hosted room is small, so start both a point short of a Plankton step
+        // (rake only, no house share, so the stake accounting below is untouched).
+        let seed = 99 * E8S_PER_POINT;
+        for k in 1..=2 {
+            s.earn_rake(&p(k), seed, 0, 0);
+        }
         play_hands(&mut s, id, 10, SEC);
         let hands = table_hands(&s, id);
         let shares = attributed(&hands, false);
@@ -4695,7 +4734,7 @@ mod tests {
         for k in 1..=2 {
             let a = account(&s, p(k));
             // Points count the full rake...
-            assert_eq!(a.lifetime_points * 1_000 + a.carry_e8s, shares[&p(k)]);
+            assert_eq!(a.lifetime_points * E8S_PER_POINT + a.carry_e8s, shares[&p(k)] + seed);
             // ...spins are staked with the house's 80%.
             let stakes: u64 = a.spins.iter().map(|x| x.stake).sum();
             assert_eq!(stakes + a.meter_stake, house_of[&p(k)]);
@@ -4709,23 +4748,23 @@ mod tests {
     fn decay_lowers_the_tier_but_keeps_spins() {
         use crate::rewards::{tier_index, BankedSpin};
         let mut s = setup();
-        s.earn_rake(&p(1), 500_000, 500_000, 0);
+        s.earn_rake(&p(1), 500 * E8S_PER_POINT, 500 * E8S_PER_POINT, 0);
         let a = account(&s, p(1));
         assert_eq!(tier_index(a.tier_points), 1);
         // 500 points cross one 400-point step; the 100 left on the meter keep their fifth of the stake.
-        assert_eq!(a.spins, vec![BankedSpin { stake: 400_000, tier: 1 }]);
-        assert_eq!(a.meter_stake, 100_000);
+        assert_eq!(a.spins, vec![BankedSpin { stake: 400 * E8S_PER_POINT, tier: 1 }]);
+        assert_eq!(a.meter_stake, 100 * E8S_PER_POINT);
         assert_eq!(a.meter, 100, "Shrimp steps are 400 points");
         // Sub-point rake neither earns points nor restarts the decay clock.
-        s.earn_rake(&p(1), 500, 500, 20 * DAY_NS);
+        s.earn_rake(&p(1), E8S_PER_POINT / 2, E8S_PER_POINT / 2, 20 * DAY_NS);
         assert_eq!(account(&s, p(1)).last_earned_at, 0);
-        s.earn_rake(&p(1), 500, 500, 30 * DAY_NS);
+        s.earn_rake(&p(1), E8S_PER_POINT / 2, E8S_PER_POINT / 2, 30 * DAY_NS);
         let a = account(&s, p(1));
         assert_eq!(a.tier_points, crate::rewards::decayed(500, 0, 30 * DAY_NS) + 1);
         assert_eq!(tier_index(a.tier_points), 0, "back to Plankton");
         assert_eq!(a.lifetime_points, 501);
         assert_eq!(a.last_earned_at, 30 * DAY_NS);
-        assert_eq!(a.spins[0], BankedSpin { stake: 400_000, tier: 1 }, "banked spins are kept");
+        assert_eq!(a.spins[0], BankedSpin { stake: 400 * E8S_PER_POINT, tier: 1 }, "banked spins are kept");
         // The meter follows lifetime points: 100 + 1 crosses a Plankton step.
         assert_eq!(a.spins.len(), 2);
         assert_eq!(a.spins[1].tier, 0);
@@ -4749,14 +4788,14 @@ mod tests {
         let (id, start_at) = start_scheduled(&mut s, "ICP Nightly", 10..13);
         for k in 10..13 {
             let a = account(&s, p(k));
-            assert_eq!(a.lifetime_points, fee / 1_000);
+            assert_eq!(a.lifetime_points, fee / E8S_PER_POINT);
             assert_eq!(a.carry_e8s, 0);
             assert_eq!(a.period.w_rake, fee);
             assert_eq!(a.period.w_house_rake, Some(fee), "a tournament fee is all the house's");
         }
         // A late entry's fee is final at once, so it earns at registration.
         s.register_tournament(p(13), id, start_at + SEC).unwrap();
-        assert_eq!(account(&s, p(13)).lifetime_points, fee / 1_000);
+        assert_eq!(account(&s, p(13)).lifetime_points, fee / E8S_PER_POINT);
     }
 
     // ---- Rewards: the wheel ----
@@ -4860,7 +4899,7 @@ mod tests {
         let z = s.rewards_view(&p(77), 99 * DAY_NS);
         assert_eq!((z.tier, z.tier_points, z.spins_banked, z.next_tier_at, z.decay_starts_in_days), (0, 0, 0, Some(500), None));
         assert_eq!((z.tier_name.as_str(), z.step, z.tiers.len(), z.days_since_earned), ("Plankton", 100, 7, 0));
-        s.earn_rake(&p(1), 500_000, 500_000, 0);
+        s.earn_rake(&p(1), 500 * E8S_PER_POINT, 500 * E8S_PER_POINT, 0);
         let v = s.rewards_view(&p(1), 3 * DAY_NS);
         assert_eq!((v.tier, v.tier_points, v.decay_starts_in_days, v.days_since_earned), (1, 500, Some(4), 3));
         assert_eq!((v.spins_banked, v.meter, v.next_tier_at, v.step), (1, 100, Some(2_500), 400));
@@ -4876,38 +4915,39 @@ mod tests {
     fn spin_stake_leaves_the_meters_share_behind() {
         use crate::rewards::BankedSpin;
         let mut s = setup();
-        s.earn_rake(&p(1), 99_000, 99_000, SEC);
-        s.earn_rake(&p(1), 150_000, 150_000, 2 * SEC);
+        s.earn_rake(&p(1), 99 * E8S_PER_POINT, 99 * E8S_PER_POINT, SEC);
+        s.earn_rake(&p(1), 150 * E8S_PER_POINT, 150 * E8S_PER_POINT, 2 * SEC);
         let a = account(&s, p(1));
         // 249 points cross two 100-point steps; the 49 left keep 49/249 of the stake.
-        assert_eq!(a.spins, vec![BankedSpin { stake: 100_000, tier: 0 }; 2]);
-        assert_eq!((a.meter, a.meter_stake), (49, 49_000));
+        assert_eq!(a.spins, vec![BankedSpin { stake: 100 * E8S_PER_POINT, tier: 0 }; 2]);
+        assert_eq!((a.meter, a.meter_stake), (49, 49 * E8S_PER_POINT));
         // Uneven stakes: the division's remainder stays in the meter, nothing is lost.
         let mut s = setup();
-        s.earn_rake(&p(2), 250_000, 250_001, SEC);
+        let stake = 250 * E8S_PER_POINT + 1;
+        s.earn_rake(&p(2), 250 * E8S_PER_POINT, stake, SEC);
         let a = account(&s, p(2));
         let stakes: u64 = a.spins.iter().map(|x| x.stake).sum();
         assert_eq!(a.spins.len(), 2);
         assert!(a.spins.iter().all(|x| x.stake == a.spins[0].stake));
         assert_eq!(a.meter, 50);
-        assert_eq!(stakes + a.meter_stake, 250_001);
-        let keep = 250_001 * 50 / 250;
-        assert_eq!(a.meter_stake, keep + (250_001 - keep) % 2);
+        assert_eq!(stakes + a.meter_stake, stake);
+        let keep = stake * 50 / 250;
+        assert_eq!(a.meter_stake, keep + (stake - keep) % 2);
     }
 
     #[test]
     fn earn_rake_reports_a_tier_rise_after_decay() {
         let mut s = setup();
-        assert_eq!(s.earn_rake(&p(1), 499_000, 499_000, 0), None);
-        assert_eq!(s.earn_rake(&p(1), 1_000, 1_000, SEC), Some(1), "500 points: Shrimp");
-        assert_eq!(s.earn_rake(&p(1), 1_000, 1_000, 2 * SEC), None);
+        assert_eq!(s.earn_rake(&p(1), 499 * E8S_PER_POINT, 499 * E8S_PER_POINT, 0), None);
+        assert_eq!(s.earn_rake(&p(1), E8S_PER_POINT, E8S_PER_POINT, SEC), Some(1), "500 points: Shrimp");
+        assert_eq!(s.earn_rake(&p(1), E8S_PER_POINT, E8S_PER_POINT, 2 * SEC), None);
         // Decayed back to Plankton: sub-point rake is no rise...
         let later = 30 * DAY_NS;
         assert_eq!(crate::rewards::tier_index(crate::rewards::decayed(501, 2 * SEC, later)), 0);
-        assert_eq!(s.earn_rake(&p(1), 500, 500, later), None);
+        assert_eq!(s.earn_rake(&p(1), E8S_PER_POINT / 2, E8S_PER_POINT / 2, later), None);
         // ...but earning back to Shrimp is.
-        assert_eq!(s.earn_rake(&p(1), 500_000, 500_000, later), Some(1));
-        assert_eq!(s.earn_rake(&p(99), 500_000, 500_000, later), None, "unregistered");
+        assert_eq!(s.earn_rake(&p(1), 500 * E8S_PER_POINT, 500 * E8S_PER_POINT, later), Some(1));
+        assert_eq!(s.earn_rake(&p(99), 500 * E8S_PER_POINT, 500 * E8S_PER_POINT, later), None, "unregistered");
     }
 
     #[test]
@@ -4917,7 +4957,7 @@ mod tests {
         {
             let mut u = s.users.get_mut(&p(1)).unwrap();
             let a = u.rewards.get_or_insert_with(Default::default);
-            (a.tier_points, a.lifetime_points, a.last_earned_at, a.carry_e8s) = (499, 499, SEC, 999);
+            (a.tier_points, a.lifetime_points, a.last_earned_at, a.carry_e8s) = (499, 499, SEC, E8S_PER_POINT - 1);
         }
         let buy = s.tables[&table].config.max_buy_in;
         for (k, seat) in [(1, 0), (2, 3), (3, 5)] {
@@ -5090,7 +5130,68 @@ mod tests {
         s.users.insert(p(1), back);
         let v = s.rewards_view(&p(1), SEC);
         assert_eq!((v.tier, v.tier_points, v.spins_banked), (0, 0, 0));
-        s.earn_rake(&p(1), 1_000, 1_000, SEC);
-        assert_eq!(account(&s, p(1)).period.w_house_rake, Some(1_000));
+        s.earn_rake(&p(1), E8S_PER_POINT, E8S_PER_POINT, SEC);
+        assert_eq!(account(&s, p(1)).period.w_house_rake, Some(E8S_PER_POINT));
+    }
+
+    #[test]
+    fn icp_tables_follow_the_stake_ladder() {
+        let s = setup();
+        let blinds = |name: &str| {
+            let t = s.tables.values().find(|t| t.config.name == name).unwrap();
+            (t.config.small_blind, t.config.big_blind, t.config.min_buy_in, t.config.max_buy_in, t.config.rake_cap, t.config.jackpot_cap)
+        };
+        let step = |sb: u64| (sb, 2 * sb, 40 * sb, 200 * sb, 6 * sb, 2 * sb);
+        assert_eq!(blinds("Penny Lane"), step(E8S / 100));
+        assert_eq!(blinds("Micro Madness"), step(E8S / 100));
+        assert_eq!(blinds("Low Rollers"), step(E8S / 20));
+        assert_eq!(blinds("Heads Up Arena"), step(E8S / 20));
+        assert_eq!(blinds("Mid Stakes Saloon"), step(E8S / 4));
+        assert_eq!(blinds("High Roller Lounge"), step(E8S));
+    }
+
+    #[test]
+    fn upgrade_moves_old_icp_tables_to_the_new_stakes_once() {
+        let mut s = setup();
+        // Put the house tables (and a copy) back on the old stakes, as a canister
+        // deployed before the ladder change would have them.
+        let old = [("Penny Lane", 10_000), ("Micro Madness", 10_000), ("Low Rollers", 100_000), ("Heads Up Arena", 100_000), ("Mid Stakes Saloon", 1_000_000), ("High Roller Lounge", 10_000_000)];
+        let ids: Vec<u64> = s.tables.keys().copied().collect();
+        for id in ids {
+            let t = s.tables.get_mut(&id).unwrap();
+            if let Some((_, sb)) = old.iter().find(|(n, _)| *n == t.config.name) {
+                t.config.small_blind = *sb;
+                t.config.big_blind = 2 * sb;
+                t.config.min_buy_in = 40 * sb;
+                t.config.max_buy_in = 200 * sb;
+                t.config.rake_cap = 6 * sb;
+                t.config.jackpot_cap = 2 * sb;
+            }
+        }
+        let penny = s.tables.values().find(|t| t.config.name == "Penny Lane").unwrap().id;
+        let copy = s.create_table(s.tables[&penny].config.clone()).unwrap();
+        // A player-hosted ICP room that happens to use the old micro blinds keeps them.
+        let mut room_cfg = s.tables[&penny].config.clone();
+        room_cfg.name = "My Room".into();
+        let room = s.create_table(room_cfg).unwrap();
+        s.rooms.insert(room, Room { owner: p(1), password_hash: None, created_at: 0, last_active: 0, guests: BTreeSet::new() });
+        s.join_table(p(2), penny, 0, 400_000, None, 0).unwrap();
+
+        assert_eq!(s.migrate_icp_stakes(), 7, "the six house ICP tables and the copy");
+        assert_eq!(s.tables[&penny].config.small_blind, E8S / 100);
+        assert_eq!(s.tables[&copy].config.small_blind, E8S / 100);
+        assert_eq!(s.tables[&room].config.small_blind, 10_000, "rooms keep their host's blinds");
+        assert_eq!(s.tables[&penny].seats[0].as_ref().unwrap().stack, 400_000, "seated players keep their chips");
+        assert_eq!(s.migrate_icp_stakes(), 0, "running it again changes nothing");
+    }
+
+    #[test]
+    fn a_point_is_a_thousandth_of_an_icp_of_rake() {
+        // Paced to the stake ladder: a 0.01/0.02 regular earns about 60 points an hour.
+        let mut s = setup();
+        s.earn_rake(&p(1), E8S / 1000 - 1, 0, SEC);
+        assert_eq!(s.rewards_view(&p(1), SEC).lifetime_points, 0);
+        s.earn_rake(&p(1), 1, 0, SEC);
+        assert_eq!(s.rewards_view(&p(1), SEC).lifetime_points, 1);
     }
 }

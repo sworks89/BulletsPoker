@@ -34,8 +34,9 @@ impl RewardsState {
     }
 }
 
-/// Attributed rake (e8s) per point.
-pub const E8S_PER_POINT: u64 = 1_000;
+/// Attributed rake (e8s) per point: 0.001 ICP, so a regular at the lowest
+/// stakes (0.01/0.02) earns about 60 points an hour.
+pub const E8S_PER_POINT: u64 = 100_000;
 /// Banked spins wait up to this many; further steps bank nothing.
 pub const MAX_SPINS: usize = 50;
 /// Days without earning before tier points start to decay.

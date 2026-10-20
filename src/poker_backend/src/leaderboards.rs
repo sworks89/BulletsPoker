@@ -405,7 +405,7 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rewards::PeriodCounters;
+    use crate::rewards::{PeriodCounters, E8S_PER_POINT as PT};
     use crate::state::{Channel, E8S};
 
     const SEC: u64 = 1_000_000_000;
@@ -513,20 +513,20 @@ mod tests {
     fn points_board_ranks_and_breaks_ties_by_time() {
         let mut s = setup(4);
         let t = JUNE + DAY_NS;
-        s.earn_rake(&p(1), 50_000, 0, t);
-        s.earn_rake(&p(2), 80_000, 0, t + SEC);
-        s.earn_rake(&p(3), 50_000, 0, t + 2 * SEC);
+        s.earn_rake(&p(1), 50 * PT, 0, t);
+        s.earn_rake(&p(2), 80 * PT, 0, t + SEC);
+        s.earn_rake(&p(3), 50 * PT, 0, t + 2 * SEC);
         for b in [0, 2] {
             assert_eq!(values(&board(&s, b, t + 3 * SEC)), vec![(p(2), 80), (p(1), 50), (p(3), 50)]);
         }
         // Rake worth less than a point, and hands, change nothing: p1 keeps its place.
-        s.earn_rake(&p(1), 500, 0, t + 4 * SEC);
+        s.earn_rake(&p(1), PT / 2, 0, t + 4 * SEC);
         s.record_icp_hand(&p(1), 0, t + 5 * SEC);
         assert_eq!(values(&board(&s, 0, t + 6 * SEC)), vec![(p(2), 80), (p(1), 50), (p(3), 50)]);
         // p3 passes p1; p1 then ties p3 at 60 later, so stays behind.
-        s.earn_rake(&p(3), 10_000, 0, t + 7 * SEC);
+        s.earn_rake(&p(3), 10 * PT, 0, t + 7 * SEC);
         assert_eq!(values(&board(&s, 0, t + 8 * SEC)), vec![(p(2), 80), (p(3), 60), (p(1), 50)]);
-        s.earn_rake(&p(1), 9_500, 0, t + 9 * SEC);
+        s.earn_rake(&p(1), 9 * PT + PT / 2, 0, t + 9 * SEC);
         let v = board(&s, 0, t + 10 * SEC);
         assert_eq!(values(&v), vec![(p(2), 80), (p(3), 60), (p(1), 60)]);
         assert_eq!(v.rows.iter().map(|r| r.rank).collect::<Vec<_>>(), vec![1, 2, 3]);
@@ -540,7 +540,7 @@ mod tests {
         for k in 0..210u32 {
             let who = Principal::from_slice(&[7, (k >> 8) as u8, k as u8, 9, 9]);
             s.register(who, format!("bot{k}"), 0).unwrap();
-            s.earn_rake(&who, (k as u64 + 1) * 1_000, 0, t + 11 * SEC);
+            s.earn_rake(&who, (k as u64 + 1) * PT, 0, t + 11 * SEC);
         }
         let r = s.rewards.as_ref().unwrap().boards.as_ref().unwrap()[0].clone();
         assert_eq!(r.rows.len(), BOARD_SIZE);

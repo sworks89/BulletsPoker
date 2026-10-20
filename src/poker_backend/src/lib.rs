@@ -201,6 +201,8 @@ fn post_upgrade() {
     let mut state = State::restore(ic_stable_structures::DefaultMemoryImpl::default());
     // Calls in flight during the upgrade never reported back: retry them.
     state.mark_interrupted_ops(now());
+    // House ICP tables deployed before the stake ladder move to the new blinds.
+    state.migrate_icp_stakes();
     STATE.with(|s| *s.borrow_mut() = Some(state));
     start_timers();
 }

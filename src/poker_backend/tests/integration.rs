@@ -290,10 +290,10 @@ fn icp_hands_and_an_upgrade_mid_game() {
     env.approve_and_deposit(alice, 2 * E8S).unwrap();
     env.approve_and_deposit(bob, 2 * E8S).unwrap();
 
-    // Penny Lane (ICP, 0.0001/0.0002): the timer deals once two players sit.
+    // Penny Lane (ICP, 0.01/0.02): the timer deals once two players sit.
     let table = 5u64;
     for (k, who) in [alice, bob].into_iter().enumerate() {
-        let r: R<()> = env.update(who, "join_table", encode_args((table, k as u8, 1_000_000u64, None::<String>)).unwrap());
+        let r: R<()> = env.update(who, "join_table", encode_args((table, k as u8, 40_000_000u64, None::<String>)).unwrap());
         r.unwrap();
     }
     env.run_timers(3);
@@ -310,7 +310,7 @@ fn icp_hands_and_an_upgrade_mid_game() {
     let after = env.table(alice, table);
     assert_eq!(after.hand_no, hand);
     assert_eq!(after.seats[alice_seat].as_ref().unwrap().cards, view.seats[alice_seat].as_ref().unwrap().cards);
-    assert_eq!(env.balance(alice), 2 * E8S - 1_000_000);
+    assert_eq!(env.balance(alice), 2 * E8S - 40_000_000);
 
     // Play the hand out: whoever is to act folds.
     let to_act = after.to_act.expect("someone to act");

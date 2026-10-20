@@ -75,10 +75,13 @@ fee when the event starts:
   - Rounding may leave a remainder, which goes to no one.
   - In hosted rooms, points are based on the full rake a player contributed, not
     just the house's 80%.
-- **Rate.** 1 point per 1,000 e8s (0.00001 ICP) of attributed rake. Points are
+- **Rate.** 1 point per 100,000 e8s (0.001 ICP) of attributed rake. Points are
   whole numbers, and the leftover e8s carry forward per player.
-  - *My call:* this gives a Penny Lane regular about 60 points an hour and a High
-    Roller about 60,000. That is enough for the low stakes to feel progress.
+  - This gives a regular at the lowest stakes (0.01/0.02) about 60 points an
+    hour, and a 1/2 player about 6,000.
+  - *Changed 2026-10-21:* the rate was 1 point per 1,000 e8s when Penny Lane was
+    0.0001/0.0002. The user then moved the ICP tables to the ladder below, and
+    the rate moved 100× with it, so the tiers keep the same pace.
 - **Two counters per player:**
   - *Tier points* decay (see below) and decide your tier.
   - *Lifetime points* never decay. They drive the wheel and the points
@@ -348,3 +351,23 @@ human sign-in check is still needed.
     more hands". The losing bot sees its own row: −3,491,550 e8s, rank 0.
 - **Solvency:** the automatic check passed after the run, with ledger balance =
   liabilities (pools and jackpot included). Nothing was paused.
+
+## Stake ladder (2026-10-21)
+
+The measurement above showed the old micro stakes losing money on cycles. The
+user moved the house ICP tables to a ladder:
+
+| Tables | Blinds (ICP) | Buy-in (ICP) |
+|---|---|---|
+| Penny Lane (9), Micro Madness (6) | 0.01 / 0.02 | 0.4 – 2 |
+| Low Rollers (9), Heads Up Arena (2) | 0.05 / 0.1 | 2 – 10 |
+| Mid Stakes Saloon (6) | 0.25 / 0.5 | 10 – 50 |
+| High Roller Lounge (6) | 1 / 2 | 40 – 200 |
+
+- Rake (2.5%, cap 3 BB) and the jackpot drop (1%, cap 1 BB) are unchanged.
+- The lowest step takes about 100× Penny Lane's old rake per hand, well above the
+  measured cycle cost per hand.
+- On upgrade, `migrate_icp_stakes` moves house tables and their copies still on
+  the old blinds to the ladder. Player rooms and tournament tables keep their
+  blinds, and seated players keep their chips.
+- Points were rescaled with the stakes (see Points).
