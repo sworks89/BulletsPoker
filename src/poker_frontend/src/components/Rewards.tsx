@@ -70,7 +70,17 @@ function FishBuffet() {
     setView(v);
   };
   usePoll(load, 15000, [backend, profile?.id.toText()]);
-  useEffect(() => () => clearTimeout(timer.current), []);
+  // Leaving mid-spin skips the reveal, but the balance must still catch up.
+  const refreshRef = useRef(refreshProfile);
+  refreshRef.current = refreshProfile;
+  useEffect(
+    () => () => {
+      if (timer.current === undefined) return;
+      clearTimeout(timer.current);
+      refreshRef.current().catch(() => {});
+    },
+    [],
+  );
 
   const spin = async () => {
     if (!view || spinning) return;
@@ -86,6 +96,7 @@ function FishBuffet() {
     setRotation((r) => Math.ceil(r / 360) * 360 + wheelAngle(rec.segment, WHEEL_X10.length));
     timer.current = setTimeout(
       async () => {
+        timer.current = undefined;
         setResult(rec);
         setSpinning(false);
         setHeld(null);
