@@ -13,6 +13,9 @@ import {
   isWinningsBoard,
   meterProgress,
   periodCountdown,
+  prizeIcp,
+  tierRose,
+  type TierSeen,
   tierProgress,
   wheelAngle,
 } from '../rewards';
@@ -53,20 +56,17 @@ const when = (ns: bigint) =>
   new Date(Number(ns / 1_000_000n)).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 function FishBuffet() {
-  const { backend, profile, run, refreshProfile, notify } = useApp();
+  const { backend, profile, run, refreshProfile } = useApp();
   const [view, setView] = useState<RewardsView | null>(null);
   const [rotation, setRotation] = useState(0);
   const [spinning, setSpinning] = useState(false);
   const [result, setResult] = useState<SpinRecord | null>(null);
   // The history as it was when the wheel started, so the list doesn't give the result away.
   const [held, setHeld] = useState<SpinRecord[] | null>(null);
-  const lastTier = useRef<number | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const load = async () => {
     const v = await backend.get_rewards();
-    if (lastTier.current !== null && v.tier > lastTier.current) notify(`🎉 Tier up! Welcome to ${v.tier_name}.`);
-    lastTier.current = v.tier;
     setView(v);
   };
   usePoll(load, 15000, [backend, profile?.id.toText()]);
@@ -175,7 +175,7 @@ function FishBuffet() {
               <span className="muted small">Fill the meter at ICP tables to bank a spin.</span>
             )}
           </div>
-          <div className="muted small">Fish Buffet pool: {icp(view.fish_pool, 4)} ICP</div>
+          <div className="muted small">Fish Buffet pool: {prizeIcp(view.fish_pool)} ICP</div>
         </div>
       )}
 
@@ -195,8 +195,8 @@ function FishBuffet() {
                 </tr>
               </thead>
               <tbody>
-                {history.map((s) => (
-                  <tr key={String(s.time)}>
+                {history.map((s, i) => (
+                  <tr key={`${s.time}-${i}`}>
                     <td className="small">{when(s.time)}</td>
                     <td>{s.tier}</td>
                     <td>{formatMultiplier(s.multiplier_x10)}</td>
@@ -313,7 +313,7 @@ const PLACE = ['', '🥇', '🥈', '🥉'];
 
 function Board({ b, now, me }: { b: BoardView; now: number; me?: string }) {
   const winnings = isWinningsBoard(b.board);
-  const value = (r: BoardRow) => (winnings ? `${icp(r.value, 4)} ICP` : `${r.value.toLocaleString()} pts`);
+  const value = (r: BoardRow) => (winnings ? `${prizeIcp(r.value)} ICP` : `${r.value.toLocaleString()} pts`);
   const mine = b.me[0];
   const showMe = mine && (mine.rank === 0 || mine.rank > b.rows.length);
   const row = (r: BoardRow, you: boolean) => {
@@ -328,7 +328,7 @@ function Board({ b, now, me }: { b: BoardView; now: number; me?: string }) {
         </td>
         <td className={winnings ? (r.value < 0n ? 'neg' : 'pos') : ''}>{value(r)}</td>
         <td>{r.hands}</td>
-        <td className="prize">{r.qualified && r.prize > 0n ? icp(r.prize, 4) : '—'}</td>
+        <td className="prize">{r.qualified && r.prize > 0n ? prizeIcp(r.prize) : '—'}</td>
       </tr>
     );
   };
@@ -343,7 +343,7 @@ function Board({ b, now, me }: { b: BoardView; now: number; me?: string }) {
         </span>
       </div>
       <div className="board-pool">
-        Prize pool <b>{icp(b.pool, 4)} ICP</b>
+        Prize pool <b>{prizeIcp(b.pool)} ICP</b>
         {winnings && <span className="muted small"> · {MIN_HANDS[b.board]} hands to qualify</span>}
       </div>
       {b.rows.length === 0 && !showMe ? (
@@ -380,11 +380,40 @@ function Board({ b, now, me }: { b: BoardView; now: number; me?: string }) {
               <span>{PLACE[w.rank] ?? `#${w.rank}`}</span>
               <Avatar icon={w.avatar} size="sm" />
               <span className="grow">{w.username}</span>
-              <b className="pos">{icp(w.prize, 4)} ICP</b>
+              <b className="pos">{prizeIcp(w.prize)} ICP</b>
             </div>
           ))}
         </div>
       )}
     </div>
   );
+}
+
+/**
+ * Watches the signed-in player's Fish Buffet tier from the app shell and
+ * celebrates a rise, wherever they are in the app. The first look at an
+ * account (signing in, switching) is never a rise, and a reply that arrives
+ * for a previous account is ignored.
+ */
+export function TierWatch() {
+  const { backend, profile, notify } = useApp();
+  const who = profile?.id.toText();
+  const seen = useRef<TierSeen>(null);
+  const current = useRef(who);
+  current.current = who;
+  usePoll(
+    async () => {
+      if (!who) {
+        seen.current = null;
+        return;
+      }
+      const v = await backend.get_rewards();
+      if (current.current !== who) return;
+      if (tierRose(seen.current, who, v.tier)) notify(`🎉 Tier up! You reached ${v.tier_name} in the Fish Buffet.`);
+      seen.current = { who, tier: v.tier };
+    },
+    20000,
+    [backend, who],
+  );
+  return null;
 }

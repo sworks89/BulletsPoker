@@ -1,4 +1,5 @@
 import type { RewardsView } from './ic';
+import { icp } from './format';
 
 // Pure helpers for the Rewards page (Fish Buffet and the leaderboards).
 
@@ -81,3 +82,18 @@ export function handsNeeded(board: string, hands: number): number {
 }
 
 export const isWinningsBoard = (board: string): boolean => board in MIN_HANDS;
+
+/** An ICP prize or pool: 4 decimals, or all 8 when 4 would show a non-zero amount as 0. */
+export function prizeIcp(e8s: bigint): string {
+  const short = icp(e8s, 4);
+  return e8s !== 0n && /^-?0$/.test(short) ? icp(e8s, 8) : short;
+}
+
+/** The tier last seen, and whose it was. */
+export type TierSeen = { who: string; tier: number } | null;
+
+/** Whether `tier` is a rise for `who` over what was last seen. The first look
+ *  at an account (after signing in or switching) is never a rise. */
+export function tierRose(seen: TierSeen, who: string, tier: number): boolean {
+  return seen !== null && seen.who === who && tier > seen.tier;
+}

@@ -12,7 +12,7 @@ import { Wallet } from './components/Wallet';
 import { Store } from './components/Store';
 import { Friends } from './components/Friends';
 import { ProfilePage, Register } from './components/Profile';
-import { Rewards } from './components/Rewards';
+import { Rewards, TierWatch } from './components/Rewards';
 import { AccountNotice } from './components/Safety';
 import { Admin } from './components/Admin';
 import { Avatar } from './art/Avatar';
@@ -109,6 +109,7 @@ function Shell() {
         </div>
       </header>
 
+      <TierWatch />
       <StatusBanner />
       <AccountNotice />
       <ConnectionBanner />

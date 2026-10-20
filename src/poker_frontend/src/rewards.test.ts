@@ -6,6 +6,8 @@ import {
   leaderboardMedal,
   meterProgress,
   periodCountdown,
+  prizeIcp,
+  tierRose,
   tierProgress,
   wheelAngle,
 } from './rewards';
@@ -136,5 +138,32 @@ describe('handsNeeded', () => {
 
   it('is 0 on points boards', () => {
     expect(handsNeeded('weekly_points', 0)).toBe(0);
+  });
+});
+
+describe('prizeIcp', () => {
+  it('never shows a non-zero prize as 0', () => {
+    expect(prizeIcp(1n)).toBe('0.00000001');
+    expect(prizeIcp(4_999n)).toBe('0.00004999');
+    expect(prizeIcp(25_000n)).toBe('0.0002');
+    expect(prizeIcp(0n)).toBe('0');
+  });
+
+  it('keeps larger amounts short', () => {
+    expect(prizeIcp(30_000_000n)).toBe('0.3');
+    expect(prizeIcp(123_456_789n)).toBe('1.2345');
+  });
+});
+
+describe('tierRose', () => {
+  it('is a rise only for the same player going up', () => {
+    expect(tierRose({ who: 'a', tier: 1 }, 'a', 2)).toBe(true);
+    expect(tierRose({ who: 'a', tier: 2 }, 'a', 2)).toBe(false);
+    expect(tierRose({ who: 'a', tier: 3 }, 'a', 1)).toBe(false);
+  });
+
+  it('is never a rise on the first look or after switching accounts', () => {
+    expect(tierRose(null, 'a', 4)).toBe(false);
+    expect(tierRose({ who: 'a', tier: 0 }, 'b', 4)).toBe(false);
   });
 });
