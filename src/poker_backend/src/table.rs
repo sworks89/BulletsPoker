@@ -237,6 +237,23 @@ pub struct Table {
     /// which they started drawing on at `bank_started_at`.
     pub time_bank_active: bool,
     pub bank_started_at: u64,
+    /// For a copy opened when its game filled up: the original table's id.
+    pub game: Option<u64>,
+    /// For a copy: its number in the game (the original is 1).
+    pub copy_number: Option<u8>,
+    /// For a copy: when it last became empty (it closes after a minute).
+    pub empty_since: Option<u64>,
+    /// Watchers waiting to be seated automatically when a seat opens, in order.
+    pub auto_sit: Option<std::collections::VecDeque<AutoSitEntry>>,
+}
+
+/// A watcher waiting for a seat at a table.
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct AutoSitEntry {
+    pub player: Principal,
+    pub buy_in: u64,
+    /// Last time their browser checked in (they're only seated while it keeps doing so).
+    pub last_seen: u64,
 }
 
 const NANOS: u64 = 1_000_000_000;
@@ -270,7 +287,16 @@ impl Table {
             tournament_mode: false,
             time_bank_active: false,
             bank_started_at: 0,
+            game: None,
+            copy_number: None,
+            empty_since: None,
+            auto_sit: None,
         }
+    }
+
+    /// Lowest empty seat, if any.
+    pub fn first_free_seat(&self) -> Option<u8> {
+        self.seats.iter().position(|s| s.is_none()).map(|i| i as u8)
     }
 
     fn log(&mut self, seat: Option<usize>, text: impl Into<String>, amount: u64) {
@@ -413,6 +439,10 @@ impl Table {
         let s = self.seat_mut(i);
         s.sitting_out = out;
         s.sitting_out_since = if out { s.sitting_out_since.or(Some(now)) } else { None };
+        // Their turn right now: coming back restarts the clock, sitting out acts at once.
+        if self.phase.is_betting() && self.to_act == Some(i) {
+            self.set_deadline(now);
+        }
         Ok(())
     }
 
@@ -647,10 +677,10 @@ impl Table {
         self.set_deadline(now);
     }
 
-    /// Starts the clock for whoever is to act. Absent tournament players act at once.
+    /// Starts the clock for whoever is to act. Players sitting out (absent tournament
+    /// players, or a cash player whose clock ran out mid-hand) are checked or folded at once.
     fn set_deadline(&mut self, now: u64) {
-        let away = self.tournament_mode
-            && self.to_act.is_some_and(|i| self.seats[i].as_ref().is_some_and(|s| s.sitting_out));
+        let away = self.to_act.is_some_and(|i| self.seats[i].as_ref().is_some_and(|s| s.sitting_out));
         self.time_bank_active = false;
         self.action_deadline = if away { now } else { now + self.config.action_timeout_secs * NANOS };
     }
@@ -1532,6 +1562,53 @@ mod tests {
         let i = t.seat_of(&late).unwrap();
         assert!(t.seat(i).sitting_out);
         assert_eq!(t.eligible_count(), 1);
+    }
+
+    /// Plays preflop to the flop (call, check) and times out whoever acts first there.
+    fn time_out_on_the_flop(t: &mut Table) -> (Principal, u64) {
+        t.sit(p(1), 0, 200).unwrap();
+        t.sit(p(2), 1, 200).unwrap();
+        t.start_hand([6; 32], 0).unwrap();
+        let a = to_act_player(t);
+        t.act(&a, Action::Call, 1).unwrap();
+        let b = to_act_player(t);
+        t.act(&b, Action::Check, 2).unwrap();
+        assert_eq!(t.phase, Phase::Flop);
+        let late = to_act_player(t);
+        // Regular clock, then the time bank, then the auto-check.
+        assert!(t.handle_timeout(t.action_deadline).is_none());
+        let out_at = t.action_deadline;
+        assert_eq!(t.handle_timeout(out_at), Some(late));
+        assert!(t.seat(t.seat_of(&late).unwrap()).sitting_out);
+        assert_eq!(t.phase, Phase::Flop, "a check keeps them in the hand");
+        (late, out_at)
+    }
+
+    #[test]
+    fn sitting_out_player_is_checked_or_folded_at_once_for_the_rest_of_the_hand() {
+        let mut t = Table::new(1, config());
+        let (late, out_at) = time_out_on_the_flop(&mut t);
+        let other = to_act_player(&t);
+        assert_ne!(other, late);
+        t.act(&other, Action::Check, out_at + NANOS).unwrap();
+        assert_eq!(t.phase, Phase::Turn);
+        assert_eq!(to_act_player(&t), late);
+        assert_eq!(t.action_deadline, out_at + NANOS, "no fresh clock while sitting out");
+        assert_eq!(t.handle_timeout(out_at + NANOS), Some(late));
+        assert!(!t.time_bank_active, "no time bank while sitting out");
+    }
+
+    #[test]
+    fn coming_back_mid_hand_gets_a_fresh_clock() {
+        let mut t = Table::new(1, config());
+        let (late, out_at) = time_out_on_the_flop(&mut t);
+        let other = to_act_player(&t);
+        t.act(&other, Action::Check, out_at + NANOS).unwrap();
+        assert_eq!(to_act_player(&t), late);
+        t.set_sitting_out(&late, false, out_at + 2 * NANOS).unwrap();
+        assert_eq!(t.action_deadline, out_at + 2 * NANOS + 20 * NANOS);
+        assert!(t.handle_timeout(out_at + 2 * NANOS).is_none());
+        t.act(&late, Action::Check, out_at + 3 * NANOS).unwrap();
     }
 
     #[test]

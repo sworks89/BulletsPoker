@@ -549,6 +549,30 @@ fn join_table(id: u64, seat: u8, buy_in: u64, password: Option<String>) -> R<()>
     with_mut(|s| s.join_table(p, id, seat, buy_in, password, now()))
 }
 
+/// Joins a game: a free seat at its fullest table, or a new copy of it when every
+/// table is full. Returns the id of the table you were seated at.
+#[update]
+fn join_game(game: u64, buy_in: u64) -> R<u64> {
+    let p = caller()?;
+    with_mut(|s| s.join_game(p, game, buy_in, now()))
+}
+
+/// Waits for a seat at a table: you're seated automatically, with this buy-in,
+/// when one opens. `None` leaves the line. Keep calling `auto_sit_ping` while
+/// you watch, or you're dropped from the line.
+#[update]
+fn auto_sit(table: u64, buy_in: Option<u64>) -> R<AutoSitStatus> {
+    let p = caller()?;
+    with_mut(|s| s.auto_sit(p, table, buy_in, now()))
+}
+
+/// Keeps you in a table's auto-sit line and reports whether you were seated or dropped.
+#[update]
+fn auto_sit_ping(table: u64) -> R<AutoSitStatus> {
+    let p = caller()?;
+    Ok(with_mut(|s| s.auto_sit_ping(p, table, now())))
+}
+
 /// Creates your own table. Hosts of ICP tables earn 20% of the rake it generates.
 #[update]
 fn create_room(args: RoomArgs) -> R<u64> {

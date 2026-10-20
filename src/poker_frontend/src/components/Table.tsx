@@ -13,6 +13,7 @@ import { ItemArt } from '../art/ItemArt';
 import { BadBeatTag, ChipBurst, RainCloud, THROW_FX, useSeatFx } from '../fx/SeatFx';
 import { handReactions } from '../fx/poker';
 import { giftArrivals } from '../fx/gifts';
+import { WatchBar } from './WatchBar';
 import { Burst, Mark } from '../fx/marks';
 
 /** How long a thrown item flies, and how long its mark stays (spec: ~0.7s, ~4s plus the wipe). */
@@ -312,6 +313,7 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
           )}
           <div>
             <b>{view.config.name}</b>
+            {view.number > 1 && <span className="muted"> · Table {view.number}</span>}
             {tourney ? (
               <span className="tag live">Tournament</span>
             ) : (
@@ -614,13 +616,17 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
             <button className="btn elsewhere" onClick={() => focus(elsewhere.id)}>
               Your turn at {elsewhere.config.name} →
             </button>
+          ) : profile && mySeat === undefined && !view.restricted && view.tournament.length === 0 ? (
+            <WatchBar view={view} onChange={load} />
           ) : (
             <div className="muted">
               {!profile
                 ? 'Sign in and create a profile to play.'
                 : mySeat === undefined
                   ? 'Pick an empty seat to sit down. Click a player to send a gift or throw something.'
-                  : phase === 'Waiting'
+                  : me?.sitting_out
+                    ? "You're sitting out, so your hands are checked or folded for you. Click I'm back to play."
+                    : phase === 'Waiting'
                     ? 'Waiting for another player…'
                     : 'Waiting for your turn…'}
             </div>

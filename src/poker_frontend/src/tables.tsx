@@ -1,6 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useApp, usePoll } from './context';
 import type { TableView } from './ic';
+import { isMyTurn } from './turn';
+import { afterClosing } from './tablesNav';
+
+export { isMyTurn };
 
 /** Most tables a player can have open at once. */
 export const MAX_OPEN = 4;
@@ -33,8 +37,6 @@ export function useTables(): TablesState {
   return c;
 }
 
-export const isMyTurn = (v: TableView | undefined): boolean =>
-  !!v && v.my_seat.length > 0 && v.to_act.length > 0 && v.my_seat[0] === v.to_act[0];
 
 // Per-browser preferences: which tables are open and how they're laid out.
 function load<T>(key: string, fallback: T): T {
@@ -89,11 +91,14 @@ export function TablesProvider({ children }: { children: ReactNode }) {
 
   const closeTable = useCallback(
     (id: bigint) => {
-      const rest = open.filter((x) => x !== id);
-      setOpen(rest);
-      if (active === id) go(rest.length ? { name: 'table', id: rest[rest.length - 1] } : { name: 'lobby' });
+      // Closing a table you're waiting at takes you out of its auto-sit line,
+      // so you're never seated (and charged) at a table you closed.
+      if (views.get(String(id))?.my_auto_sit.length) backend.auto_sit(id, []).catch(() => {});
+      const next = afterClosing(open, active, [id]);
+      setOpen(next.open);
+      if (next.goTo !== null) go(next.goTo === 'lobby' ? { name: 'lobby' } : { name: 'table', id: next.goTo });
     },
-    [open, active, go],
+    [open, active, go, views, backend],
   );
 
   const requested = useRef<bigint[]>([]);
@@ -134,10 +139,15 @@ export function TablesProvider({ children }: { children: ReactNode }) {
     };
   }, [refresh]);
 
-  // Tables that no longer exist (closed rooms, finished tournaments) drop out.
+  // Tables that no longer exist (closed rooms, emptied table copies, finished
+  // tournaments) drop out, with a word about it; with none left, back to the lobby.
   useEffect(() => {
     const gone = requested.current.filter((id) => !views.has(String(id)));
-    if (gone.length) setOpen((o) => o.filter((id) => !gone.includes(id)));
+    if (gone.length === 0) return;
+    notify(gone.length === 1 ? 'A table you had open has closed.' : `${gone.length} tables you had open have closed.`);
+    const next = afterClosing(open, active, gone);
+    setOpen(next.open);
+    if (next.goTo !== null) go(next.goTo === 'lobby' ? { name: 'lobby' } : { name: 'table', id: next.goTo });
     // only react to fresh server data
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [views]);
