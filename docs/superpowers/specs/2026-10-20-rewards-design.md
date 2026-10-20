@@ -176,7 +176,7 @@ rollers reach Shark within about a day.
   - An honest winner rarely hits the limit.
   - Known edge: a week that straddles two months is paid in the new month, so
     rake from the old month's last days can back both that week's prize and the
-    old month's prize. The overlap is at most six days of rake.
+    old month's prize. The overlap is up to a full week of rake.
 - **Suspended players** (an active ban at the moment a period closes) are not
   qualified and are not paid; their share rolls over like any unpaid share.
 - **Bragging rights:**

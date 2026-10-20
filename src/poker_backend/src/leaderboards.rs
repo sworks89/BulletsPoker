@@ -222,7 +222,11 @@ impl State {
     /// activity would have closed the previous period first.
     pub(crate) fn close_periods(&mut self, now: u64) {
         self.ensure_boards(now);
-        for b in 0..BOARDS {
+        // Monthly boards close first. When a week and a month end at the same
+        // tick (a month that starts on a Monday), paying the week records its
+        // prize under the new month, replacing the old month's weekly-prize
+        // total, which the old month's winnings cap must read first.
+        for b in [2, 3, 0, 1] {
             let current = period_of(b, now);
             let lists = self.rewards_mut().boards.as_mut().expect("boards started");
             if lists[b].period >= current {
@@ -800,5 +804,24 @@ mod tests {
         s.users.get_mut(&p(2)).unwrap().ban = Some(Ban { until: 0, reason: "x".into() });
         s.earn_rake(&p(2), 100_000, 0, JUNE + WEEK + SEC);
         assert!(!board(&s, 0, JUNE + WEEK + SEC).rows[0].qualified);
+    }
+
+    #[test]
+    fn a_month_ending_on_a_monday_still_subtracts_its_earlier_weekly_prizes() {
+        // June 2026 starts on a Monday, so W22 and May close in the same tick.
+        let may4 = JUNE - 4 * WEEK; // Monday of 2026-W19
+        let mut s = setup(2);
+        let (a, b) = (p(1), p(2));
+        s.rewards_mut().board_pools = [0, 1_000_000, 0, 100 * E8S];
+        let start = balance(&s, b);
+        let early = dump(&mut s, a, b, 500, false, may4 + DAY_NS) / 2; // 2,500,000
+        s.tick(may4 + WEEK);
+        assert_eq!(balance(&s, b) - start, 300_000, "W19 pays in May");
+        let late = dump(&mut s, a, b, 200, false, JUNE - WEEK + DAY_NS) / 2; // 1,000,000
+        s.tick(JUNE);
+        let last = |s: &State, b: usize| board(s, b, JUNE).last_winners.iter().map(|w| w.prize).collect::<Vec<_>>();
+        assert_eq!(last(&s, 1), vec![210_000], "W22 pays 30% of the 700,000 left");
+        assert_eq!(last(&s, 3), vec![early + late - 300_000], "May's cap less the W19 prize paid in May");
+        assert_eq!(balance(&s, b) - start, 300_000 + 210_000 + early + late - 300_000);
     }
 }
