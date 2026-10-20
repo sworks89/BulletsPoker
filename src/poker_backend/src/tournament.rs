@@ -481,7 +481,7 @@ impl State {
         if currency == Currency::Icp {
             if late {
                 // Late entries can't be refunded: the fee is the house's at once.
-                self.treasury += fee;
+                self.fund_rewards(fee);
             } else {
                 self.tournament_mut(id)?.fees_held += fee;
             }

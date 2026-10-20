@@ -3302,6 +3302,19 @@ mod tests {
     }
 
     #[test]
+    fn late_entry_fee_funds_the_pools() {
+        let mut s = setup();
+        many_players(&mut s, 4);
+        let (id, start_at) = start_scheduled(&mut s, "ICP Nightly", 10..13);
+        let (treasury, fish, total) = (s.treasury, s.rewards().fish_pool, s.treasury + s.rewards().pools_total());
+        let fee = E8S / 40;
+        s.register_tournament(p(13), id, start_at + SEC).unwrap();
+        assert_eq!(s.rewards().fish_pool, fish + fee * 3_000 / 10_000);
+        assert_eq!(s.treasury, treasury + fee * 6_000 / 10_000);
+        assert_eq!(s.treasury + s.rewards().pools_total(), total + fee);
+    }
+
+    #[test]
     fn late_registration_places_are_fair() {
         let mut s = setup();
         many_players(&mut s, 7);
