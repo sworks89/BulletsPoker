@@ -254,7 +254,7 @@ timers are rare:
 - One hand costs about $0.0002 (range $0.00018–0.00024).
 - Idle costs about $2.4 a day, or **about $70 a month**.
 - The local clock runs about 9% fast. If the timer fires per canister-second,
-  the wall-clock figure is about 9% high, which gives about $65 a month.
+  the wall-clock figure is about 9% high, which gives about $66 a month.
 
 ### Rake per hand
 
@@ -287,7 +287,8 @@ The ICP price below is **an assumption**, not a measurement: a range of $3–$10
   - Measured locally, the 1-second timer costs about $70 a month, against the
     $5–10 estimate above.
   - The house share covers it after roughly 60k–300k Low Rollers hands a month
-    (depending on the ICP price), or about 500–1,700 High Roller hands.
+    (depending on the ICP price), or about 500–1,700 High Roller hands. These
+    counts are net of the ≈ $0.0002 marginal cycle cost of each hand.
   - Making the idle timers cheaper is the larger saving. The candidate is
     `tick` (inferred, not isolated): skip work when no table is active, or slow
     it down when idle. Profile it on mainnet before acting.
@@ -303,6 +304,10 @@ The ICP price below is **an assumption**, not a measurement: a range of $3–$10
     30–60 s may cost more per hand.
 
 ### Observed end to end
+
+The Rewards page, spin animation and history were checked only through the
+API, plus signed-out screenshots. They were not checked in a signed-in UI, so a
+human sign-in check is still needed.
 
 - **Points:** each bot earned 1,195 points. That is 2,390,000 e8s ÷ 1,000 in
   total, split evenly because both bots contributed equally.
