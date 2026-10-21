@@ -838,6 +838,7 @@ export const idlFactory = ({ IDL }) => {
         [Result],
         [],
       ),
+    'set_referrer' : IDL.Func([IDL.Text], [Result], []),
     'set_status' : IDL.Func([IDL.Text], [Result], []),
     'show_cards' : IDL.Func([IDL.Nat64], [Result], []),
     'sit_out' : IDL.Func([IDL.Nat64, IDL.Bool], [Result], []),

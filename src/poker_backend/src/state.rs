@@ -177,6 +177,10 @@ pub struct User {
     pub last_chat_at: u64,
     /// Fish Buffet points and banked spins; created on first earn.
     pub rewards: Option<crate::rewards::RewardsAccount>,
+    /// Who referred this player; set at most once.
+    pub referral: Option<crate::referrals::ReferralLink>,
+    /// Totals for the friends this player has referred; created on the first one.
+    pub referrer_stats: Option<crate::referrals::ReferrerStats>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq)]
@@ -913,6 +917,8 @@ impl State {
                 last_seen: now,
                 last_chat_at: 0,
                 rewards: None,
+                referral: None,
+                referrer_stats: None,
             },
         );
         Ok(self.profile(&caller).unwrap())

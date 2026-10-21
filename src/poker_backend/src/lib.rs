@@ -9,6 +9,7 @@ pub mod medals;
 pub mod metrics;
 pub mod moderation;
 pub mod ratelimit;
+pub mod referrals;
 pub mod rewards;
 pub mod signup;
 pub mod state;
@@ -318,6 +319,13 @@ fn register(username: String, pow: Option<u64>) -> R<Profile> {
     let p = caller()?;
     with(|s| s.check_signup_pow(&p, pow.unwrap_or(0), now()))?;
     with_mut(|s| s.register(p, username, now()))
+}
+
+/// Attaches a referrer (another player's username) within your first 24 hours.
+#[update]
+fn set_referrer(code: String) -> R<()> {
+    let p = active_caller()?;
+    with_mut(|s| s.set_referrer(p, &code, now()))
 }
 
 #[query]

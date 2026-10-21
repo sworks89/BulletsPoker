@@ -11,6 +11,7 @@
 
 use crate::state::{ChatMessage, HandRecord, PlayerNote, User};
 use crate::moderation::Report;
+use crate::referrals::{FriendEntry, FriendKey};
 use crate::wallet::LedgerOp;
 use candid::{CandidType, Deserialize, Principal};
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
@@ -30,6 +31,7 @@ const HANDS: MemoryId = MemoryId::new(5);
 const LEDGER_OPS: MemoryId = MemoryId::new(6);
 const REPORTS: MemoryId = MemoryId::new(7);
 const REPORTS_BY_TARGET: MemoryId = MemoryId::new(8);
+const REFERRALS: MemoryId = MemoryId::new(9);
 
 macro_rules! candid_storable {
     ($($t:ty),*) => {$(
@@ -52,7 +54,7 @@ macro_rules! candid_storable {
 #[derive(CandidType, Deserialize, Clone, Debug, Default)]
 pub struct DmThread(pub Vec<ChatMessage>);
 
-candid_storable!(User, PlayerNote, DmThread, HandRecord, LedgerOp, Report);
+candid_storable!(User, PlayerNote, DmThread, HandRecord, LedgerOp, Report, FriendEntry);
 
 /// Stable structures other than users, carved out of one stable memory by a memory manager.
 pub struct Stores {
@@ -66,6 +68,8 @@ pub struct Stores {
     pub reports: StableBTreeMap<u64, Report, Mem>,
     /// (reported player, report id): finds a player's reports without a scan.
     pub reports_by_target: StableBTreeMap<(Principal, u64), u8, Mem>,
+    /// (referrer, attached_at, friend) -> friend entry; one referrer's friends are adjacent, oldest first.
+    pub referrals: StableBTreeMap<FriendKey, FriendEntry, Mem>,
 }
 
 impl Stores {
@@ -83,6 +87,7 @@ impl Stores {
             ledger_ops: StableBTreeMap::init(mm.get(LEDGER_OPS)),
             reports: StableBTreeMap::init(mm.get(REPORTS)),
             reports_by_target: StableBTreeMap::init(mm.get(REPORTS_BY_TARGET)),
+            referrals: StableBTreeMap::init(mm.get(REFERRALS)),
         };
         (stores, users)
     }

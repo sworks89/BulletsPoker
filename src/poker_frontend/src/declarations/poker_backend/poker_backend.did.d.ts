@@ -1277,6 +1277,10 @@ export interface _SERVICE {
    * Saves a private note about a player. Empty text and no color deletes it.
    */
   'set_note' : ActorMethod<[Principal, string, [] | [NoteColor]], Result>,
+  /**
+   * Attaches a referrer (another player's username) within your first 24 hours.
+   */
+  'set_referrer' : ActorMethod<[string], Result>,
   'set_status' : ActorMethod<[string], Result>,
   /**
    * Shows your cards after winning a hand uncontested, until the next hand is dealt.
