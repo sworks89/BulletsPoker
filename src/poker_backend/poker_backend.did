@@ -34,6 +34,41 @@ type Ban = record {
   until : nat64;
   reason : text;
 };
+// A row of a board as shown.
+type BoardRow = record {
+  username : text;
+  // Hands played in the period.
+  hands : nat32;
+  // Points, or net ICP won (e8s).
+  value : int64;
+  player : principal;
+  // Position on the live list (1-based), the paid place for past winners, or
+  // 0 for a player outside the list.
+  rank : nat32;
+  // The prize if the period ended now; for past winners, what was paid.
+  prize : nat64;
+  // Can be paid: in the period, with a value above zero, and (winnings
+  // boards) enough hands.
+  qualified : bool;
+  avatar : text;
+};
+// One leaderboard as shown.
+type BoardView = record {
+  // The caller's row (rank 0 when outside the list).
+  me : opt BoardRow;
+  // When the period ends (ns).
+  ends_at : nat64;
+  // The board's prize pool (e8s).
+  pool : nat64;
+  // The top 10.
+  rows : vec BoardRow;
+  // The period: "2026-W43" or "2026-11".
+  label : text;
+  // The paid winners of the last closed period.
+  last_winners : vec BoardRow;
+  // "weekly_points", "weekly_winnings", "monthly_points" or "monthly_winnings".
+  board : text;
+};
 type Channel = variant { Lobby; Table : nat64 };
 type ChatMessage = record {
   id : nat64;
@@ -116,6 +151,8 @@ type HouseStats = record {
   // ICP bad-beat jackpot.
   jackpot : nat64;
   wallet_balances : nat64;
+  // Fish and leaderboard prize pools, owed to players.
+  rewards_pools : nat64;
   users : nat64;
   treasury : nat64;
 };
@@ -397,6 +434,7 @@ type Result_12 = variant { Ok : ModPlayerView; Err : text };
 type Result_13 = variant { Ok : ReportPage; Err : text };
 type Result_14 = variant { Ok : vec Report; Err : text };
 type Result_15 = variant { Ok : Profile; Err : text };
+type Result_16 = variant { Ok : SpinRecord; Err : text };
 type Result_2 = variant { Ok : vec AuditEntry; Err : text };
 type Result_3 = variant { Ok : record { nat64; nat64 }; Err : text };
 type Result_4 = variant { Ok : SolvencyReport; Err : text };
@@ -405,6 +443,24 @@ type Result_6 = variant { Ok : AdminConfig; Err : text };
 type Result_7 = variant { Ok : Metrics; Err : text };
 type Result_8 = variant { Ok : HouseStats; Err : text };
 type Result_9 = variant { Ok : LedgerOp; Err : text };
+// What the rewards screen shows for a player.
+type RewardsView = record {
+  tier_name : text;
+  meter : nat64;
+  tiers : vec TierInfo;
+  step : nat64;
+  tier : nat8;
+  next_tier_at : opt nat64;
+  // After decay.
+  tier_points : nat64;
+  history : vec SpinRecord;
+  lifetime_points : nat64;
+  days_since_earned : nat64;
+  // Days of grace left before decay starts (0 = decaying now); none without points.
+  decay_starts_in_days : opt nat64;
+  fish_pool : nat64;
+  spins_banked : nat32;
+};
 // What the signed-in caller may administer (drives the admin page).
 type Roles = record { admin : bool; moderator : bool };
 type RoomArgs = record {
@@ -473,6 +529,19 @@ type SolvencyReport = record {
   surplus : int;
   unresolved_ops : nat64;
   checked_at : nat64;
+};
+// One spin of the wheel, as shown in the player's history.
+type SpinRecord = record {
+  paid : nat64;
+  tier : text;
+  time : nat64;
+  multiplier_x10 : nat64;
+  stake : nat64;
+  // Index into the wheel's segments (for the animation).
+  segment : nat8;
+  capped : bool;
+  // Before the pool cap.
+  prize : nat64;
 };
 type Standing = record {
   table : opt nat64;
@@ -596,6 +665,7 @@ type ThrowEvent = record {
   icon : text;
   time : nat64;
 };
+type TierInfo = record { rate_bps : nat64; from : nat64; name : text };
 type TournamentBadge = record {
   id : nat64;
   // The viewer may rebuy right now.
@@ -772,6 +842,8 @@ service : (opt InitArgs) -> {
   // Current bad-beat jackpots, the rules and recent hits.
   get_jackpots : () -> (JackpotInfo) query;
   get_leaderboard : () -> (vec LeaderboardEntry) query;
+  // The four weekly and monthly leaderboards, with the caller's own row.
+  get_leaderboards : () -> (vec BoardView) query;
   // Your recent deposits and withdrawals, newest first.
   get_my_ledger_ops : () -> (vec LedgerOp) query;
   get_my_profile : () -> (opt Profile) query;
@@ -779,6 +851,8 @@ service : (opt InitArgs) -> {
   // All your notes, most recently updated first.
   get_notes : () -> (vec NoteView) query;
   get_profile : (principal) -> (opt PublicProfile) query;
+  // The caller's Fish Buffet standing, spins and history.
+  get_rewards : () -> (RewardsView) query;
   // How much sign-up work a new account needs right now (see `register`).
   get_signup_challenge : () -> (SignupChallenge) query;
   get_status : () -> (ServiceStatus) query;
@@ -832,6 +906,8 @@ service : (opt InitArgs) -> {
   // Shows your cards after winning a hand uncontested, until the next hand is dealt.
   show_cards : (nat64) -> (Result);
   sit_out : (nat64, bool) -> (Result);
+  // Spins the oldest banked Fish Buffet spin for ICP cashback.
+  spin_wheel : () -> (Result_16);
   throw_item : (nat64, principal, nat32, Currency) -> (Result);
   top_up : (nat64, nat64) -> (Result);
   // Enters a private room's password so you can watch it and chat there.

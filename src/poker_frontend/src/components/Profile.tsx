@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { solvePow } from '../pow';
 import { useApp, usePoll } from '../context';
-import { unwrap, type LeaderboardEntry, type Settings } from '../ic';
+import { unwrap, type LeaderboardEntry, type RewardsView, type Settings } from '../ic';
 import { icp } from '../format';
 import { Avatar } from '../art/Avatar';
+import { leaderboardMedal } from '../rewards';
 
 export function ProfilePage() {
   const { backend, profile, items, run, refreshProfile } = useApp();
@@ -32,6 +33,7 @@ export function ProfilePage() {
               {String(profile.xp)} / {next} XP
             </div>
           </div>
+          <TierBadge />
         </div>
         <form
           className="row gap"
@@ -110,15 +112,47 @@ const SETTINGS: { key: keyof Settings; label: string; hint: string }[] = [
   { key: 'show_throwables', label: 'Show throwables', hint: 'Animate tomatoes, pies and friends flying across the table.' },
 ];
 
+/** The player's Fish Buffet creature; opens the Rewards page. */
+function TierBadge() {
+  const { backend, go } = useApp();
+  const [view, setView] = useState<RewardsView | null>(null);
+  usePoll(async () => setView(await backend.get_rewards()), 60000, [backend]);
+  if (!view) return null;
+  return (
+    <button className="tier-badge" onClick={() => go({ name: 'rewards' })} title="Fish Buffet tier: open Rewards">
+      <Avatar icon={`tier:${view.tier}`} size="lg" />
+      <span className="small">{view.tier_name}</span>
+    </button>
+  );
+}
+
 function MedalsPanel() {
   const { profile, medals } = useApp();
   if (!profile) return null;
   const earned = new Map(profile.medals.map((m) => [m.id, m.earned_at]));
+  const staticEarned = [...medals.keys()].filter((id) => earned.has(id)).length;
+  // Leaderboard medals aren't in the catalogue: their id names them. Newest first.
+  const boardMedals = profile.medals
+    .flatMap((m) => {
+      const def = leaderboardMedal(m.id);
+      return def ? [{ ...def, id: m.id, earned_at: m.earned_at }] : [];
+    })
+    .sort((a, b) => (b.earned_at > a.earned_at ? 1 : b.earned_at < a.earned_at ? -1 : 0));
   return (
     <div className="panel">
       <div className="panel-title">
-        Medals ({earned.size}/{medals.size})
+        Medals ({staticEarned}/{medals.size})
       </div>
+      {boardMedals.length > 0 && (
+        <div className="medal-grid">
+          {boardMedals.map((m) => (
+            <div key={m.id} className="medal earned" title={m.name}>
+              <span className="medal-icon">{m.icon}</span>
+              <b className="small">{m.name}</b>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="medal-grid">
         {[...medals.values()].map((m) => (
           <div key={m.id} className={`medal ${earned.has(m.id) ? 'earned' : ''}`} title={m.description}>
@@ -163,7 +197,7 @@ export function Leaderboard() {
 
   return (
     <div className="panel">
-      <div className="panel-title">Leaderboard · net winnings</div>
+      <div className="panel-title">All time · net winnings</div>
       <table className="grid">
         <thead>
           <tr>

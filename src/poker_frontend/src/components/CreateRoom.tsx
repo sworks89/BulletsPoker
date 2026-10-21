@@ -4,7 +4,8 @@ import { unwrap } from '../ic';
 import { CHIPS, ICP, amountWithUnit, isChips, parseIcp, type CurrencyV } from '../format';
 
 const CHIP_BLINDS = [2n, 10n, 50n, 100n, 500n, 1_000n, 5_000n];
-const ICP_BLINDS = [2_000n, 20_000n, 200_000n, 2_000_000n, 10_000_000n];
+// Big blinds in e8s: 0.02, 0.1, 0.5, 2, 5 and 20 ICP (the backend allows 0.02–20).
+const ICP_BLINDS = [2_000_000n, 10_000_000n, 50_000_000n, 200_000_000n, 500_000_000n, 2_000_000_000n];
 
 export function CreateRoom({ onClose }: { onClose: () => void }) {
   const { backend, run, go } = useApp();
@@ -18,7 +19,7 @@ export function CreateRoom({ onClose }: { onClose: () => void }) {
 
   const pickCurrency = (c: CurrencyV) => {
     setCurrency(c);
-    setBb(isChips(c) ? 50n : 20_000n);
+    setBb(isChips(c) ? 50n : 2_000_000n);
   };
 
   const create = async () => {

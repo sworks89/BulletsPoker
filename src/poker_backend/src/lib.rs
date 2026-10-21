@@ -3,11 +3,13 @@
 
 pub mod cards;
 pub mod jackpot;
+pub mod leaderboards;
 pub mod ledger;
 pub mod medals;
 pub mod metrics;
 pub mod moderation;
 pub mod ratelimit;
+pub mod rewards;
 pub mod signup;
 pub mod state;
 pub mod store;
@@ -199,6 +201,9 @@ fn post_upgrade() {
     let mut state = State::restore(ic_stable_structures::DefaultMemoryImpl::default());
     // Calls in flight during the upgrade never reported back: retry them.
     state.mark_interrupted_ops(now());
+    // House ICP tables deployed before the stake ladder move to the new blinds.
+    state.migrate_icp_stakes();
+    state.migrate_icp_tournament_prices();
     STATE.with(|s| *s.borrow_mut() = Some(state));
     start_timers();
 }
@@ -496,6 +501,28 @@ fn throw_item(table_id: u64, to: Principal, item_id: u32, currency: Currency) ->
 fn claim_daily_chips() -> R<u64> {
     let p = active_caller()?;
     with_mut(|s| s.claim_daily(p, now()))
+}
+
+/// Spins the oldest banked Fish Buffet spin for ICP cashback.
+#[update]
+fn spin_wheel() -> R<rewards::SpinRecord> {
+    let p = active_caller()?;
+    with_mut(|s| s.spin_wheel(p, now()))
+}
+
+/// The caller's Fish Buffet standing, spins and history.
+#[query]
+fn get_rewards() -> rewards::RewardsView {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.rewards_view(&p, now()))
+}
+
+/// The four weekly and monthly leaderboards, with the caller's own row.
+#[query]
+fn get_leaderboards() -> Vec<leaderboards::BoardView> {
+    let p = ic_cdk::api::msg_caller();
+    let me = (p != candid::Principal::anonymous()).then_some(p);
+    with(|s| s.leaderboards(me, now()))
 }
 
 #[update]

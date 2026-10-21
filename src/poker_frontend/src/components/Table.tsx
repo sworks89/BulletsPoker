@@ -9,6 +9,7 @@ import { NoteEditor } from './Notes';
 import { SafetyActions } from './Safety';
 import { JackpotCelebration } from './Jackpot';
 import { Avatar } from '../art/Avatar';
+import { leaderboardMedal } from '../rewards';
 import { ItemArt } from '../art/ItemArt';
 import { BadBeatTag, ChipBurst, RainCloud, THROW_FX, useSeatFx } from '../fx/SeatFx';
 import { handReactions } from '../fx/poker';
@@ -808,11 +809,14 @@ function PlayerCard({ seat, view, canThrow, onClose }: { seat: SeatView; view: T
         {profile && <NoteEditor player={seat.player} note={seat.note[0]} onSaved={load} />}
         {pub && pub.medals.length > 0 && (
           <div className="medal-strip">
-            {pub.medals.map((m) => (
-              <span key={m} title={medals.get(m)?.name}>
-                {medals.get(m)?.icon}
-              </span>
-            ))}
+            {pub.medals.map((m) => {
+              const def = medals.get(m) ?? leaderboardMedal(m);
+              return (
+                <span key={m} title={def?.name}>
+                  {def?.icon}
+                </span>
+              );
+            })}
           </div>
         )}
         {profile && !isFriend && !blocked && (

@@ -3,7 +3,7 @@ import type { ReactElement } from 'react';
 // Art for store items, keyed by the item's emoji (the only thing the backend
 // sends). Items without art, such as ones an admin adds later, keep their emoji.
 
-export type ArtKind = 'avatar' | 'gift' | 'throwable';
+export type ArtKind = 'avatar' | 'gift' | 'throwable' | 'tier';
 export type Expression = 'normal' | 'hit' | 'sad' | 'happy';
 
 /** Every art component draws in a 120×120 viewBox and prefixes its svg ids with `uid`. */

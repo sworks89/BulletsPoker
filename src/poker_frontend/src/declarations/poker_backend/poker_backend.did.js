@@ -135,6 +135,7 @@ export const idlFactory = ({ IDL }) => {
     'chips_on_tables' : IDL.Nat64,
     'jackpot' : IDL.Nat64,
     'wallet_balances' : IDL.Nat64,
+    'rewards_pools' : IDL.Nat64,
     'users' : IDL.Nat64,
     'treasury' : IDL.Nat64,
   });
@@ -333,6 +334,25 @@ export const idlFactory = ({ IDL }) => {
     'stats' : Stats,
     'avatar' : IDL.Text,
   });
+  const BoardRow = IDL.Record({
+    'username' : IDL.Text,
+    'hands' : IDL.Nat32,
+    'value' : IDL.Int64,
+    'player' : IDL.Principal,
+    'rank' : IDL.Nat32,
+    'prize' : IDL.Nat64,
+    'qualified' : IDL.Bool,
+    'avatar' : IDL.Text,
+  });
+  const BoardView = IDL.Record({
+    'me' : IDL.Opt(BoardRow),
+    'ends_at' : IDL.Nat64,
+    'pool' : IDL.Nat64,
+    'rows' : IDL.Vec(BoardRow),
+    'label' : IDL.Text,
+    'last_winners' : IDL.Vec(BoardRow),
+    'board' : IDL.Text,
+  });
   const Ban = IDL.Record({ 'until' : IDL.Nat64, 'reason' : IDL.Text });
   const Settings = IDL.Record({
     'auto_top_up' : IDL.Bool,
@@ -382,6 +402,36 @@ export const idlFactory = ({ IDL }) => {
     'color' : IDL.Opt(NoteColor),
     'text' : IDL.Text,
     'avatar' : IDL.Text,
+  });
+  const TierInfo = IDL.Record({
+    'rate_bps' : IDL.Nat64,
+    'from' : IDL.Nat64,
+    'name' : IDL.Text,
+  });
+  const SpinRecord = IDL.Record({
+    'paid' : IDL.Nat64,
+    'tier' : IDL.Text,
+    'time' : IDL.Nat64,
+    'multiplier_x10' : IDL.Nat64,
+    'stake' : IDL.Nat64,
+    'segment' : IDL.Nat8,
+    'capped' : IDL.Bool,
+    'prize' : IDL.Nat64,
+  });
+  const RewardsView = IDL.Record({
+    'tier_name' : IDL.Text,
+    'meter' : IDL.Nat64,
+    'tiers' : IDL.Vec(TierInfo),
+    'step' : IDL.Nat64,
+    'tier' : IDL.Nat8,
+    'next_tier_at' : IDL.Opt(IDL.Nat64),
+    'tier_points' : IDL.Nat64,
+    'history' : IDL.Vec(SpinRecord),
+    'lifetime_points' : IDL.Nat64,
+    'days_since_earned' : IDL.Nat64,
+    'decay_starts_in_days' : IDL.Opt(IDL.Nat64),
+    'fish_pool' : IDL.Nat64,
+    'spins_banked' : IDL.Nat32,
   });
   const SignupChallenge = IDL.Record({ 'difficulty' : IDL.Nat8 });
   const ServiceStatus = IDL.Record({
@@ -651,6 +701,7 @@ export const idlFactory = ({ IDL }) => {
   const Result_13 = IDL.Variant({ 'Ok' : ReportPage, 'Err' : IDL.Text });
   const Result_14 = IDL.Variant({ 'Ok' : IDL.Vec(Report), 'Err' : IDL.Text });
   const Result_15 = IDL.Variant({ 'Ok' : Profile, 'Err' : IDL.Text });
+  const Result_16 = IDL.Variant({ 'Ok' : SpinRecord, 'Err' : IDL.Text });
   return IDL.Service({
     'act' : IDL.Func([IDL.Nat64, Action], [Result], []),
     'addon_tournament' : IDL.Func([IDL.Nat64], [Result], []),
@@ -709,6 +760,7 @@ export const idlFactory = ({ IDL }) => {
       ),
     'get_jackpots' : IDL.Func([], [JackpotInfo], ['query']),
     'get_leaderboard' : IDL.Func([], [IDL.Vec(LeaderboardEntry)], ['query']),
+    'get_leaderboards' : IDL.Func([], [IDL.Vec(BoardView)], ['query']),
     'get_my_ledger_ops' : IDL.Func([], [IDL.Vec(LedgerOp)], ['query']),
     'get_my_profile' : IDL.Func([], [IDL.Opt(Profile)], ['query']),
     'get_my_roles' : IDL.Func([], [Roles], ['query']),
@@ -718,6 +770,7 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Opt(PublicProfile)],
         ['query'],
       ),
+    'get_rewards' : IDL.Func([], [RewardsView], ['query']),
     'get_signup_challenge' : IDL.Func([], [SignupChallenge], ['query']),
     'get_status' : IDL.Func([], [ServiceStatus], ['query']),
     'get_table' : IDL.Func([IDL.Nat64], [IDL.Opt(TableView)], ['query']),
@@ -788,6 +841,7 @@ export const idlFactory = ({ IDL }) => {
     'set_status' : IDL.Func([IDL.Text], [Result], []),
     'show_cards' : IDL.Func([IDL.Nat64], [Result], []),
     'sit_out' : IDL.Func([IDL.Nat64, IDL.Bool], [Result], []),
+    'spin_wheel' : IDL.Func([], [Result_16], []),
     'throw_item' : IDL.Func(
         [IDL.Nat64, IDL.Principal, IDL.Nat32, Currency],
         [Result],
