@@ -384,6 +384,7 @@ impl State {
         }
         self.on_points(p, now);
         self.referral_cut(p, house_e8s, now);
+        self.release_welcome(p, house_e8s, now);
         risen
     }
 

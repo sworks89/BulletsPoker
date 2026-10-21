@@ -11,6 +11,9 @@ pub const WELCOME_MAX: u64 = 100 * E8S;
 /// A bonus still locked this long after the grant expires (90 days).
 pub const WELCOME_EXPIRY_NS: u64 = 90 * 24 * 60 * 60 * 1_000_000_000;
 
+/// The share of the house's cut of each rake payment that releases the bonus (30%).
+pub const WELCOME_RELEASE_BPS: u64 = 3_000;
+
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq)]
 pub enum WelcomeBonus {
     /// Not eligible (deposited before the bonus existed, or nothing to match).
@@ -53,6 +56,45 @@ impl State {
         } else {
             WelcomeBonus::Active { granted_at: now, amount, released: 0, carry_bps: 0 }
         });
+    }
+
+    /// Releases the locked bonus as rake is paid: `WELCOME_RELEASE_BPS` of the
+    /// house's share (`house_e8s`) moves from the treasury into the player's
+    /// balance, until the bonus is used up or expires.
+    ///
+    /// Called at the end of `earn_rake`, after `fund_rewards` has put that rake
+    /// into the treasury. The amount is capped by the treasury, so it can
+    /// never underflow.
+    pub(crate) fn release_welcome(&mut self, p: &Principal, house_e8s: u64, now: u64) {
+        if house_e8s == 0 {
+            return;
+        }
+        let Some(b) = self.users.get(p).and_then(|u| u.welcome) else { return };
+        let WelcomeBonus::Active { carry_bps, .. } = b else { return };
+        let locked = welcome_locked(&b, now);
+        if locked == 0 || self.is_banned(p, now) {
+            return;
+        }
+        let total = house_e8s as u128 * WELCOME_RELEASE_BPS as u128 + carry_bps as u128;
+        let want = (total / 10_000).min(u64::MAX as u128) as u64;
+        let amount = want.min(locked).min(self.treasury);
+        let paid = if amount > 0 {
+            self.treasury -= amount;
+            if self.credit(p, amount).is_ok() {
+                amount
+            } else {
+                self.treasury += amount;
+                0
+            }
+        } else {
+            0
+        };
+        if let Some(mut u) = self.users.get_mut(p) {
+            if let Some(WelcomeBonus::Active { released, carry_bps, .. }) = u.welcome.as_mut() {
+                *carry_bps = (total % 10_000) as u64;
+                *released += paid;
+            }
+        }
     }
 
     /// One-time pass after the upgrade that ships the bonus: everyone who had
@@ -268,5 +310,260 @@ mod tests {
         let back: User = candid::decode_one(&candid::encode_one(&old).unwrap()).unwrap();
         assert_eq!((back.username.as_str(), back.balance), ("player1", 10 * E8S));
         assert!(back.welcome.is_none());
+    }
+}
+
+/// Release of the locked bonus, run against the full game state.
+#[cfg(test)]
+mod release_tests {
+    use super::*;
+    use crate::moderation::Ban;
+    use crate::referrals::{FriendEntry, FriendKey, ReferralLink, ReferrerStats};
+    use crate::state::tests::{many_players, p, run_until, setup, start_scheduled, total_value, SEC};
+    use crate::state::{RoomArgs, E8S};
+    use crate::table::Currency;
+
+    fn give(s: &mut State, who: u8, amount: u64, granted_at: u64) {
+        s.users.get_mut(&p(who)).unwrap().welcome = Some(WelcomeBonus::Active { granted_at, amount, released: 0, carry_bps: 0 });
+    }
+
+    fn released(s: &State, who: u8) -> u64 {
+        match s.users.get(&p(who)).unwrap().welcome {
+            Some(WelcomeBonus::Active { released, .. }) => released,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn carry(s: &State, who: u8) -> u64 {
+        match s.users.get(&p(who)).unwrap().welcome {
+            Some(WelcomeBonus::Active { carry_bps, .. }) => carry_bps,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn bal(s: &State, who: u8) -> u64 {
+        s.users.get(&p(who)).unwrap().balance
+    }
+
+    /// Pays rake the way the table does: the house share funds the rewards first.
+    fn rake(s: &mut State, who: u8, house: u64, now: u64) {
+        s.fund_rewards(house);
+        s.earn_rake(&p(who), house, house, now);
+    }
+
+    fn house_rake(s: &State, who: u8) -> u64 {
+        s.user(&p(who)).unwrap().rewards.unwrap().period.w_house_rake.unwrap_or(0)
+    }
+
+    fn play_cash(s: &mut State) -> u64 {
+        let table = 7;
+        for k in 1..=3 {
+            s.join_table(p(k), table, k - 1, 200_000_000, None, 0).unwrap();
+        }
+        run_until(s, SEC, 2_000, |s| s.tables[&table].hand_no >= 15 || s.tables[&table].eligible_count() < 2)
+    }
+
+    fn link(s: &mut State, friend: u8, referrer: u8) {
+        let (f, r) = (p(friend), p(referrer));
+        s.user_mut(&f).unwrap().referral = Some(ReferralLink { referrer: r, attached_at: 0 });
+        s.stores.referrals.insert(FriendKey::new(&r, 0, &f), FriendEntry { attached_at: 0, earned: 0, last_earned_at: 0 });
+        s.user_mut(&r).unwrap().referrer_stats.get_or_insert_with(ReferrerStats::default).friends += 1;
+    }
+
+    #[test]
+    fn rake_releases_thirty_percent_of_the_house_share() {
+        let mut s = setup();
+        let mut twin = setup();
+        give(&mut s, 1, 100 * E8S, 0);
+        play_cash(&mut s);
+        play_cash(&mut twin);
+        let house = house_rake(&s, 1);
+        assert!(house > 0);
+        assert_eq!(WELCOME_RELEASE_BPS, 3_000);
+        let want = house * 3_000 / 10_000;
+        assert!(want > 0);
+        assert_eq!(released(&s, 1), want);
+        assert_eq!(carry(&s, 1), house * 3_000 % 10_000);
+        assert_eq!(bal(&s, 1) - bal(&twin, 1), want, "the balance rose by the release");
+        assert_eq!(twin.treasury - s.treasury, want, "and the treasury paid it");
+        assert_eq!(s.wallet_total, s.recount_wallet_total());
+    }
+
+    #[test]
+    fn carry_is_exact_over_many_small_payments() {
+        let mut s = setup();
+        give(&mut s, 1, 100 * E8S, 0);
+        s.treasury = 10 * E8S;
+        for _ in 0..7 {
+            s.earn_rake(&p(1), 3, 3, SEC);
+        }
+        // 7 x 3 x 0.3 = 6.3 e8s
+        assert_eq!((released(&s, 1), carry(&s, 1)), (6, 3_000));
+        assert_eq!(s.treasury, 10 * E8S - 6);
+    }
+
+    #[test]
+    fn release_is_capped_by_the_treasury() {
+        let mut s = setup();
+        give(&mut s, 1, 100 * E8S, 0);
+        s.treasury = 5;
+        let b = bal(&s, 1);
+        s.earn_rake(&p(1), 1_000_000, 1_000_000, SEC);
+        assert_eq!((s.treasury, released(&s, 1), bal(&s, 1)), (0, 5, b + 5));
+        s.earn_rake(&p(1), 1_000_000, 1_000_000, SEC);
+        assert_eq!((s.treasury, released(&s, 1), bal(&s, 1)), (0, 5, b + 5));
+    }
+
+    #[test]
+    fn referred_player_at_the_cap_never_overdraws_the_treasury() {
+        let mut s = setup();
+        s.user_mut(&p(1)).unwrap().xp = 50;
+        let id = s
+            .create_room(
+                p(1),
+                RoomArgs { name: "Cap".into(), currency: Currency::Icp, big_blind: 2_000_000, max_seats: 6, password: None, action_timeout_secs: 30 },
+                0,
+            )
+            .unwrap();
+        link(&mut s, 2, 3);
+        give(&mut s, 2, 100 * E8S, 0);
+        assert_eq!(s.treasury, 0);
+        s.join_table(p(2), id, 1, 100_000_000, None, 0).unwrap();
+        s.join_table(p(1), id, 0, 100_000_000, None, 0).unwrap();
+        let mut now = SEC;
+        for n in 1..=30u64 {
+            now = run_until(&mut s, now, 2_000, |s| s.tables[&id].hand_no >= n || s.tables[&id].eligible_count() < 2);
+            let house: u64 = [1, 2].iter().map(|&k| house_rake(&s, k)).sum();
+            let cut = s.referrals.as_ref().map_or(0, |r| r.owed_total);
+            // The treasury got 60% of the house share; the cut (20% of p2's)
+            // and the release (30% of p2's) never exceed it.
+            assert_eq!(released(&s, 2), house_rake(&s, 2) * 3_000 / 10_000, "hand {n}");
+            assert!(cut + released(&s, 2) <= house * 6_000 / 10_000 + 2 * n as u64, "hand {n}");
+            assert!(s.treasury * 10 + 100 >= house, "the treasury keeps at least 10% of the house share (hand {n})");
+        }
+        let house: u64 = [1, 2].iter().map(|&k| house_rake(&s, k)).sum();
+        assert!(released(&s, 2) > 0 && house > 0);
+        assert!(s.referrals.as_ref().unwrap().owed_total > 0);
+        assert_eq!(s.wallet_total, s.recount_wallet_total());
+    }
+
+    #[test]
+    fn tournament_fee_releases_bonus() {
+        let mut s = setup();
+        many_players(&mut s, 4);
+        give(&mut s, 10, 100 * E8S, 0);
+        give(&mut s, 13, 100 * E8S, 0);
+        let fee = E8S / 10;
+        let release = fee * 3_000 / 10_000;
+        let (id, start_at) = start_scheduled(&mut s, "ICP Nightly", 10..13);
+        assert_eq!(released(&s, 10), release, "released at the start");
+        assert_eq!(bal(&s, 10), bal(&s, 11) + release, "same cost as an unbonused entrant, less the release");
+        assert_eq!(s.treasury, 3 * fee * 6_000 / 10_000 - release);
+        s.treasury = 0;
+        s.register_tournament(p(13), id, start_at + SEC).unwrap();
+        assert_eq!(released(&s, 13), release, "and on late entry");
+        assert_eq!(s.treasury, fee * 6_000 / 10_000 - release);
+        assert_eq!(bal(&s, 13), bal(&s, 11) + release);
+    }
+
+    #[test]
+    fn release_stops_when_fully_released() {
+        let mut s = setup();
+        give(&mut s, 1, 4_000, 0);
+        s.treasury = 10 * E8S;
+        let b = bal(&s, 1);
+        rake(&mut s, 1, 10_000, SEC);
+        assert_eq!(released(&s, 1), 3_000);
+        rake(&mut s, 1, 10_000, 2 * SEC);
+        assert_eq!(released(&s, 1), 4_000, "capped at what is left");
+        let t = s.treasury;
+        rake(&mut s, 1, 10_000, 3 * SEC);
+        assert_eq!(released(&s, 1), 4_000);
+        assert_eq!(bal(&s, 1), b + 4_000);
+        assert_eq!(s.treasury, t + 6_000, "only the rake itself was added");
+    }
+
+    #[test]
+    fn nothing_releases_after_ninety_days() {
+        let mut s = setup();
+        give(&mut s, 1, 100 * E8S, 7);
+        s.treasury = 10 * E8S;
+        let end = 7 + WELCOME_EXPIRY_NS;
+        s.earn_rake(&p(1), 10_000, 10_000, end - 1);
+        assert_eq!(released(&s, 1), 3_000, "the last instant of the window");
+        s.earn_rake(&p(1), 10_000, 10_000, end);
+        assert_eq!(released(&s, 1), 3_000, "expired");
+        assert_eq!(s.treasury, 10 * E8S - 3_000);
+    }
+
+    #[test]
+    fn suspended_players_release_nothing() {
+        let mut s = setup();
+        give(&mut s, 1, 100 * E8S, 0);
+        s.treasury = 10 * E8S;
+        s.user_mut(&p(1)).unwrap().ban = Some(Ban { until: 0, reason: "collusion".into() });
+        let b = bal(&s, 1);
+        s.earn_rake(&p(1), 10_000, 10_000, SEC);
+        assert_eq!((released(&s, 1), carry(&s, 1), bal(&s, 1), s.treasury), (0, 0, b, 10 * E8S));
+        // A lapsed suspension no longer blocks it.
+        s.user_mut(&p(1)).unwrap().ban = Some(Ban { until: 5 * SEC, reason: "x".into() });
+        s.earn_rake(&p(1), 10_000, 10_000, 5 * SEC);
+        assert_eq!(released(&s, 1), 3_000);
+    }
+
+    #[test]
+    fn ineligible_and_unmarked_players_release_nothing() {
+        let mut s = setup();
+        s.treasury = 10 * E8S;
+        s.user_mut(&p(2)).unwrap().welcome = Some(WelcomeBonus::Ineligible);
+        s.earn_rake(&p(1), 10_000, 10_000, SEC);
+        s.earn_rake(&p(2), 10_000, 10_000, SEC);
+        assert_eq!(s.treasury, 10 * E8S);
+        assert_eq!((bal(&s, 1), bal(&s, 2)), (10 * E8S, 10 * E8S));
+    }
+
+    #[test]
+    fn chip_play_releases_nothing() {
+        let mut s = setup();
+        many_players(&mut s, 3);
+        for k in [2, 3, 10] {
+            give(&mut s, k, 100 * E8S, 0);
+        }
+        let table = 1;
+        assert_eq!(s.tables[&table].config.currency, Currency::Chips);
+        let buy = s.tables[&table].config.max_buy_in;
+        for k in 2..=3 {
+            s.join_table(p(k), table, k - 1, buy, None, 0).unwrap();
+        }
+        run_until(&mut s, SEC, 2_000, |s| s.tables[&table].hand_no >= 15 || s.tables[&table].eligible_count() < 2);
+        start_scheduled(&mut s, "Chip Rebuy Madness", 10..13);
+        for k in [2, 3, 10] {
+            assert_eq!(released(&s, k), 0);
+            assert_eq!(carry(&s, k), 0);
+        }
+        assert_eq!(s.treasury, 0);
+    }
+
+    #[test]
+    fn money_is_conserved_with_welcome_bonus() {
+        let mut s = setup();
+        for k in 1..=3 {
+            give(&mut s, k, 100 * E8S, 0);
+        }
+        link(&mut s, 2, 1);
+        let before = total_value(&s);
+        let now = play_cash(&mut s);
+        assert!(released(&s, 3) > 0);
+        assert_eq!(total_value(&s), before);
+        for k in 1..=3 {
+            if s.tables[&7].seat_of(&p(k)).is_some() {
+                s.leave_table(p(k), 7, now).unwrap();
+            }
+        }
+        let owed = s.referrals.as_ref().map_or(0, |r| r.owed_total);
+        let wallets: u64 = s.users.iter().map(|(_, u)| u.balance).sum();
+        assert_eq!(wallets + s.treasury + s.rewards().pools_total() + s.jackpot(Currency::Icp) + owed, before);
+        assert_eq!(s.wallet_total, s.recount_wallet_total());
+        assert_eq!(s.wallet_total, wallets);
     }
 }
