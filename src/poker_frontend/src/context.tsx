@@ -15,6 +15,7 @@ export type View =
   | { name: 'store' }
   | { name: 'friends' }
   | { name: 'rewards' }
+  | { name: 'referrals' }
   /** The Rewards page, opened on its Leaderboards tab. */
   | { name: 'leaderboard' }
   | { name: 'history' }

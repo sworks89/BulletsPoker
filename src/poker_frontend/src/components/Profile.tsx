@@ -5,6 +5,7 @@ import { unwrap, type LeaderboardEntry, type RewardsView, type Settings } from '
 import { icp } from '../format';
 import { Avatar } from '../art/Avatar';
 import { leaderboardMedal } from '../rewards';
+import { takeRememberedRef } from '../referrals';
 
 export function ProfilePage() {
   const { backend, profile, items, run, refreshProfile } = useApp();
@@ -230,7 +231,7 @@ export function Leaderboard() {
 }
 
 export function Register() {
-  const { backend, run, refreshProfile, principal } = useApp();
+  const { backend, run, notify, refreshProfile, principal } = useApp();
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -241,7 +242,22 @@ export function Register() {
       const { difficulty } = await backend.get_signup_challenge();
       const nonce = await solvePow(principal!.toUint8Array(), difficulty);
       const r = await backend.register(name.trim(), [nonce]);
-      if ('Ok' in r || attempt >= 2 || !r.Err.includes('Sign-up check failed')) return unwrap(r);
+      if ('Ok' in r || attempt >= 2 || !r.Err.includes('Sign-up check failed')) {
+        const done = unwrap(r);
+        await attachReferrer();
+        return done;
+      }
+    }
+  };
+
+  // A code from a ?ref= link. Signup never fails because of it.
+  const attachReferrer = async () => {
+    const ref = takeRememberedRef();
+    if (!ref) return;
+    try {
+      unwrap(await backend.set_referrer(ref));
+    } catch {
+      notify('Referral code not found — you can enter one on the Referrals page within 24 hours', 'err');
     }
   };
 
