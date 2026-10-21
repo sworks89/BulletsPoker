@@ -525,6 +525,13 @@ fn get_rewards() -> rewards::RewardsView {
     with(|s| s.rewards_view(&p, now()))
 }
 
+/// The caller's referral earnings and friends, `offset` friends in (newest first).
+#[query]
+fn get_referrals(offset: u32) -> referrals::ReferralView {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.referral_view(&p, offset, now()))
+}
+
 /// The four weekly and monthly leaderboards, with the caller's own row.
 #[query]
 fn get_leaderboards() -> Vec<leaderboards::BoardView> {

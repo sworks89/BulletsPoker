@@ -165,6 +165,26 @@ export interface FriendInfo {
   'avatar' : string,
   'online' : boolean,
 }
+/**
+ * One friend in the referrer's list.
+ */
+export interface FriendRow {
+  /**
+   * Earned the referrer something in the last 7 days.
+   */
+  'active' : boolean,
+  'username' : string,
+  /**
+   * When the 12-month earning window for this friend ends (ns).
+   */
+  'ends_at' : bigint,
+  /**
+   * Cuts earned from this friend (e8s). Earned, not paid: a cut forfeited
+   * because the referrer was suspended at payout still counts here.
+   */
+  'earned' : bigint,
+  'joined_at' : bigint,
+}
 export interface HandPlayer {
   'won' : bigint,
   'username' : string,
@@ -542,6 +562,44 @@ export interface PublicProfile {
   'avatar' : string,
   'medals' : Array<string>,
   'online' : boolean,
+}
+/**
+ * What the referrals page shows. The zero view (`Default`) is for an
+ * anonymous caller or a player with no profile.
+ */
+export interface ReferralView {
+  /**
+   * Friends who earned something in the last 7 days. Counted over the
+   * newest `ACTIVE_SCAN_MAX` (2,000) friends only, so with more friends than
+   * that it can undercount.
+   */
+  'active_7d' : number,
+  /**
+   * Username of the caller's referrer.
+   */
+  'my_referrer' : [] | [string],
+  /**
+   * Within the first 24 hours and no referrer yet.
+   */
+  'can_enter_code' : boolean,
+  /**
+   * The caller's username, which is their referral code.
+   */
+  'code' : string,
+  /**
+   * At most `FRIENDS_PAGE` friends, newest first, from `offset`.
+   */
+  'rows' : Array<FriendRow>,
+  /**
+   * Cuts waiting for the next Monday payout (e8s).
+   */
+  'owed_this_week' : bigint,
+  'paid_total' : bigint,
+  'friends' : number,
+  /**
+   * The next Monday 00:00 UTC (ns), when `owed_this_week` is paid.
+   */
+  'pays_at' : bigint,
 }
 export interface Report {
   'id' : bigint,
@@ -1199,6 +1257,10 @@ export interface _SERVICE {
    */
   'get_notes' : ActorMethod<[], Array<NoteView>>,
   'get_profile' : ActorMethod<[Principal], [] | [PublicProfile]>,
+  /**
+   * The caller's referral earnings and friends, `offset` friends in (newest first).
+   */
+  'get_referrals' : ActorMethod<[number], ReferralView>,
   /**
    * The caller's Fish Buffet standing, spins and history.
    */

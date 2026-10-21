@@ -3,7 +3,7 @@
 //! The referrer later earns a cut of the friend's rake (see the referral design).
 //! This module holds the data types, the stable friend-list key and `set_referrer`.
 
-use crate::leaderboards::{week_of, DAY_NS};
+use crate::leaderboards::{period_end, week_of, DAY_NS};
 use crate::state::{State, R};
 use candid::{CandidType, Deserialize, Principal};
 use ic_stable_structures::storable::Bound;
@@ -53,6 +53,52 @@ pub struct FriendEntry {
     pub attached_at: u64,
     pub earned: u64,
     pub last_earned_at: u64,
+}
+
+/// Friends listed per page of the referrals view.
+pub const FRIENDS_PAGE: usize = 50;
+/// A friend counts as active if they earned the referrer something this recently.
+pub const ACTIVE_WINDOW_NS: u64 = 7 * DAY_NS;
+/// `active_7d` is counted over the newest this-many friends only, so a query
+/// never decodes an unbounded list.
+pub const ACTIVE_SCAN_MAX: usize = 2_000;
+
+/// One friend in the referrer's list.
+#[derive(CandidType, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct FriendRow {
+    pub username: String,
+    pub joined_at: u64,
+    /// When the 12-month earning window for this friend ends (ns).
+    pub ends_at: u64,
+    /// Cuts earned from this friend (e8s). Earned, not paid: a cut forfeited
+    /// because the referrer was suspended at payout still counts here.
+    pub earned: u64,
+    /// Earned the referrer something in the last 7 days.
+    pub active: bool,
+}
+
+/// What the referrals page shows. The zero view (`Default`) is for an
+/// anonymous caller or a player with no profile.
+#[derive(CandidType, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct ReferralView {
+    /// The caller's username, which is their referral code.
+    pub code: String,
+    pub friends: u32,
+    /// Friends who earned something in the last 7 days. Counted over the
+    /// newest `ACTIVE_SCAN_MAX` (2,000) friends only, so with more friends than
+    /// that it can undercount.
+    pub active_7d: u32,
+    /// Cuts waiting for the next Monday payout (e8s).
+    pub owed_this_week: u64,
+    pub paid_total: u64,
+    /// The next Monday 00:00 UTC (ns), when `owed_this_week` is paid.
+    pub pays_at: u64,
+    /// At most `FRIENDS_PAGE` friends, newest first, from `offset`.
+    pub rows: Vec<FriendRow>,
+    /// Within the first 24 hours and no referrer yet.
+    pub can_enter_code: bool,
+    /// Username of the caller's referrer.
+    pub my_referrer: Option<String>,
 }
 
 /// Longest principal, in bytes.
@@ -159,6 +205,50 @@ impl State {
         let stats = r.referrer_stats.get_or_insert_with(ReferrerStats::default);
         stats.friends += 1;
         Ok(())
+    }
+
+    /// The referrals page for `who`, with friends from `offset` (newest first).
+    ///
+    /// `owed_this_week` is the referrer's balance in `ReferralState.owed`
+    /// whatever its week: if the week has rolled but no tick has closed it
+    /// yet, that balance is about to be paid, so it still shows as owed.
+    pub fn referral_view(&self, who: &Principal, offset: u32, now: u64) -> ReferralView {
+        let Some(me) = self.users.get(who) else { return ReferralView::default() };
+        let name_of = |p: &Principal| self.users.get(p).map(|u| u.username);
+        let stats = me.referrer_stats.clone().unwrap_or_default();
+        let (lo, hi) = FriendKey::range(who);
+        let offset = offset as usize;
+        let scan = ACTIVE_SCAN_MAX.max(offset.saturating_add(FRIENDS_PAGE));
+        let mut active = 0u32;
+        let mut rows = Vec::new();
+        for (i, item) in self.stores.referrals.range(lo..=hi).rev().take(scan).enumerate() {
+            let e = item.value();
+            let is_active = e.last_earned_at > 0 && now.saturating_sub(e.last_earned_at) < ACTIVE_WINDOW_NS;
+            if i < ACTIVE_SCAN_MAX && is_active {
+                active += 1;
+            }
+            if i >= offset && i - offset < FRIENDS_PAGE {
+                let key = item.key();
+                rows.push(FriendRow {
+                    username: name_of(&key.friend()).unwrap_or_default(),
+                    joined_at: key.attached_at(),
+                    ends_at: key.attached_at().saturating_add(REFERRAL_DURATION_NS),
+                    earned: e.earned,
+                    active: is_active,
+                });
+            }
+        }
+        ReferralView {
+            code: me.username.clone(),
+            friends: stats.friends,
+            active_7d: active,
+            owed_this_week: self.referrals.as_ref().and_then(|r| r.owed.get(who).copied()).unwrap_or(0),
+            paid_total: stats.paid_total,
+            pays_at: period_end(0, now),
+            rows,
+            can_enter_code: me.referral.is_none() && now < me.created_at.saturating_add(ATTACH_WINDOW_NS),
+            my_referrer: me.referral.as_ref().and_then(|l| name_of(&l.referrer)),
+        }
     }
 
     /// Moves the referrer's cut of `house_e8s` (the house's share of the
@@ -563,4 +653,105 @@ mod cut_tests {
         assert_eq!(after.treasury, before.treasury - 20_000);
         assert_eq!(after.liabilities_total, before.liabilities_total);
     }
+}
+
+/// The referrals page: totals and the friend list.
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+    use crate::leaderboards::{week_of, DAY_NS};
+
+    const HOUR: u64 = 3_600 * 1_000_000_000;
+
+    fn pid(n: u16) -> Principal {
+        Principal::from_slice(&[(n >> 8) as u8, n as u8, 9, 9, 9, 9])
+    }
+
+    /// Alice (pid 1) joined at 0 with `n` friends (pid 100..) attached at 1h, 2h, ...
+    fn with_friends(n: u16) -> State {
+        let mut s = State::new(Principal::management_canister(), 10_000);
+        s.register(pid(1), "Alice".into(), 0).unwrap();
+        for k in 0..n {
+            let at = (k as u64 + 1) * HOUR;
+            let f = pid(100 + k);
+            s.register(f, format!("friend{k}"), at - 1).unwrap();
+            s.set_referrer(f, "alice", at).unwrap();
+        }
+        s
+    }
+
+    #[test]
+    fn view_lists_friends_newest_first_and_pages() {
+        let s = with_friends(120);
+        let now = 200 * HOUR;
+        let v0 = s.referral_view(&pid(1), 0, now);
+        assert_eq!((v0.code.as_str(), v0.friends, v0.rows.len()), ("Alice", 120, 50));
+        assert_eq!(v0.rows[0].username, "friend119");
+        assert_eq!(v0.rows[0].joined_at, 120 * HOUR);
+        assert_eq!(v0.rows[0].ends_at, 120 * HOUR + REFERRAL_DURATION_NS);
+        assert_eq!(v0.rows[49].username, "friend70");
+        let v1 = s.referral_view(&pid(1), 50, now);
+        assert_eq!((v1.rows.len(), v1.rows[0].username.as_str()), (50, "friend69"));
+        let v2 = s.referral_view(&pid(1), 100, now);
+        assert_eq!((v2.rows.len(), v2.rows[19].username.as_str()), (20, "friend0"));
+        assert!(s.referral_view(&pid(1), 120, now).rows.is_empty());
+        assert!(s.referral_view(&pid(1), u32::MAX, now).rows.is_empty());
+    }
+
+    #[test]
+    fn view_totals_and_can_enter_code() {
+        let mut s = with_friends(2);
+        let monday = 4 * DAY_NS;
+        // Alice is owed this week and has been paid before.
+        s.referrals = Some(ReferralState { owed: [(pid(1), 700)].into(), owed_total: 700, week: week_of(SEC) });
+        s.user_mut(&pid(1)).unwrap().referrer_stats.as_mut().unwrap().paid_total = 5_000;
+        let v = s.referral_view(&pid(1), 0, SEC * 10);
+        assert_eq!((v.owed_this_week, v.paid_total, v.pays_at), (700, 5_000, monday));
+        assert_eq!(v.my_referrer, None);
+        // Alice has no referrer and her account is more than 24 h old only after a day.
+        assert!(s.referral_view(&pid(1), 0, DAY_NS - 1).can_enter_code);
+        assert!(!s.referral_view(&pid(1), 0, DAY_NS).can_enter_code);
+        // A week that rolled but was not yet closed still shows what is about to be paid.
+        assert_eq!(s.referral_view(&pid(1), 0, monday + SEC).owed_this_week, 700);
+        // A friend sees the referrer, and cannot enter another code.
+        let f = s.referral_view(&pid(100), 0, 2 * HOUR);
+        assert_eq!(f.my_referrer.as_deref(), Some("Alice"));
+        assert!(!f.can_enter_code);
+        assert_eq!((f.friends, f.owed_this_week, f.paid_total), (0, 0, 0));
+    }
+
+    #[test]
+    fn anonymous_and_unregistered_get_the_zero_view() {
+        let s = with_friends(1);
+        for who in [Principal::anonymous(), pid(999)] {
+            let v = s.referral_view(&who, 0, HOUR);
+            assert_eq!(v, ReferralView::default());
+            assert!(!v.can_enter_code);
+        }
+    }
+
+    #[test]
+    fn active_means_earned_in_the_last_seven_days() {
+        let mut s = with_friends(3);
+        let now = 30 * DAY_NS;
+        let set = |s: &mut State, k: u16, at: u64| {
+            let key = FriendKey::new(&pid(1), (k as u64 + 1) * HOUR, &pid(100 + k));
+            let mut e = s.stores.referrals.get(&key).unwrap();
+            e.earned = 10;
+            e.last_earned_at = at;
+            s.stores.referrals.insert(key, e);
+        };
+        set(&mut s, 0, now - 7 * DAY_NS + 1); // just inside
+        set(&mut s, 1, now - 7 * DAY_NS); // just outside
+        // friend 2 never earned
+        let v = s.referral_view(&pid(1), 0, now);
+        assert_eq!(v.active_7d, 1);
+        let by_name = |n: &str| v.rows.iter().find(|r| r.username == n).unwrap().clone();
+        assert!(by_name("friend0").active);
+        assert!(!by_name("friend1").active);
+        assert!(!by_name("friend2").active);
+        assert_eq!(by_name("friend1").earned, 10);
+    }
+
+    const SEC: u64 = 1_000_000_000;
 }
