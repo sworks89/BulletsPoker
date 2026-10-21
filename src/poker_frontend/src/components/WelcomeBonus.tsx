@@ -7,10 +7,15 @@ import { daysLeft, welcomeProgress } from '../welcome';
 /** The caller's welcome bonus, refreshed every 30 s; `reload` refreshes it now. */
 export function useWelcome() {
   const { backend, profile } = useApp();
-  const [view, setView] = useState<WelcomeView | null>(null);
-  const reload = async () => setView(await backend.get_welcome());
-  usePoll(reload, 30000, [backend, profile?.id.toText()]);
-  return { view, reload };
+  const who = profile?.id.toText();
+  // The view is kept with its owner, so one fetched for a previous account is never shown.
+  const [got, setGot] = useState<{ who: string | undefined; view: WelcomeView } | null>(null);
+  const reload = async () => {
+    const view = await backend.get_welcome();
+    setGot({ who, view });
+  };
+  usePoll(reload, 30000, [backend, who]);
+  return { view: got && got.who === who ? got.view : null, reload };
 }
 
 /** Shown before the first deposit. */
@@ -18,7 +23,8 @@ export function WelcomeBanner() {
   return (
     <div className="panel welcome-banner">
       <div className="panel-title">Welcome bonus</div>
-      <p className="small">Your first deposit is matched with up to 100 ICP of bonus, released as you play. Every 1 ICP of rake you pay releases 0.3 ICP of bonus.</p>
+      <p className="small">Welcome bonus: we double your first deposit, up to 100 ICP.</p>
+      <p className="muted small">Every 1 ICP of rake you pay releases 0.3 ICP of bonus.</p>
     </div>
   );
 }
