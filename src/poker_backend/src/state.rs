@@ -181,6 +181,8 @@ pub struct User {
     pub referral: Option<crate::referrals::ReferralLink>,
     /// Totals for the friends this player has referred; created on the first one.
     pub referrer_stats: Option<crate::referrals::ReferrerStats>,
+    /// Welcome bonus verdict; `None` until the first deposit (see `crate::welcome`).
+    pub welcome: Option<crate::welcome::WelcomeBonus>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq)]
@@ -380,6 +382,8 @@ heap_state! {
     rewards: Option<crate::rewards::RewardsState>,
     /// Referral cuts owed this week (see `crate::referrals`).
     referrals: Option<crate::referrals::ReferralState>,
+    /// Set once existing depositors were marked ineligible for the welcome bonus.
+    welcome_marked: Option<bool>,
 }
 
 /// Monotonic counters exported as metrics.
@@ -811,6 +815,7 @@ impl State {
             auto_sit_outcomes: None,
             rewards: None,
             referrals: None,
+            welcome_marked: None,
             entropy: vec![],
         };
         let mut s = State::from_snapshot(users, stores, snap);
@@ -924,6 +929,7 @@ impl State {
                 rewards: None,
                 referral: None,
                 referrer_stats: None,
+                welcome: None,
             },
         );
         Ok(self.profile(&caller).unwrap())
