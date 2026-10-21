@@ -69,6 +69,7 @@ impl State {
         if house_e8s == 0 {
             return;
         }
+        // A release capped by the treasury or the locked amount is forfeited, not owed.
         let Some(b) = self.users.get(p).and_then(|u| u.welcome) else { return };
         let WelcomeBonus::Active { carry_bps, .. } = b else { return };
         let locked = welcome_locked(&b, now);
@@ -433,13 +434,16 @@ mod release_tests {
         let mut now = SEC;
         for n in 1..=30u64 {
             now = run_until(&mut s, now, 2_000, |s| s.tables[&id].hand_no >= n || s.tables[&id].eligible_count() < 2);
-            let house: u64 = [1, 2].iter().map(|&k| house_rake(&s, k)).sum();
+            let (h1, h2) = (house_rake(&s, 1), house_rake(&s, 2));
             let cut = s.referrals.as_ref().map_or(0, |r| r.owed_total);
-            // The treasury got 60% of the house share; the cut (20% of p2's)
-            // and the release (30% of p2's) never exceed it.
-            assert_eq!(released(&s, 2), house_rake(&s, 2) * 3_000 / 10_000, "hand {n}");
-            assert!(cut + released(&s, 2) <= house * 6_000 / 10_000 + 2 * n as u64, "hand {n}");
-            assert!(s.treasury * 10 + 100 >= house, "the treasury keeps at least 10% of the house share (hand {n})");
+            let tol = 10 * n;
+            assert_eq!(released(&s, 2), h2 * 3_000 / 10_000, "hand {n}");
+            // p2 alone: cut (20%) + release (30%) stay within half its house share.
+            assert!(cut + released(&s, 2) <= h2 * 5_000 / 10_000 + tol, "hand {n}");
+            // The host (no bonus, no referrer) leaves its full 60% in the treasury;
+            // what is left beyond that is p2's own retention, at least 10% of h2.
+            assert!(s.treasury + tol >= h1 * 6_000 / 10_000 + h2 * 1_000 / 10_000, "treasury keeps 10% of p2's share (hand {n})");
+            assert!(s.treasury <= h1 + h2, "hand {n}");
         }
         let house: u64 = [1, 2].iter().map(|&k| house_rake(&s, k)).sum();
         assert!(released(&s, 2) > 0 && house > 0);
