@@ -15,6 +15,10 @@ pub const FISH_POOL_BPS: u64 = 3_000;
 pub const BOARD_POOL_BPS: u64 = 1_000;
 /// Number of leaderboards.
 pub const BOARDS: usize = 4;
+/// Weeks of wheel payouts the Fish pool keeps in reserve.
+pub const FISH_RESERVE_WEEKS: usize = 13;
+/// The Fish pool never sweeps below this (10 ICP), so early spins always pay.
+pub const FISH_RESERVE_FLOOR: u64 = 10 * crate::state::E8S;
 
 #[derive(CandidType, Deserialize, Clone, Debug, Default)]
 pub struct RewardsState {
@@ -26,6 +30,15 @@ pub struct RewardsState {
     pub boards: Option<[crate::leaderboards::BoardList; BOARDS]>,
     /// The paid winners of each board's last closed period.
     pub last_winners: Option<[Vec<crate::leaderboards::BoardRow>; BOARDS]>,
+    /// Wheel payouts (e8s) of each of the last `FISH_RESERVE_WEEKS` closed weeks, newest last.
+    pub fish_paid_weeks: Option<VecDeque<u64>>,
+    /// Wheel payouts (e8s) so far in the open week.
+    pub fish_paid_this_week: Option<u64>,
+    /// Running sum of the expected value (e8s) of every banked, unspun spin.
+    /// `None` until first needed, then seeded from a full recount.
+    pub banked_ev: Option<u64>,
+    /// The week (`week_of`) of the last Fish pool sweep.
+    pub fish_week: Option<u64>,
 }
 
 impl RewardsState {
@@ -232,6 +245,10 @@ impl State {
             }
             (a.spins[0].clone(), a.lifetime_points, a.spins_taken.unwrap_or(0))
         };
+        // Close a finished week first, so this payout counts toward the new one;
+        // and seed the running EV before this spin leaves it.
+        self.sweep_fish_surplus(now);
+        self.banked_ev();
         let mut h = Sha256::new();
         h.update(&entropy);
         h.update(caller.as_slice());
@@ -255,6 +272,13 @@ impl State {
         if paid > 0 {
             self.credit(&caller, paid)?;
             self.rewards_mut().fish_pool -= paid;
+        }
+        {
+            let ev = Self::spin_ev(&spin);
+            let r = self.rewards_mut();
+            r.fish_paid_this_week = Some(r.fish_paid_this_week.unwrap_or(0).saturating_add(paid));
+            // Saturates: spins banked before the running total existed may be missing from it.
+            r.banked_ev = Some(r.banked_ev.unwrap_or(0).saturating_sub(ev));
         }
         let rec = SpinRecord {
             time: now,
@@ -335,7 +359,10 @@ impl State {
             return None;
         }
         self.close_periods(now);
+        // Seed the running EV (if this snapshot predates it) before adding to it.
+        self.banked_ev();
         let risen;
+        let mut added_ev = 0u64;
         {
             let mut u = self.users.get_mut(p)?;
             let a = u.rewards.get_or_insert_with(RewardsAccount::default);
@@ -375,17 +402,83 @@ impl State {
                 // The division's remainder stays toward the next spin.
                 a.meter_stake = keep + rest % crossed;
                 let room = MAX_SPINS.saturating_sub(a.spins.len()) as u64;
+                // Steps dropped at the cap bank nothing and add no EV.
                 for _ in 0..crossed.min(room) {
-                    a.spins.push(BankedSpin { stake, tier: tier as u8 });
+                    let spin = BankedSpin { stake, tier: tier as u8 };
+                    added_ev = added_ev.saturating_add(Self::spin_ev(&spin));
+                    a.spins.push(spin);
                 }
             }
             let after = tier_index(decayed(a.tier_points, a.last_earned_at, now));
             risen = (after > before).then_some(after);
         }
+        if added_ev > 0 {
+            let r = self.rewards_mut();
+            r.banked_ev = Some(r.banked_ev.unwrap_or(0).saturating_add(added_ev));
+        }
         self.on_points(p, now);
         self.referral_cut(p, house_e8s, now);
         self.release_welcome(p, house_e8s, now);
         risen
+    }
+
+    /// At the first tick of a new week, returns Fish pool money above the
+    /// reserve to the treasury.
+    ///
+    /// The reserve is the largest of the last 13 weeks' wheel payouts, twice
+    /// the EV of all banked spins, and `FISH_RESERVE_FLOOR`. The week marker
+    /// advances before any money moves, so a week sweeps once however many
+    /// ticks land in it, and a tick after weeks of downtime sweeps once.
+    /// Money only moves from `fish_pool` to `treasury`.
+    pub(crate) fn sweep_fish_surplus(&mut self, now: u64) {
+        let current = week_of(now);
+        if current <= self.rewards.as_ref().and_then(|r| r.fish_week).unwrap_or(0) {
+            return;
+        }
+        let banked_ev = self.banked_ev();
+        let r = self.rewards_mut();
+        let paid = r.fish_paid_this_week.take().unwrap_or(0);
+        let weeks = r.fish_paid_weeks.get_or_insert_with(VecDeque::new);
+        weeks.push_back(paid);
+        while weeks.len() > FISH_RESERVE_WEEKS {
+            weeks.pop_front();
+        }
+        r.fish_paid_this_week = Some(0);
+        r.fish_week = Some(current);
+        let recent = weeks.iter().map(|&w| w as u128).sum::<u128>().min(u64::MAX as u128) as u64;
+        let reserve = recent.max(banked_ev.saturating_mul(2)).max(FISH_RESERVE_FLOOR);
+        let surplus = r.fish_pool.saturating_sub(reserve);
+        if surplus > 0 {
+            r.fish_pool -= surplus;
+            self.treasury += surplus;
+        }
+    }
+
+    /// The EV (e8s) of a banked spin: stake × tier rate (the wheel averages 1×).
+    fn spin_ev(spin: &BankedSpin) -> u64 {
+        let tier = &TIERS[(spin.tier as usize).min(TIERS.len() - 1)];
+        (spin.stake as u128 * tier.rate_bps as u128 / 10_000) as u64
+    }
+
+    /// The running EV of all banked spins. Snapshots from before it existed
+    /// have `None`: it is then seeded once from a full scan of the users, so
+    /// spins banked before the upgrade are covered by the reserve too.
+    fn banked_ev(&mut self) -> u64 {
+        if let Some(ev) = self.rewards.as_ref().and_then(|r| r.banked_ev) {
+            return ev;
+        }
+        let ev = self.recount_banked_ev();
+        self.rewards_mut().banked_ev = Some(ev);
+        ev
+    }
+
+    /// Σ EV over every user's banked spins (full scan of the users).
+    pub(crate) fn recount_banked_ev(&self) -> u64 {
+        self.users
+            .iter()
+            .filter_map(|(_, u)| u.rewards)
+            .flat_map(|a| a.spins)
+            .fold(0u64, |t, s| t.saturating_add(Self::spin_ev(&s)))
     }
 
     /// Posts "🐬 Name reached Dolphin in the Fish Buffet!" in `ch`.
