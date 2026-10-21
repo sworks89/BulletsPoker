@@ -153,6 +153,8 @@ type HouseStats = record {
   wallet_balances : nat64;
   // Fish and leaderboard prize pools, owed to players.
   rewards_pools : nat64;
+  // Referral cuts owed to referrers, paid at the weekly close.
+  referral_owed : nat64;
   users : nat64;
   treasury : nat64;
 };

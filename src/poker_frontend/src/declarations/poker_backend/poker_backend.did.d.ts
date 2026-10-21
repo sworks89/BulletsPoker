@@ -234,6 +234,10 @@ export interface HouseStats {
    * Fish and leaderboard prize pools, owed to players.
    */
   'rewards_pools' : bigint,
+  /**
+   * Referral cuts owed to referrers, paid at the weekly close.
+   */
+  'referral_owed' : bigint,
   'users' : bigint,
   'treasury' : bigint,
 }

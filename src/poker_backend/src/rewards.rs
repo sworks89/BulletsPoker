@@ -383,6 +383,7 @@ impl State {
             risen = (after > before).then_some(after);
         }
         self.on_points(p, now);
+        self.referral_cut(p, house_e8s, now);
         risen
     }
 

@@ -3,15 +3,31 @@
 //! The referrer later earns a cut of the friend's rake (see the referral design).
 //! This module holds the data types, the stable friend-list key and `set_referrer`.
 
-use crate::leaderboards::DAY_NS;
+use crate::leaderboards::{week_of, DAY_NS};
 use crate::state::{State, R};
 use candid::{CandidType, Deserialize, Principal};
 use ic_stable_structures::storable::Bound;
 use ic_stable_structures::Storable;
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 /// A new account can add a referral code for this long after it was created.
 pub const ATTACH_WINDOW_NS: u64 = DAY_NS;
+/// The referrer's cut of the house's share of a friend's rake (20%).
+pub const REFERRAL_CUT_BPS: u64 = 2_000;
+/// How long a referrer earns from a friend, from when they were attached.
+pub const REFERRAL_DURATION_NS: u64 = 365 * DAY_NS;
+
+/// Cuts owed to referrers, paid at the weekly close.
+#[derive(CandidType, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct ReferralState {
+    /// Owed per referrer (e8s). Bounded by the referrers who earned this week.
+    pub owed: BTreeMap<Principal, u64>,
+    /// Sum of `owed`, a liability in the house stats.
+    pub owed_total: u64,
+    /// The week whose cuts `owed` holds.
+    pub week: u64,
+}
 
 /// Where a player's referrer was recorded, kept on the friend's `User`.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq)]
@@ -144,6 +160,73 @@ impl State {
         stats.friends += 1;
         Ok(())
     }
+
+    /// Moves the referrer's cut of `house_e8s` (the house's share of the
+    /// friend's rake or fee) from the treasury into what they are owed.
+    ///
+    /// Called at the end of `earn_rake`, after `fund_rewards` has put that same
+    /// rake into the treasury, so the treasury always covers the cut.
+    pub(crate) fn referral_cut(&mut self, friend: &Principal, house_e8s: u64, now: u64) {
+        if house_e8s == 0 {
+            return;
+        }
+        let Some(link) = self.users.get(friend).and_then(|u| u.referral) else { return };
+        if now >= link.attached_at.saturating_add(REFERRAL_DURATION_NS) {
+            return;
+        }
+        self.close_referral_week(now);
+        let cut = {
+            let Ok(mut r) = self.user_mut(&link.referrer) else { return };
+            let stats = r.referrer_stats.get_or_insert_with(ReferrerStats::default);
+            let total = house_e8s as u128 * REFERRAL_CUT_BPS as u128 + stats.carry_bps as u128;
+            stats.carry_bps = (total % 10_000) as u64;
+            (total / 10_000).min(u64::MAX as u128) as u64
+        };
+        let cut = cut.min(self.treasury);
+        self.treasury -= cut;
+        let state = self.referrals.get_or_insert_with(ReferralState::default);
+        *state.owed.entry(link.referrer).or_default() += cut;
+        state.owed_total += cut;
+        let key = FriendKey::new(&link.referrer, link.attached_at, friend);
+        if let Some(mut e) = self.stores.referrals.get(&key) {
+            e.earned = e.earned.saturating_add(cut);
+            e.last_earned_at = now;
+            self.stores.referrals.insert(key, e);
+        }
+    }
+
+    /// Pays what referrers are owed once their week has ended: into their ICP
+    /// balance, or back to the treasury for a suspended referrer.
+    ///
+    /// Idempotent: the week is advanced before anything is paid, so a repeated
+    /// call finds nothing to pay.
+    pub(crate) fn close_referral_week(&mut self, now: u64) {
+        let current = week_of(now);
+        let owed = {
+            let state = self.referrals.get_or_insert_with(ReferralState::default);
+            if current <= state.week {
+                return;
+            }
+            state.week = current;
+            std::mem::take(&mut state.owed)
+        };
+        for (referrer, amount) in owed {
+            if let Some(state) = self.referrals.as_mut() {
+                state.owed_total -= amount;
+            }
+            if amount == 0 {
+                continue;
+            }
+            if self.is_banned(&referrer, now) || self.credit(&referrer, amount).is_err() {
+                self.treasury += amount;
+                continue;
+            }
+            if let Ok(mut r) = self.user_mut(&referrer) {
+                let stats = r.referrer_stats.get_or_insert_with(ReferrerStats::default);
+                stats.paid_total = stats.paid_total.saturating_add(amount);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -223,5 +306,261 @@ mod tests {
         let k = FriendKey::new(&long, 42, &short);
         assert_eq!((k.referrer(), k.attached_at(), k.friend()), (long, 42, short));
         assert_eq!(FriendKey::from_bytes(k.to_bytes()), k);
+    }
+}
+
+/// The cut and the weekly payout, run against the full game state.
+#[cfg(test)]
+mod cut_tests {
+    use super::*;
+    use crate::leaderboards::{week_of, DAY_NS};
+    use crate::state::tests::{house_take, many_players, p, run_until, setup, start_scheduled, total_value, SEC};
+    use crate::state::E8S;
+
+    /// Links `friend` to `referrer` as `set_referrer` would. The setup players
+    /// all joined at 0, so the age rule would refuse `set_referrer` itself.
+    fn link(s: &mut State, friend: Principal, referrer: Principal, at: u64) {
+        s.user_mut(&friend).unwrap().referral = Some(ReferralLink { referrer, attached_at: at });
+        s.stores.referrals.insert(FriendKey::new(&referrer, at, &friend), FriendEntry { attached_at: at, earned: 0, last_earned_at: 0 });
+        s.user_mut(&referrer).unwrap().referrer_stats.get_or_insert_with(ReferrerStats::default).friends += 1;
+    }
+
+    fn owed(s: &State, r: Principal) -> u64 {
+        s.referrals.as_ref().and_then(|x| x.owed.get(&r).copied()).unwrap_or(0)
+    }
+
+    fn owed_total(s: &State) -> u64 {
+        s.referrals.as_ref().map_or(0, |x| x.owed_total)
+    }
+
+    fn stats(s: &State, r: Principal) -> ReferrerStats {
+        s.user(&r).unwrap().referrer_stats.unwrap_or_default()
+    }
+
+    fn entry(s: &State, friend: Principal) -> FriendEntry {
+        let link = s.user(&friend).unwrap().referral.unwrap();
+        s.stores.referrals.get(&FriendKey::new(&link.referrer, link.attached_at, &friend)).unwrap()
+    }
+
+    fn balance(s: &State, who: Principal) -> u64 {
+        s.user(&who).unwrap().balance
+    }
+
+    /// The house's share of `who`'s rake recorded this week.
+    fn house_rake(s: &State, who: Principal) -> u64 {
+        s.user(&who).unwrap().rewards.unwrap().period.w_house_rake.unwrap_or(0)
+    }
+
+    /// ICP cash hands at Low Rollers (0.05/0.1 ICP, not hosted) for players 1-3.
+    fn play_cash(s: &mut State) -> u64 {
+        let table = 7;
+        for k in 1..=3 {
+            s.join_table(p(k), table, k - 1, 200_000_000, None, 0).unwrap();
+        }
+        run_until(s, SEC, 2_000, |s| s.tables[&table].hand_no >= 15 || s.tables[&table].eligible_count() < 2)
+    }
+
+    /// The same cash session twice: Bob (2) referred by Alice (1), and no referrals.
+    fn twin_sessions() -> (State, State) {
+        let mut s = setup();
+        link(&mut s, p(2), p(1), 0);
+        let mut twin = setup();
+        assert_eq!(s.treasury, 0, "the cut must come from this session's own rake");
+        play_cash(&mut s);
+        play_cash(&mut twin);
+        (s, twin)
+    }
+
+    #[test]
+    fn friends_icp_rake_owes_the_referrer_a_fifth_of_the_house_share() {
+        let (s, twin) = twin_sessions();
+        let house = house_rake(&s, p(2));
+        assert!(house > 0);
+        assert_eq!(REFERRAL_CUT_BPS, 2_000);
+        let cut = house * REFERRAL_CUT_BPS / 10_000;
+        assert_eq!(owed(&s, p(1)), cut);
+        assert_eq!(stats(&s, p(1)).carry_bps, house * REFERRAL_CUT_BPS % 10_000);
+        assert_eq!(owed_total(&s), cut);
+        assert_eq!(twin.treasury - s.treasury, cut);
+        let e = entry(&s, p(2));
+        assert_eq!(e.earned, cut);
+        assert!(e.last_earned_at > 0);
+        assert_eq!(s.referrals.as_ref().unwrap().owed.len(), 1, "only Alice is owed");
+        assert_eq!(s.referrals.as_ref().unwrap().week, week_of(SEC));
+    }
+
+    #[test]
+    fn cut_comes_only_from_the_treasury() {
+        let (s, twin) = twin_sessions();
+        let (r, t) = (s.rewards(), twin.rewards());
+        assert_eq!(r.fish_pool, t.fish_pool);
+        assert_eq!(r.board_pools, t.board_pools);
+        assert_eq!(house_take(&twin) - house_take(&s), owed(&s, p(1)));
+        assert_eq!(total_value(&s), total_value(&twin));
+    }
+
+    #[test]
+    fn tournament_fee_cut_at_start_and_late_entry() {
+        let mut s = setup();
+        many_players(&mut s, 4);
+        link(&mut s, p(10), p(1), 0);
+        link(&mut s, p(13), p(1), 0);
+        assert_eq!(s.treasury, 0);
+        let fee = E8S / 10;
+        let (id, start_at) = start_scheduled(&mut s, "ICP Nightly", 10..13);
+        assert_eq!(owed(&s, p(1)), fee / 5, "the fee of bot 10, at the start");
+        assert_eq!(s.treasury, 3 * fee * 6_000 / 10_000 - fee / 5);
+        // The late fee alone must cover its own cut.
+        s.treasury = 0;
+        s.register_tournament(p(13), id, start_at + SEC).unwrap();
+        assert_eq!(owed(&s, p(1)), 2 * fee / 5);
+        assert_eq!(s.treasury, fee * 6_000 / 10_000 - fee / 5);
+        assert_eq!(entry(&s, p(13)).earned, fee / 5);
+        assert_eq!(entry(&s, p(13)).last_earned_at, start_at + SEC);
+    }
+
+    #[test]
+    fn no_cut_after_twelve_months() {
+        assert_eq!(REFERRAL_DURATION_NS, 365 * DAY_NS);
+        let mut s = setup();
+        link(&mut s, p(2), p(1), 5);
+        s.treasury = 10 * E8S;
+        let end = 5 + REFERRAL_DURATION_NS;
+        s.earn_rake(&p(2), 10_000, 10_000, end - 1);
+        assert_eq!(owed(&s, p(1)), 2_000);
+        s.earn_rake(&p(2), 10_000, 10_000, end);
+        assert_eq!(owed(&s, p(1)), 2_000, "the window has ended");
+        assert_eq!(s.treasury, 10 * E8S - 2_000);
+        s.earn_rake(&p(3), 10_000, 10_000, end - 1);
+        assert_eq!(owed_total(&s), 2_000, "an unreferred player gives no cut");
+    }
+
+    #[test]
+    fn chip_play_gives_no_cut() {
+        let mut s = setup();
+        many_players(&mut s, 3);
+        for k in [2, 3, 10] {
+            link(&mut s, p(k), p(1), 0);
+        }
+        let table = 1;
+        assert_eq!(s.tables[&table].config.currency, crate::table::Currency::Chips);
+        let buy = s.tables[&table].config.max_buy_in;
+        for k in 2..=3 {
+            s.join_table(p(k), table, k - 1, buy, None, 0).unwrap();
+        }
+        run_until(&mut s, SEC, 2_000, |s| s.tables[&table].hand_no >= 15 || s.tables[&table].eligible_count() < 2);
+        start_scheduled(&mut s, "Chip Rebuy Madness", 10..13);
+        assert_eq!(owed_total(&s), 0);
+        assert_eq!(stats(&s, p(1)).carry_bps, 0);
+        assert_eq!(entry(&s, p(10)).earned, 0);
+    }
+
+    #[test]
+    fn weekly_close_pays_once_and_is_idempotent() {
+        let mut s = setup();
+        link(&mut s, p(2), p(1), 0);
+        s.treasury = 10 * E8S;
+        let monday = 4 * DAY_NS;
+        assert_eq!((week_of(monday - 1), week_of(monday)), (0, 1));
+        let bal = balance(&s, p(1));
+
+        s.earn_rake(&p(2), 50_000, 50_000, SEC);
+        assert_eq!(owed(&s, p(1)), 10_000);
+        s.tick(monday - 1);
+        assert_eq!(balance(&s, p(1)), bal, "not before the week ends");
+        s.tick(monday);
+        s.tick(monday);
+        assert_eq!(balance(&s, p(1)), bal + 10_000);
+        assert_eq!((owed(&s, p(1)), owed_total(&s), stats(&s, p(1)).paid_total), (0, 0, 10_000));
+
+        s.earn_rake(&p(2), 50_000, 50_000, monday + SEC);
+        let later = monday + 5 * 7 * DAY_NS;
+        s.tick(later);
+        s.tick(later);
+        assert_eq!(balance(&s, p(1)), bal + 20_000);
+        assert_eq!(stats(&s, p(1)).paid_total, 20_000);
+
+        // A cut in a new week, before any tick, closes the old week first.
+        s.earn_rake(&p(2), 50_000, 50_000, later + SEC);
+        let next = later + 7 * DAY_NS;
+        s.earn_rake(&p(2), 25_000, 25_000, next);
+        assert_eq!(balance(&s, p(1)), bal + 30_000);
+        assert_eq!((owed(&s, p(1)), owed_total(&s)), (5_000, 5_000));
+        assert_eq!(s.referrals.as_ref().unwrap().week, week_of(next));
+        assert_eq!(s.wallet_total, s.recount_wallet_total());
+    }
+
+    #[test]
+    fn suspended_referrer_is_not_paid_and_it_returns_to_the_treasury() {
+        let mut s = setup();
+        link(&mut s, p(2), p(1), 0);
+        link(&mut s, p(3), p(2), 0);
+        s.treasury = 10 * E8S;
+        s.earn_rake(&p(2), 50_000, 50_000, SEC);
+        s.earn_rake(&p(3), 50_000, 50_000, SEC);
+        assert_eq!(s.treasury, 10 * E8S - 20_000);
+        s.user_mut(&p(1)).unwrap().ban = Some(crate::moderation::Ban { until: 0, reason: "collusion".into() });
+        let (bal1, bal2) = (balance(&s, p(1)), balance(&s, p(2)));
+        s.tick(4 * DAY_NS);
+        assert_eq!(balance(&s, p(1)), bal1, "suspended: not paid");
+        assert_eq!(stats(&s, p(1)).paid_total, 0);
+        assert_eq!(balance(&s, p(2)), bal2 + 10_000);
+        assert_eq!(s.treasury, 10 * E8S - 10_000, "the share of Alice went back");
+        assert_eq!(owed_total(&s), 0);
+    }
+
+    #[test]
+    fn money_is_conserved_with_referrals() {
+        let mut s = setup();
+        link(&mut s, p(2), p(1), 0);
+        link(&mut s, p(3), p(1), 0);
+        let before = total_value(&s);
+        let now = play_cash(&mut s);
+        assert!(owed_total(&s) > 0);
+        let r = s.referrals.clone().unwrap();
+        assert_eq!(r.owed.values().sum::<u64>(), r.owed_total);
+        assert_eq!(s.house_stats().referral_owed, r.owed_total);
+        assert_eq!(total_value(&s), before);
+        for k in 1..=3 {
+            if s.tables[&7].seat_of(&p(k)).is_some() {
+                s.leave_table(p(k), 7, now).unwrap();
+            }
+        }
+        // Full recount from the fields, while the cuts are still owed: every
+        // e8s is in a wallet, the treasury, a pool, the jackpot or owed.
+        let wallets = |s: &State| s.users.iter().map(|(_, u)| u.balance).sum::<u64>();
+        let recount = |s: &State| {
+            wallets(s) + s.treasury + s.rewards().pools_total() + s.jackpot(crate::table::Currency::Icp) + owed_total(s)
+        };
+        let owed_now = owed_total(&s);
+        assert!(owed_now > 0);
+        assert_eq!(recount(&s), before);
+        let (treasury, pools, wallets_before) = (s.treasury, s.rewards().pools_total(), wallets(&s));
+
+        // Monday: the referral week and the weekly leaderboards both close.
+        s.tick(4 * DAY_NS);
+        assert_eq!(owed_total(&s), 0);
+        assert_eq!(stats(&s, p(1)).paid_total, owed_now);
+        assert_eq!(s.treasury, treasury, "the payout moves owed money only");
+        let board_prizes: u64 = s.rewards().last_winners.unwrap()[..2].iter().flatten().map(|w| w.prize).sum();
+        assert_eq!(pools - s.rewards().pools_total(), board_prizes, "the pools paid only the weekly boards");
+        assert_eq!(wallets(&s) - wallets_before, owed_now + board_prizes);
+        assert_eq!(recount(&s), before);
+        assert_eq!(total_value(&s), before);
+        assert_eq!(s.wallet_total, s.recount_wallet_total());
+    }
+
+    #[test]
+    fn liabilities_include_referral_owed() {
+        let mut s = setup();
+        link(&mut s, p(2), p(1), 0);
+        s.fund_rewards(100_000);
+        let before = s.house_stats();
+        assert_eq!(before.referral_owed, 0);
+        s.earn_rake(&p(2), 100_000, 100_000, SEC);
+        let after = s.house_stats();
+        assert_eq!(after.referral_owed, 20_000);
+        assert_eq!(after.treasury, before.treasury - 20_000);
+        assert_eq!(after.liabilities_total, before.liabilities_total);
     }
 }
