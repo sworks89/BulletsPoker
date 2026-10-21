@@ -535,6 +535,13 @@ fn get_referrals(offset: u32) -> referrals::ReferralView {
     with(|s| s.referral_view(&p, offset, now()))
 }
 
+/// The caller's welcome bonus: the offer, or its progress.
+#[query]
+fn get_welcome() -> welcome::WelcomeView {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.welcome_view(&p, now()))
+}
+
 /// The four weekly and monthly leaderboards, with the caller's own row.
 #[query]
 fn get_leaderboards() -> Vec<leaderboards::BoardView> {

@@ -42,7 +42,36 @@ pub fn welcome_locked(b: &WelcomeBonus, now: u64) -> u64 {
     }
 }
 
+/// What the caller sees of their welcome bonus.
+#[derive(CandidType, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct WelcomeView {
+    /// No bonus yet and still entitled to one on the first deposit.
+    pub eligible: bool,
+    /// Granted, not fully released, not expired.
+    pub active: bool,
+    pub amount: u64,
+    pub released: u64,
+    /// Still locked: zero once expired or fully released.
+    pub locked: u64,
+    pub expires_at: u64,
+    pub expired: bool,
+}
+
 impl State {
+    /// The caller's bonus: strangers and ineligible players get all zeros.
+    pub fn welcome_view(&self, p: &Principal, now: u64) -> WelcomeView {
+        let Some(u) = self.users.get(p) else { return WelcomeView::default() };
+        match u.welcome {
+            None => WelcomeView { eligible: true, ..Default::default() },
+            Some(WelcomeBonus::Ineligible) => WelcomeView::default(),
+            Some(b @ WelcomeBonus::Active { granted_at, amount, released, .. }) => {
+                let locked = welcome_locked(&b, now);
+                let expires_at = granted_at.saturating_add(WELCOME_EXPIRY_NS);
+                WelcomeView { eligible: false, active: locked > 0, amount, released, locked, expires_at, expired: now >= expires_at }
+            }
+        }
+    }
+
     /// Grants the bonus on a player's first successful deposit; a no-op for
     /// anyone who already has a verdict.
     pub(crate) fn grant_welcome(&mut self, p: &Principal, deposit: u64, now: u64) {
@@ -209,6 +238,38 @@ mod tests {
         let mut s = setup();
         s.grant_welcome(&p(1), 0, 5);
         assert_eq!(welcome(&s, 1), Some(WelcomeBonus::Ineligible));
+    }
+
+    #[test]
+    fn welcome_view_states() {
+        let mut s = setup();
+        let v = s.welcome_view(&p(1), 5);
+        assert!(v.eligible && !v.active && !v.expired);
+        assert_eq!((v.amount, v.locked, v.expires_at), (0, 0, 0));
+
+        s.users.get_mut(&p(1)).unwrap().welcome = Some(WelcomeBonus::Active { granted_at: 10, amount: 8, released: 3, carry_bps: 0 });
+        let v = s.welcome_view(&p(1), 11);
+        assert_eq!(v, WelcomeView { eligible: false, active: true, amount: 8, released: 3, locked: 5, expires_at: 10 + WELCOME_EXPIRY_NS, expired: false });
+
+        s.users.get_mut(&p(1)).unwrap().welcome = Some(WelcomeBonus::Active { granted_at: 10, amount: 8, released: 8, carry_bps: 0 });
+        let v = s.welcome_view(&p(1), 11);
+        assert!(!v.active && !v.expired && !v.eligible);
+        assert_eq!((v.amount, v.released, v.locked), (8, 8, 0));
+
+        s.users.get_mut(&p(1)).unwrap().welcome = Some(WelcomeBonus::Active { granted_at: 10, amount: 8, released: 3, carry_bps: 0 });
+        let v = s.welcome_view(&p(1), 10 + WELCOME_EXPIRY_NS);
+        assert!(v.expired && !v.active && !v.eligible);
+        assert_eq!((v.amount, v.released, v.locked), (8, 3, 0));
+
+        s.users.get_mut(&p(1)).unwrap().welcome = Some(WelcomeBonus::Ineligible);
+        assert_eq!(s.welcome_view(&p(1), 11), WelcomeView::default());
+    }
+
+    #[test]
+    fn welcome_view_zero_for_strangers() {
+        let s = setup();
+        assert_eq!(s.welcome_view(&Principal::anonymous(), 5), WelcomeView::default());
+        assert_eq!(s.welcome_view(&p(200), 5), WelcomeView::default());
     }
 
     #[test]

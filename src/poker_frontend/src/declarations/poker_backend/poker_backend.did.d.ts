@@ -1116,6 +1116,27 @@ export interface TournamentTemplate {
    */
   'late_reg_levels' : number,
 }
+/**
+ * What the caller sees of their welcome bonus.
+ */
+export interface WelcomeView {
+  /**
+   * Granted, not fully released, not expired.
+   */
+  'active' : boolean,
+  'expired' : boolean,
+  /**
+   * Still locked: zero once expired or fully released.
+   */
+  'locked' : bigint,
+  'released' : bigint,
+  /**
+   * No bonus yet and still entitled to one on the first deposit.
+   */
+  'eligible' : boolean,
+  'amount' : bigint,
+  'expires_at' : bigint,
+}
 export interface Winner {
   'player' : Principal,
   'hand' : string,
@@ -1277,6 +1298,10 @@ export interface _SERVICE {
    */
   'get_tables' : ActorMethod<[BigUint64Array | bigint[]], Array<TableView>>,
   'get_tournament' : ActorMethod<[bigint], [] | [TournamentDetail]>,
+  /**
+   * The caller's welcome bonus: the offer, or its progress.
+   */
+  'get_welcome' : ActorMethod<[], WelcomeView>,
   /**
    * `GET /metrics` (Prometheus text, without the house's money figures) and
    * `GET /health` on the canister's raw domain. Responses are not certified, so

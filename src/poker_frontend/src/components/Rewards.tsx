@@ -4,6 +4,8 @@ import { unwrap, type BoardRow, type BoardView, type RewardsView, type SpinRecor
 import { icp } from '../format';
 import { Avatar } from '../art/Avatar';
 import { Leaderboard } from './Profile';
+import { WelcomeCard, useWelcome } from './WelcomeBonus';
+import { welcomeStatus } from '../welcome';
 import {
   BOARD_NAMES,
   MIN_HANDS,
@@ -57,6 +59,7 @@ const when = (ns: bigint) =>
 
 function FishBuffet() {
   const { backend, profile, run, refreshProfile } = useApp();
+  const { view: welcome } = useWelcome();
   const [view, setView] = useState<RewardsView | null>(null);
   const [rotation, setRotation] = useState(0);
   const [spinning, setSpinning] = useState(false);
@@ -113,6 +116,7 @@ function FishBuffet() {
 
   return (
     <div className="page-grid">
+      {profile && welcome && welcomeStatus(welcome) === 'active' && <WelcomeCard view={welcome} />}
       {profile ? (
         <div className="panel tier-panel">
           <div className="row gap">
