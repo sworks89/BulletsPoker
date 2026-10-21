@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Match a player's first ICP deposit 100% (up to 100 ICP) as a locked bonus released at 40% of the house-share rake they pay, expiring after 90 days.
+**Goal:** Match a player's first ICP deposit 100% (up to 100 ICP) as a locked bonus released at 30% of the house-share rake they pay, expiring after 90 days. Also return unused Fish Buffet pool money above a reserve to the treasury each week.
 
 **Architecture:**
 - A new backend module, `welcome.rs`, owns the bonus.
@@ -19,8 +19,8 @@
 - **Grant:** `WELCOME_MAX = 100 * E8S`. The bonus is `min(deposit amount, WELCOME_MAX)`.
   - It is granted on the first successful `OpKind::Deposit` or `OpKind::Sweep` only, once per player, ever.
   - Players with a successful deposit before this ships are not eligible.
-- **Release:** `WELCOME_RELEASE_BPS = 4_000`.
-  - Each `earn_rake(p, rake_e8s, house_e8s, now)` releases `min(locked, house_e8s × 40%)`, with sub-e8s remainders carried forward in bps units.
+- **Release:** `WELCOME_RELEASE_BPS = 3_000`.
+  - Each `earn_rake(p, rake_e8s, house_e8s, now)` releases `min(locked, house_e8s × 30%)`, with sub-e8s remainders carried forward in bps units.
   - The release is taken from `self.treasury`, capped at the treasury, and credited with `credit()`.
   - It runs after `referral_cut`.
   - Nothing is released while `is_banned(p, now)`.
@@ -36,15 +36,16 @@
   - Frontend: `cd src/poker_frontend && npx vitest run && npm run build`.
 - **Copy:**
   - "Welcome bonus: we double your first deposit, up to 100 ICP."
-  - "Every 1 ICP of rake you pay releases 0.4 ICP of bonus."
+  - "Every 1 ICP of rake you pay releases 0.3 ICP of bonus."
 
 ## Review Focus
 
 1. **The treasury never goes negative, and no release exceeds what the treasury got from the same rake.** This must hold for a referred player at the bonus cap, in a hosted room, and when a tournament fee is paid.
-2. **Exactly one grant.** A deposit op that is retried, finished twice, or settled late after an upgrade grants once. A second deposit never grants. A deposit that fails grants nothing.
-3. **Existing depositors** stay ineligible after the upgrade pass. The pass is idempotent, and runs once even across further upgrades.
-4. **Expiry:** at `granted_at + 90 days` the locked amount is 0, nothing further is released, and the boundary is exact.
-5. **Old data:** `User` records and heap snapshots without the new fields decode as "no bonus, eligible". The upgrade pass then corrects players who already deposited.
+2. **Fish surplus sweep:** never sweeps below the reserve, never runs twice in a week, and money only moves between `fish_pool` and `treasury`.
+3. **Exactly one grant.** A deposit op that is retried, finished twice, or settled late after an upgrade grants once. A second deposit never grants. A deposit that fails grants nothing.
+4. **Existing depositors** stay ineligible after the upgrade pass. The pass is idempotent, and runs once even across further upgrades.
+5. **Expiry:** at `granted_at + 90 days` the locked amount is 0, nothing further is released, and the boundary is exact.
+6. **Old data:** `User` records and heap snapshots without the new fields decode as "no bonus, eligible". The upgrade pass then corrects players who already deposited.
 
 ---
 
@@ -94,17 +95,17 @@
 - Consumes: `WelcomeBonus` and `welcome_locked` (Task 1); `is_banned`; `credit`; the treasury.
 - Produces: `pub(crate) fn release_welcome(&mut self, p: &Principal, house_e8s: u64, now: u64)`:
   1. Return if the player isn't `Active`, the locked amount after expiry is 0, or `is_banned(p, now)`.
-  2. Compute `want = house_e8s × 4_000` plus `carry_bps`. Whole e8s are `/ 10_000`, and the rest stays in `carry_bps`.
+  2. Compute `want = house_e8s × 3_000` plus `carry_bps`. Whole e8s are `/ 10_000`, and the rest stays in `carry_bps`.
   3. `amount = want.min(locked).min(self.treasury)`.
   4. Take `amount` from the treasury and `credit` it to the player. If `credit` fails, put it back in the treasury.
   5. Add `amount` to `released`.
 
 - [ ] **Step 1: Write the failing tests:**
-  - `rake_releases_forty_percent_of_the_house_share`: after ICP hands, `released == floor(Σ house_e8s × 0.4)` (exact with carry), and the balance and treasury moved by the same amount.
+  - `rake_releases_thirty_percent_of_the_house_share`: after ICP hands, `released == floor(Σ house_e8s × 0.3)` (exact with carry), and the balance and treasury moved by the same amount.
   - `referred_player_at_the_cap_never_overdraws_the_treasury`:
     - A referred player in a hosted room plays with the treasury starting at 0.
     - The treasury never underflows.
-    - `referral cut + release ≤ treasury share` of each hand.
+    - `referral cut + release ≤ treasury share` of each hand, and the treasury keeps at least 10% of the house share (`house_take` grows by ≥ 0.1 × Σ house_e8s beyond the pools).
   - `tournament_fee_releases_bonus`.
   - `release_stops_when_fully_released`.
   - `nothing_releases_after_ninety_days`: exact boundary at `granted_at + 90d - 1` against `+ 90d`.
@@ -167,3 +168,38 @@
   - Polling: use `usePoll` every 30 s, and refresh after a deposit completes.
 - [ ] **Step 4: Run** `cargo test`, then `npx vitest run && npm run build`. Expected: everything passes.
 - [ ] **Step 5: Commit** "Show the welcome bonus offer and progress".
+
+### Task 4: Return unused Fish Buffet money to the treasury
+
+**Files:**
+- Modify:
+  - `src/poker_backend/src/rewards.rs`:
+    - `RewardsState` gains `fish_paid_weeks: Option<VecDeque<u64>>` (the wheel payout total of each of the last 13 closed weeks, newest last), `fish_paid_this_week: Option<u64>`, `banked_ev: Option<u64>` (the running Σ stake × rate_bps / 10_000 over banked spins) and `fish_week: Option<u64>`.
+    - `spin_wheel` adds `paid` to `fish_paid_this_week` and subtracts that spin's EV from `banked_ev`.
+    - Banking a spin in `earn_rake` adds its EV. Spins dropped at the 50 cap add nothing.
+    - Add `pub(crate) fn sweep_fish_surplus(&mut self, now: u64)`.
+  - `src/poker_backend/src/state.rs`: call `sweep_fish_surplus(now)` in `tick`, next to `close_periods` / `close_referral_week`.
+  - The `.did` and the bindings, if `HouseStats` or a view changes.
+
+**Interfaces:**
+- Produces:
+  - Constants: `FISH_RESERVE_WEEKS = 13`, `FISH_RESERVE_FLOOR = 10 * E8S`.
+  - `sweep_fish_surplus`: if `week_of(now) > fish_week`:
+    1. Push `fish_paid_this_week` onto `fish_paid_weeks` (keep 13), reset it, and set `fish_week = week_of(now)`, all *before* moving any money.
+    2. Compute `reserve = max(Σ fish_paid_weeks, 2 × banked_ev, FISH_RESERVE_FLOOR)`.
+    3. Move `fish_pool - reserve` (if positive) from `fish_pool` to `treasury`.
+
+    It is idempotent: two ticks in one second, or a tick after weeks of downtime, sweep once.
+  - On the first run, with no history, the reserve is the larger of the floor and 2 × `banked_ev`. That is intended.
+
+- [ ] **Step 1: Write the failing tests** in `rewards.rs` tests, or in the state tests module:
+  - `surplus_above_the_reserve_returns_to_the_treasury`: pool 50 ICP, no payouts, no banked spins. After the Monday tick the pool is 10 ICP, the treasury has risen by 40, and `house_take` is unchanged.
+  - `reserve_covers_recent_payouts`: a 13-week payout history summing to 30 ICP keeps 30.
+  - `reserve_covers_twice_the_banked_spins`.
+  - `sweep_runs_once_per_week`: covers two ticks, downtime, and an old snapshot with the new fields `None`.
+  - `banked_ev_tracks_banking_and_spinning`: bank then spin brings it back to 0.
+  - Conservation: the full recount still holds.
+- [ ] **Step 2: Run** them. Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run** `cargo test`. Expected: everything passes.
+- [ ] **Step 5: Commit** "Return unused Fish Buffet money above a reserve to the treasury".

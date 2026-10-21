@@ -56,12 +56,14 @@ never costs the house money.
 
   In the code this is the `house_e8s` passed to `earn_rake`.
 - **Release rate.** Each time the player pays house-share rake `h`, the amount
-  released is `min(locked, 40% of h)`, with remainders under 1 e8s carried forward.
+  released is `min(locked, 30% of h)`, with remainders under 1 e8s carried forward.
   - The house keeps 60% of the house share, the pools take the other 40%, and a
     referred player's referrer takes 20% of the house share from the treasury.
-    The remaining 40% is exactly what the bonus may use, so even a referred
-    player's release never costs the house.
-  - In other words, releasing the full 100 ICP takes 250 ICP of house-share rake.
+  - At 30%, the house still keeps at least 10% of the house share even for a
+    referred player with an active bonus, which covers that player's cycle cost.
+    The user chose this after the profit analysis; it was 40%.
+  - In other words, releasing the full 100 ICP takes about 333 ICP of house-share
+    rake.
 - **Where released money comes from.** The treasury portion of the same rake that
   triggered it, taken right after the referral cut. It is capped so the treasury
   can never go negative. Released money goes straight into the player's ICP
@@ -80,7 +82,7 @@ never costs the house money.
 
 ## Why farming doesn't pay
 
-To get bonus out, a player must first pay at least 2.5× that amount in
+To get bonus out, a player must first pay at least 3.3× that amount in
 house-share rake, which they lose to the house. A ring of fresh accounts depositing,
 playing each other and withdrawing ends up with less than it put in, even after
 adding Fish Buffet cashback and referral cuts.
@@ -95,7 +97,7 @@ adding Fish Buffet cashback and referral cuts.
   - released so far
   - a progress bar
   - days left until it expires
-  - one line: "Every 1 ICP of rake you pay releases 0.4 ICP of bonus."
+  - one line: "Every 1 ICP of rake you pay releases 0.3 ICP of bonus."
 - **A toast when the bonus is granted,** and a quiet note when it is fully
   released or has expired.
 
@@ -120,3 +122,22 @@ adding Fish Buffet cashback and referral cuts.
 - How existing depositors are detected.
 - Where the bonus state is exposed to the frontend.
 - The exact placement and styling of the bonus card.
+
+## Also in this change: return unused Fish Buffet money to the house
+
+The profit analysis found that the Fish Buffet pool receives 30% of the house
+share, but at a typical tier mix (mostly Plankton to Crab) the wheel pays out
+about 12%. The rest would pile up in the pool forever, counted as owed but never
+paid. The user chose to fix this here.
+
+- **Weekly sweep.** At each weekly close (Monday 00:00 UTC, on the same timer and
+  with the same idempotency as the leaderboards and referrals), any Fish Buffet
+  pool balance above a **reserve** moves back to the treasury.
+- **The reserve** is the largest of:
+  - the wheel payouts of the last 13 weeks;
+  - twice the expected value of all banked, unspun spins (the sum of stake ×
+    tier rate over every banked spin, kept as a running total);
+  - a floor of 10 ICP, so early spins always pay.
+- The pool share stays at 30%, so Shark-heavy weeks are still fully funded. Only
+  money beyond the reserve returns to the house.
+- Leaderboard pools are untouched. Unpaid prizes already roll into later prizes.
