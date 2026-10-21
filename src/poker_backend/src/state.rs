@@ -177,6 +177,10 @@ pub struct User {
     pub last_chat_at: u64,
     /// Fish Buffet points and banked spins; created on first earn.
     pub rewards: Option<crate::rewards::RewardsAccount>,
+    /// Who referred this player; set at most once.
+    pub referral: Option<crate::referrals::ReferralLink>,
+    /// Totals for the friends this player has referred; created on the first one.
+    pub referrer_stats: Option<crate::referrals::ReferrerStats>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq)]
@@ -374,6 +378,8 @@ heap_state! {
     auto_sit_outcomes: Option<BTreeMap<Principal, AutoSitStatus>>,
     /// Reward pools (see `crate::rewards`).
     rewards: Option<crate::rewards::RewardsState>,
+    /// Referral cuts owed this week (see `crate::referrals`).
+    referrals: Option<crate::referrals::ReferralState>,
 }
 
 /// Monotonic counters exported as metrics.
@@ -607,6 +613,8 @@ pub struct HouseStats {
     pub liabilities_total: u64,
     /// Fish and leaderboard prize pools, owed to players.
     pub rewards_pools: u64,
+    /// Referral cuts owed to referrers, paid at the weekly close.
+    pub referral_owed: u64,
 }
 
 pub fn level_for_xp(xp: u64) -> u32 {
@@ -802,6 +810,7 @@ impl State {
             cashouts: BTreeMap::new(),
             auto_sit_outcomes: None,
             rewards: None,
+            referrals: None,
             entropy: vec![],
         };
         let mut s = State::from_snapshot(users, stores, snap);
@@ -913,6 +922,8 @@ impl State {
                 last_seen: now,
                 last_chat_at: 0,
                 rewards: None,
+                referral: None,
+                referrer_stats: None,
             },
         );
         Ok(self.profile(&caller).unwrap())
@@ -1304,6 +1315,7 @@ impl State {
             .map(|t| t.chips_in_play() + t.rake_accrued + t.jackpot_accrued)
             .sum();
         let rewards_pools = self.rewards.as_ref().map_or(0, |r| r.pools_total());
+        let referral_owed = self.referrals.as_ref().map_or(0, |r| r.owed_total);
         HouseStats {
             users: self.users.len() as u64,
             wallet_balances,
@@ -1315,8 +1327,10 @@ impl State {
                 + self.treasury
                 + self.icp_in_tournaments()
                 + self.jackpot(Currency::Icp)
-                + rewards_pools,
+                + rewards_pools
+                + referral_owed,
             rewards_pools,
+            referral_owed,
         }
     }
 
@@ -2310,6 +2324,7 @@ impl State {
     /// Times out slow players and reports tables that need a new hand dealt.
     pub fn tick(&mut self, now: u64) -> Vec<u64> {
         self.close_periods(now);
+        self.close_referral_week(now);
         self.tournament_tick(now);
         self.close_idle_rooms(now);
         self.close_empty_copies(now);
@@ -2559,17 +2574,17 @@ pub fn fmt_icp(e8s: u64) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::rewards::E8S_PER_POINT;
 
-    const SEC: u64 = 1_000_000_000;
+    pub(crate) const SEC: u64 = 1_000_000_000;
 
-    fn p(n: u8) -> Principal {
+    pub(crate) fn p(n: u8) -> Principal {
         Principal::from_slice(&[n; 10])
     }
 
-    fn setup() -> State {
+    pub(crate) fn setup() -> State {
         let mut s = State::new(Principal::management_canister(), 10_000);
         for k in 1..=3 {
             s.register(p(k), format!("player{k}"), 0).unwrap();
@@ -2578,12 +2593,12 @@ mod tests {
         s
     }
 
-    fn total_value(s: &State) -> u64 {
+    pub(crate) fn total_value(s: &State) -> u64 {
         s.house_stats().liabilities_total
     }
 
     /// Everything the house holds as its own or earmarked: treasury plus reward pools.
-    fn house_take(s: &State) -> u64 {
+    pub(crate) fn house_take(s: &State) -> u64 {
         s.treasury + s.house_stats().rewards_pools
     }
 
@@ -2922,7 +2937,7 @@ mod tests {
     }
 
     /// Drives every table: deals ready tables and plays aggressively until `done`.
-    fn run_until(s: &mut State, mut now: u64, max_rounds: u32, done: impl Fn(&State) -> bool) -> u64 {
+    pub(crate) fn run_until(s: &mut State, mut now: u64, max_rounds: u32, done: impl Fn(&State) -> bool) -> u64 {
         let mut k: u64 = 7;
         for round in 0..max_rounds {
             if done(s) {
@@ -2953,7 +2968,7 @@ mod tests {
         panic!("did not finish in {max_rounds} rounds");
     }
 
-    fn open_tournament(s: &mut State, name: &str) -> u64 {
+    pub(crate) fn open_tournament(s: &mut State, name: &str) -> u64 {
         s.ensure_tournaments(0);
         s.tournaments
             .values()
@@ -2962,7 +2977,7 @@ mod tests {
             .id
     }
 
-    fn many_players(s: &mut State, n: u8) {
+    pub(crate) fn many_players(s: &mut State, n: u8) {
         for k in 10..10 + n {
             s.register(p(k), format!("bot{k}"), 0).unwrap();
             s.credit(&p(k), 10 * E8S).unwrap();
@@ -3297,7 +3312,7 @@ mod tests {
         assert_eq!(chips + dropped, 3 * SIGNUP_CHIPS);
     }
 
-    fn start_scheduled(s: &mut State, name: &str, players: std::ops::Range<u8>) -> (u64, u64) {
+    pub(crate) fn start_scheduled(s: &mut State, name: &str, players: std::ops::Range<u8>) -> (u64, u64) {
         let id = open_tournament(s, name);
         for k in players {
             s.register_tournament(p(k), id, SEC).unwrap();

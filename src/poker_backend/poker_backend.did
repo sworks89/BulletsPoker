@@ -96,6 +96,18 @@ type FriendInfo = record {
   avatar : text;
   online : bool;
 };
+// One friend in the referrer's list.
+type FriendRow = record {
+  // Earned the referrer something in the last 7 days.
+  active : bool;
+  username : text;
+  // When the 12-month earning window for this friend ends (ns).
+  ends_at : nat64;
+  // Cuts earned from this friend (e8s). Earned, not paid: a cut forfeited
+  // because the referrer was suspended at payout still counts here.
+  earned : nat64;
+  joined_at : nat64;
+};
 type HandPlayer = record {
   won : nat64;
   username : text;
@@ -153,6 +165,8 @@ type HouseStats = record {
   wallet_balances : nat64;
   // Fish and leaderboard prize pools, owed to players.
   rewards_pools : nat64;
+  // Referral cuts owed to referrers, paid at the weekly close.
+  referral_owed : nat64;
   users : nat64;
   treasury : nat64;
 };
@@ -388,6 +402,28 @@ type PublicProfile = record {
   avatar : text;
   medals : vec text;
   online : bool;
+};
+// What the referrals page shows. The zero view (`Default`) is for an
+// anonymous caller or a player with no profile.
+type ReferralView = record {
+  // Friends who earned something in the last 7 days. Counted over the
+  // newest `ACTIVE_SCAN_MAX` (2,000) friends only, so with more friends than
+  // that it can undercount.
+  active_7d : nat32;
+  // Username of the caller's referrer.
+  my_referrer : opt text;
+  // Within the first 24 hours and no referrer yet.
+  can_enter_code : bool;
+  // The caller's username, which is their referral code.
+  code : text;
+  // At most `FRIENDS_PAGE` friends, newest first, from `offset`.
+  rows : vec FriendRow;
+  // Cuts waiting for the next Monday payout (e8s).
+  owed_this_week : nat64;
+  paid_total : nat64;
+  friends : nat32;
+  // The next Monday 00:00 UTC (ns), when `owed_this_week` is paid.
+  pays_at : nat64;
 };
 type Report = record {
   id : nat64;
@@ -851,6 +887,8 @@ service : (opt InitArgs) -> {
   // All your notes, most recently updated first.
   get_notes : () -> (vec NoteView) query;
   get_profile : (principal) -> (opt PublicProfile) query;
+  // The caller's referral earnings and friends, `offset` friends in (newest first).
+  get_referrals : (nat32) -> (ReferralView) query;
   // The caller's Fish Buffet standing, spins and history.
   get_rewards : () -> (RewardsView) query;
   // How much sign-up work a new account needs right now (see `register`).
@@ -902,6 +940,8 @@ service : (opt InitArgs) -> {
   send_gift : (nat64, principal, nat32, Currency) -> (Result);
   // Saves a private note about a player. Empty text and no color deletes it.
   set_note : (principal, text, opt NoteColor) -> (Result);
+  // Attaches a referrer (another player's username) within your first 24 hours.
+  set_referrer : (text) -> (Result);
   set_status : (text) -> (Result);
   // Shows your cards after winning a hand uncontested, until the next hand is dealt.
   show_cards : (nat64) -> (Result);

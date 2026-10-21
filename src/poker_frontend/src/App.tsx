@@ -13,6 +13,7 @@ import { Store } from './components/Store';
 import { Friends } from './components/Friends';
 import { ProfilePage, Register } from './components/Profile';
 import { Rewards, TierWatch } from './components/Rewards';
+import { Referrals } from './components/Referrals';
 import { AccountNotice } from './components/Safety';
 import { Admin } from './components/Admin';
 import { Avatar } from './art/Avatar';
@@ -24,6 +25,7 @@ const NAV: { name: View['name']; label: string }[] = [
   { name: 'friends', label: 'Friends & Notes' },
   { name: 'history', label: 'History' },
   { name: 'rewards', label: 'Rewards' },
+  { name: 'referrals', label: 'Referrals' },
   { name: 'wallet', label: 'Wallet' },
 ];
 
@@ -124,6 +126,7 @@ function Shell() {
         {(view.name === 'rewards' || view.name === 'leaderboard') && (
           <Rewards key={view.name} initial={view.name === 'leaderboard' ? 'boards' : 'fish'} />
         )}
+        {view.name === 'referrals' && <Referrals />}
         {view.name === 'history' && <History />}
         {view.name === 'tournaments' && <Tournaments key={String(view.id ?? '')} initial={view.id} />}
         {view.name === 'profile' && <ProfilePage />}

@@ -136,6 +136,7 @@ export const idlFactory = ({ IDL }) => {
     'jackpot' : IDL.Nat64,
     'wallet_balances' : IDL.Nat64,
     'rewards_pools' : IDL.Nat64,
+    'referral_owed' : IDL.Nat64,
     'users' : IDL.Nat64,
     'treasury' : IDL.Nat64,
   });
@@ -402,6 +403,24 @@ export const idlFactory = ({ IDL }) => {
     'color' : IDL.Opt(NoteColor),
     'text' : IDL.Text,
     'avatar' : IDL.Text,
+  });
+  const FriendRow = IDL.Record({
+    'active' : IDL.Bool,
+    'username' : IDL.Text,
+    'ends_at' : IDL.Nat64,
+    'earned' : IDL.Nat64,
+    'joined_at' : IDL.Nat64,
+  });
+  const ReferralView = IDL.Record({
+    'active_7d' : IDL.Nat32,
+    'my_referrer' : IDL.Opt(IDL.Text),
+    'can_enter_code' : IDL.Bool,
+    'code' : IDL.Text,
+    'rows' : IDL.Vec(FriendRow),
+    'owed_this_week' : IDL.Nat64,
+    'paid_total' : IDL.Nat64,
+    'friends' : IDL.Nat32,
+    'pays_at' : IDL.Nat64,
   });
   const TierInfo = IDL.Record({
     'rate_bps' : IDL.Nat64,
@@ -770,6 +789,7 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Opt(PublicProfile)],
         ['query'],
       ),
+    'get_referrals' : IDL.Func([IDL.Nat32], [ReferralView], ['query']),
     'get_rewards' : IDL.Func([], [RewardsView], ['query']),
     'get_signup_challenge' : IDL.Func([], [SignupChallenge], ['query']),
     'get_status' : IDL.Func([], [ServiceStatus], ['query']),
@@ -838,6 +858,7 @@ export const idlFactory = ({ IDL }) => {
         [Result],
         [],
       ),
+    'set_referrer' : IDL.Func([IDL.Text], [Result], []),
     'set_status' : IDL.Func([IDL.Text], [Result], []),
     'show_cards' : IDL.Func([IDL.Nat64], [Result], []),
     'sit_out' : IDL.Func([IDL.Nat64, IDL.Bool], [Result], []),

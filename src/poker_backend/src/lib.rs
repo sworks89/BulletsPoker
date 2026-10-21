@@ -9,6 +9,7 @@ pub mod medals;
 pub mod metrics;
 pub mod moderation;
 pub mod ratelimit;
+pub mod referrals;
 pub mod rewards;
 pub mod signup;
 pub mod state;
@@ -320,6 +321,13 @@ fn register(username: String, pow: Option<u64>) -> R<Profile> {
     with_mut(|s| s.register(p, username, now()))
 }
 
+/// Attaches a referrer (another player's username) within your first 24 hours.
+#[update]
+fn set_referrer(code: String) -> R<()> {
+    let p = active_caller()?;
+    with_mut(|s| s.set_referrer(p, &code, now()))
+}
+
 #[query]
 fn get_my_profile() -> Option<Profile> {
     let p = ic_cdk::api::msg_caller();
@@ -515,6 +523,13 @@ fn spin_wheel() -> R<rewards::SpinRecord> {
 fn get_rewards() -> rewards::RewardsView {
     let p = ic_cdk::api::msg_caller();
     with(|s| s.rewards_view(&p, now()))
+}
+
+/// The caller's referral earnings and friends, `offset` friends in (newest first).
+#[query]
+fn get_referrals(offset: u32) -> referrals::ReferralView {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.referral_view(&p, offset, now()))
 }
 
 /// The four weekly and monthly leaderboards, with the caller's own row.
