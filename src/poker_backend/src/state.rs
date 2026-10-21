@@ -5052,13 +5052,15 @@ pub(crate) mod tests {
         assert_eq!(s.rewards().banked_ev.unwrap(), s.recount_banked_ev());
         // Spinning everything (paid in full or capped) brings it back to 0, and
         // the payouts count toward the week.
+        s.rewards_mut().fish_pool = 20 * E8S;
+        let pool_before = s.rewards().fish_pool;
         for k in 0..50 {
             s.spin_wheel(p(1), 3 * SEC + k).unwrap();
         }
         assert_eq!(s.rewards().banked_ev, Some(0));
-        let paid: u64 = account(&s, p(1)).history.iter().map(|r| r.paid).sum::<u64>();
-        assert!(paid > 0);
-        assert!(s.rewards().fish_paid_this_week.unwrap() >= paid, "the last 20 spins' payouts at least");
+        // The week counts what was paid, not the (capped) prizes.
+        assert!(account(&s, p(1)).history.iter().any(|r| r.capped), "some spin was capped");
+        assert_eq!(s.rewards().fish_paid_this_week, Some(pool_before - s.rewards().fish_pool));
         // A spin the running total never saw (an old snapshot's) saturates at 0.
         s.rewards_mut().banked_ev = Some(0);
         bank_spin(&mut s, p(2), 10 * E8S, 6);
