@@ -5,7 +5,7 @@ import { unwrap, type LeaderboardEntry, type RewardsView, type Settings } from '
 import { icp } from '../format';
 import { Avatar } from '../art/Avatar';
 import { leaderboardMedal } from '../rewards';
-import { takeRememberedRef } from '../referrals';
+import { clearRememberedRef, peekRememberedRef, rememberRef, takeRememberedRef } from '../referrals';
 
 export function ProfilePage() {
   const { backend, profile, items, run, refreshProfile } = useApp();
@@ -234,6 +234,7 @@ export function Register() {
   const { backend, run, notify, refreshProfile, principal } = useApp();
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
+  const [ref, setRef] = useState<string | null>(() => peekRememberedRef());
 
   // Sign-ups carry a small proof-of-work against bulk bot accounts. The
   // difficulty can rise while we work, so retry a couple of times.
@@ -250,14 +251,20 @@ export function Register() {
     }
   };
 
-  // A code from a ?ref= link. Signup never fails because of it.
+  // A code from a ?ref= link, still present at submit. Signup never fails
+  // because of it.
   const attachReferrer = async () => {
-    const ref = takeRememberedRef();
-    if (!ref) return;
+    const code = takeRememberedRef();
+    if (!code) return;
     try {
-      unwrap(await backend.set_referrer(ref));
+      const r = await backend.set_referrer(code);
+      if ('Err' in r) {
+        notify(`Referral code: ${r.Err} — you can enter one on the Referrals page within 24 hours`, 'err');
+      }
     } catch {
-      notify('Referral code not found — you can enter one on the Referrals page within 24 hours', 'err');
+      // The call itself failed: keep the code so the Referrals page can retry.
+      rememberRef(code);
+      notify('Could not add your referral code — you can enter it on the Referrals page within 24 hours', 'err');
     }
   };
 
@@ -276,6 +283,21 @@ export function Register() {
         <h3>Pick your table name</h3>
         <p className="muted small">3–16 letters, digits or underscores. This is how other players see you.</p>
         <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Username" />
+        {ref && (
+          <p className="muted small">
+            Referred by <strong>{ref}</strong>{' '}
+            <button
+              type="button"
+              className="link"
+              onClick={() => {
+                clearRememberedRef();
+                setRef(null);
+              }}
+            >
+              Remove
+            </button>
+          </p>
+        )}
         <button className="btn" disabled={busy || !principal}>
           {busy ? 'Setting up your account…' : 'Create profile'}
         </button>

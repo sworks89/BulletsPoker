@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { authClient, makeActors, type Backend, type Ledger, type MedalDef, type Profile, type StoreItem } from './ic';
 import type { Principal } from '@icp-sdk/core/principal';
 import { errorText } from './format';
+import { clearRememberedRef } from './referrals';
 
 /** Internet Identity delegations last 12 hours: sign in again after that. */
 const SESSION_TTL_NS = BigInt(12 * 3600) * 1_000_000_000n;
@@ -83,6 +84,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const defs = await a.backend.list_medals();
     setMedals(new Map(defs.map((m) => [m.id, m])));
   }, []);
+
+  // A visitor who already has a profile can't use a referral code: forget it.
+  useEffect(() => {
+    if (profile) clearRememberedRef();
+  }, [profile]);
 
   useEffect(() => {
     connect().catch((e) => notify(errorText(e), 'err'));

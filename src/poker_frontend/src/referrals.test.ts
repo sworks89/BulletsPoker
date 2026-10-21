@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { readRefParam, referralLink, rememberRef, takeRememberedRef } from './referrals';
+import {
+  clearRememberedRef,
+  peekRememberedRef,
+  readRefParam,
+  referralLink,
+  rememberRef,
+  REF_MAX_AGE_MS,
+  takeRememberedRef,
+} from './referrals';
 
 describe('readRefParam', () => {
   it('reads and trims the code', () => {
@@ -30,9 +38,33 @@ describe('remembered ref', () => {
     });
   });
   it('is taken once', () => {
-    rememberRef('Mark');
-    expect(takeRememberedRef()).toBe('Mark');
-    expect(takeRememberedRef()).toBeNull();
+    rememberRef('Mark', 1000);
+    expect(takeRememberedRef(2000)).toBe('Mark');
+    expect(takeRememberedRef(2000)).toBeNull();
+  });
+  it('peek does not consume', () => {
+    rememberRef('Mark', 1000);
+    expect(peekRememberedRef(2000)).toBe('Mark');
+    expect(peekRememberedRef(2000)).toBe('Mark');
+    expect(takeRememberedRef(2000)).toBe('Mark');
+  });
+  it('clear removes it', () => {
+    rememberRef('Mark', 1000);
+    clearRememberedRef();
+    expect(peekRememberedRef(2000)).toBeNull();
+    expect(takeRememberedRef(2000)).toBeNull();
+  });
+  it('expires after 30 days and is cleared when found stale', () => {
+    rememberRef('Mark', 1000);
+    expect(peekRememberedRef(1000 + REF_MAX_AGE_MS)).toBe('Mark');
+    expect(peekRememberedRef(1000 + REF_MAX_AGE_MS + 1)).toBeNull();
+    expect(peekRememberedRef(2000)).toBeNull();
+  });
+  it('treats the legacy plain-string format as expired', () => {
+    localStorage.setItem('bp.ref', 'Old');
+    expect(peekRememberedRef(5000)).toBeNull();
+    expect(takeRememberedRef(5000)).toBeNull();
+    expect(localStorage.getItem('bp.ref')).toBeNull();
   });
   it('survives a broken localStorage', () => {
     vi.stubGlobal('localStorage', {
@@ -41,6 +73,6 @@ describe('remembered ref', () => {
       removeItem: () => { throw new Error('no'); },
     });
     expect(() => rememberRef('x')).not.toThrow();
-    expect(takeRememberedRef()).toBeNull();
+    expect(takeRememberedRef(1)).toBeNull();
   });
 });
