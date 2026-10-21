@@ -278,6 +278,9 @@ impl State {
         *state.owed.entry(link.referrer).or_default() += cut;
         state.owed_total += cut;
         let key = FriendKey::new(&link.referrer, link.attached_at, friend);
+        if cut == 0 {
+            return;
+        }
         if let Some(mut e) = self.stores.referrals.get(&key) {
             e.earned = e.earned.saturating_add(cut);
             e.last_earned_at = now;
@@ -507,6 +510,28 @@ mod cut_tests {
         assert_eq!(s.treasury, fee * 6_000 / 10_000 - fee / 5);
         assert_eq!(entry(&s, p(13)).earned, fee / 5);
         assert_eq!(entry(&s, p(13)).last_earned_at, start_at + SEC);
+    }
+
+    #[test]
+    fn a_zero_cut_does_not_mark_the_friend_active() {
+        let mut s = setup();
+        link(&mut s, p(2), p(1), 5);
+        // 1 e8s of house share is 0.2 of an e8s: only carry, nothing taken.
+        s.treasury = 10 * E8S;
+        s.referral_cut(&p(2), 1, 100);
+        assert_eq!(owed(&s, p(1)), 0);
+        assert_eq!(entry(&s, p(2)).last_earned_at, 0);
+        assert_eq!(entry(&s, p(2)).earned, 0);
+        // A cut capped to nothing by an empty treasury likewise.
+        s.treasury = 0;
+        s.referral_cut(&p(2), 10_000, 200);
+        assert_eq!(owed(&s, p(1)), 0);
+        assert_eq!(entry(&s, p(2)).last_earned_at, 0);
+        // A real cut still marks it.
+        s.treasury = 10 * E8S;
+        s.referral_cut(&p(2), 10_000, 300);
+        assert_eq!(entry(&s, p(2)).earned, 2_000);
+        assert_eq!(entry(&s, p(2)).last_earned_at, 300);
     }
 
     #[test]
