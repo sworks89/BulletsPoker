@@ -17,6 +17,7 @@ pub mod store;
 pub mod table;
 pub mod tournament;
 pub mod wallet;
+pub mod welcome;
 
 use candid::{CandidType, Deserialize, Principal};
 use ic_cdk::{init, inspect_message, post_upgrade, pre_upgrade, query, update};
@@ -205,6 +206,9 @@ fn post_upgrade() {
     // House ICP tables deployed before the stake ladder move to the new blinds.
     state.migrate_icp_stakes();
     state.migrate_icp_tournament_prices();
+    // Players who deposited before the welcome bonus existed are not eligible.
+    state.mark_existing_depositors();
+    state.seed_banked_ev();
     STATE.with(|s| *s.borrow_mut() = Some(state));
     start_timers();
 }
@@ -530,6 +534,13 @@ fn get_rewards() -> rewards::RewardsView {
 fn get_referrals(offset: u32) -> referrals::ReferralView {
     let p = ic_cdk::api::msg_caller();
     with(|s| s.referral_view(&p, offset, now()))
+}
+
+/// The caller's welcome bonus: the offer, or its progress.
+#[query]
+fn get_welcome() -> welcome::WelcomeView {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.welcome_view(&p, now()))
 }
 
 /// The four weekly and monthly leaderboards, with the caller's own row.

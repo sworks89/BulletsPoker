@@ -800,6 +800,19 @@ type TournamentTemplate = record {
   // Registration stays open while the level (0-based) is below this. 0 = no late registration.
   late_reg_levels : nat32;
 };
+// What the caller sees of their welcome bonus.
+type WelcomeView = record {
+  // Granted, not fully released, not expired.
+  active : bool;
+  expired : bool;
+  // Still locked: zero once expired or fully released.
+  locked : nat64;
+  released : nat64;
+  // No bonus yet and still entitled to one on the first deposit.
+  eligible : bool;
+  amount : nat64;
+  expires_at : nat64;
+};
 type Winner = record {
   player : principal;
   hand : text;
@@ -899,6 +912,8 @@ service : (opt InitArgs) -> {
   // Views of several tables at once (for multi-tabling); unknown ids are skipped.
   get_tables : (vec nat64) -> (vec TableView) query;
   get_tournament : (nat64) -> (opt TournamentDetail) query;
+  // The caller's welcome bonus: the offer, or its progress.
+  get_welcome : () -> (WelcomeView) query;
   // `GET /metrics` (Prometheus text, without the house's money figures) and
   // `GET /health` on the canister's raw domain. Responses are not certified, so
   // they're for monitoring only.

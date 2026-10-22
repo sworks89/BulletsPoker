@@ -207,7 +207,7 @@ impl State {
         };
         op.status = match outcome {
             Outcome::Ok(block) => {
-                self.apply_success(&op);
+                self.apply_success(&op, now);
                 OpStatus::Completed { block }
             }
             Outcome::Failed(reason) => {
@@ -233,7 +233,7 @@ impl State {
     }
 
     /// Money effects once a transfer is known to have happened.
-    fn apply_success(&mut self, op: &LedgerOp) {
+    fn apply_success(&mut self, op: &LedgerOp, now: u64) {
         match op.kind {
             // Already debited when the op started.
             OpKind::Withdraw | OpKind::Treasury => {}
@@ -241,6 +241,8 @@ impl State {
                 if self.credit(&op.user, op.amount).is_err() {
                     // Should be impossible (users are never deleted); keep the funds visible.
                     self.treasury += op.amount;
+                } else {
+                    self.grant_welcome(&op.user, op.amount, now);
                 }
             }
         }

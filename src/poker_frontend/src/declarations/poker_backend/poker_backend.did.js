@@ -624,6 +624,15 @@ export const idlFactory = ({ IDL }) => {
     'next_level_at' : IDL.Nat64,
     'payouts' : IDL.Vec(IDL.Nat64),
   });
+  const WelcomeView = IDL.Record({
+    'active' : IDL.Bool,
+    'expired' : IDL.Bool,
+    'locked' : IDL.Nat64,
+    'released' : IDL.Nat64,
+    'eligible' : IDL.Bool,
+    'amount' : IDL.Nat64,
+    'expires_at' : IDL.Nat64,
+  });
   const HttpRequest = IDL.Record({
     'url' : IDL.Text,
     'method' : IDL.Text,
@@ -804,6 +813,7 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Opt(TournamentDetail)],
         ['query'],
       ),
+    'get_welcome' : IDL.Func([], [WelcomeView], ['query']),
     'http_request' : IDL.Func([HttpRequest], [HttpResponse], ['query']),
     'join_game' : IDL.Func([IDL.Nat64, IDL.Nat64], [Result_5], []),
     'join_table' : IDL.Func(

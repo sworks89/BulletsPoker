@@ -3,9 +3,13 @@ import { useApp } from '../context';
 import { Principal, backendId, unwrap, type DepositInfo, type LedgerOp } from '../ic';
 import { usePoll } from '../context';
 import { icp, parseIcp, timeAgo } from '../format';
+import { prizeIcp } from '../rewards';
+import { WelcomeBanner, WelcomeCard, useWelcome } from './WelcomeBonus';
+import { lastAnnounced, markAnnounced, toastFor, welcomeStatus } from '../welcome';
 
 export function Wallet() {
-  const { backend, ledger, principal, profile, run, refreshProfile } = useApp();
+  const { backend, ledger, principal, profile, run, refreshProfile, notify } = useApp();
+  const { view: welcome, reload: reloadWelcome } = useWelcome();
   const [info, setInfo] = useState<DepositInfo | null>(null);
   const [walletBalance, setWalletBalance] = useState<bigint | null>(null);
   const [depositAmt, setDepositAmt] = useState('');
@@ -25,6 +29,20 @@ export function Wallet() {
     loadWallet().catch(() => setWalletBalance(null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backend, principal?.toText()]);
+
+  const who = principal?.toText();
+  const status = welcome ? welcomeStatus(welcome) : null;
+  useEffect(() => {
+    if (!who || !welcome || !status || status === 'offer' || status === 'none') return;
+    const prev = lastAnnounced(who);
+    if (prev === status) return;
+    markAnnounced(who, status);
+    const toast = toastFor(prev, status);
+    if (toast === 'active') notify(`Welcome bonus: ${prizeIcp(welcome.locked)} ICP is locked for you. Play to release it.`);
+    else if (toast === 'done') notify('Your welcome bonus is fully released.');
+    else if (toast === 'expired') notify('Your welcome bonus has expired.');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [who, status]);
 
   if (!profile || !principal) return <div className="panel">Sign in to manage your wallet.</div>;
   const fee = info?.fee ?? 10_000n;
@@ -48,7 +66,7 @@ export function Wallet() {
       unwrap(await backend.deposit(amount));
       setDepositAmt('');
     }, 'Deposit complete');
-    await Promise.all([refreshProfile(), loadWallet()]);
+    await Promise.all([refreshProfile(), loadWallet(), reloadWelcome()]).catch(() => {});
     setBusy(false);
   };
 
@@ -58,7 +76,7 @@ export function Wallet() {
       const amt = unwrap(await backend.claim_deposit());
       return amt;
     }, 'Deposit credited');
-    await refreshProfile();
+    await Promise.all([refreshProfile(), reloadWelcome()]).catch(() => {});
     setBusy(false);
   };
 
@@ -81,6 +99,8 @@ export function Wallet() {
         <div className="big">{icp(profile.balance)} ICP</div>
         <p className="muted small">Chips you are not playing with. Buy-ins come from here and cash-outs return here when you stand up.</p>
       </div>
+      {status === 'offer' && <WelcomeBanner />}
+      {status === 'active' && welcome && <WelcomeCard view={welcome} />}
 
       <div className="panel">
         <div className="panel-title">Deposit from your Internet Identity wallet</div>

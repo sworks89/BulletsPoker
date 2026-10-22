@@ -653,3 +653,6 @@ input.narrow { width: 80px; flex: none; }
 .ref-totals { flex-direction: row; flex-wrap: wrap; gap: 8px 24px; }
 .ref-totals > div { display: flex; flex-direction: column; }
 .ref-totals b { font-size: 16px; }
+
+.welcome-banner, .welcome-card { border-color: var(--accent); }
+.welcome-card .xpbar { margin: 4px 0; }

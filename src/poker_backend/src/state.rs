@@ -181,6 +181,8 @@ pub struct User {
     pub referral: Option<crate::referrals::ReferralLink>,
     /// Totals for the friends this player has referred; created on the first one.
     pub referrer_stats: Option<crate::referrals::ReferrerStats>,
+    /// Welcome bonus verdict; `None` until the first deposit (see `crate::welcome`).
+    pub welcome: Option<crate::welcome::WelcomeBonus>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq)]
@@ -380,6 +382,8 @@ heap_state! {
     rewards: Option<crate::rewards::RewardsState>,
     /// Referral cuts owed this week (see `crate::referrals`).
     referrals: Option<crate::referrals::ReferralState>,
+    /// Set once existing depositors were marked ineligible for the welcome bonus.
+    welcome_marked: Option<bool>,
 }
 
 /// Monotonic counters exported as metrics.
@@ -811,6 +815,7 @@ impl State {
             auto_sit_outcomes: None,
             rewards: None,
             referrals: None,
+            welcome_marked: None,
             entropy: vec![],
         };
         let mut s = State::from_snapshot(users, stores, snap);
@@ -924,6 +929,7 @@ impl State {
                 rewards: None,
                 referral: None,
                 referrer_stats: None,
+                welcome: None,
             },
         );
         Ok(self.profile(&caller).unwrap())
@@ -2325,6 +2331,7 @@ impl State {
     pub fn tick(&mut self, now: u64) -> Vec<u64> {
         self.close_periods(now);
         self.close_referral_week(now);
+        self.sweep_fish_surplus(now);
         self.tournament_tick(now);
         self.close_idle_rooms(now);
         self.close_empty_copies(now);
@@ -2576,7 +2583,7 @@ pub fn fmt_icp(e8s: u64) -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::rewards::E8S_PER_POINT;
+    use crate::rewards::{E8S_PER_POINT, FISH_RESERVE_FLOOR};
 
     pub(crate) const SEC: u64 = 1_000_000_000;
 
@@ -3885,6 +3892,7 @@ pub(crate) mod tests {
             }
         }
         assert_eq!(s.wallet_total, s.recount_wallet_total());
+        assert_eq!(s.rewards().banked_ev.unwrap_or(0), s.recount_banked_ev());
     }
 
     #[test]
@@ -4908,6 +4916,205 @@ pub(crate) mod tests {
         assert_eq!(total_value(&s), before.0);
         assert_eq!(house_take(&s), before.1 - paid);
         assert_eq!(s.wallet_total, before.2 + paid);
+    }
+
+    // ---- Fish Buffet: weekly sweep of the pool's surplus ----
+
+    /// Monday 00:00 UTC opening week `k` (`week_of` rolls over at day 7k - 3).
+    fn monday(k: u64) -> u64 {
+        (7 * k - 3) * DAY_NS
+    }
+
+    #[test]
+    fn surplus_above_the_reserve_returns_to_the_treasury() {
+        use crate::leaderboards::week_of;
+        assert_eq!((week_of(monday(5) - 1), week_of(monday(5))), (4, 5));
+        let mut s = setup();
+        s.rewards_mut().fish_pool = 50 * E8S;
+        s.rewards_mut().fish_week = Some(4);
+        let (treasury, take, total) = (s.treasury, house_take(&s), total_value(&s));
+        // The last nanosecond of the week sweeps nothing.
+        s.tick(monday(5) - 1);
+        assert_eq!(s.rewards().fish_pool, 50 * E8S);
+        assert_eq!(s.treasury, treasury);
+        // The Monday tick keeps the 10 ICP floor and returns the rest.
+        s.tick(monday(5));
+        assert_eq!(s.rewards().fish_pool, 10 * E8S);
+        assert_eq!(s.treasury, treasury + 40 * E8S);
+        assert_eq!(house_take(&s), take);
+        assert_eq!(total_value(&s), total);
+        assert_eq!(s.rewards().fish_week, Some(5));
+    }
+
+    #[test]
+    fn reserve_covers_recent_payouts() {
+        let mut s = setup();
+        {
+            let r = s.rewards_mut();
+            r.fish_pool = 50 * E8S;
+            r.fish_week = Some(4);
+            // 13 weeks summing to 30 ICP once the open week is pushed (the oldest is 0, so it may fall out).
+            let mut weeks: VecDeque<u64> = std::iter::repeat_n(2 * E8S, 12).collect();
+            weeks.push_front(0);
+            r.fish_paid_weeks = Some(weeks);
+            r.fish_paid_this_week = Some(6 * E8S);
+        }
+        let treasury = s.treasury;
+        s.tick(monday(5));
+        let r = s.rewards();
+        assert_eq!(r.fish_paid_weeks.as_ref().unwrap().len(), 13);
+        assert_eq!(r.fish_paid_weeks.as_ref().unwrap().back(), Some(&(6 * E8S)));
+        assert_eq!(r.fish_paid_this_week, Some(0));
+        assert_eq!(r.fish_pool, 30 * E8S);
+        assert_eq!(s.treasury, treasury + 20 * E8S);
+        // A week later the oldest 2 ICP falls out of the window: 28 kept.
+        s.rewards_mut().fish_pool = 50 * E8S;
+        s.tick(monday(6));
+        assert_eq!(s.rewards().fish_paid_weeks.as_ref().unwrap().len(), 13);
+        assert_eq!(s.rewards().fish_pool, 28 * E8S);
+    }
+
+    #[test]
+    fn reserve_covers_twice_the_banked_spins() {
+        let mut s = setup();
+        s.rewards_mut().fish_pool = 1_000 * E8S;
+        s.rewards_mut().fish_week = Some(4);
+        // 400 points at Plankton bank 4 spins of 10 ICP stake each, EV 8% = 0.8 ICP each.
+        s.earn_rake(&p(1), 400 * E8S_PER_POINT, 40 * E8S, monday(5) - 1);
+        assert_eq!(account(&s, p(1)).spins.len(), 4);
+        assert_eq!(s.rewards().banked_ev, Some(4 * 80_000_000));
+        // 3.2 ICP of EV is under the floor; add a bigger stake to pass it.
+        s.earn_rake(&p(2), 400 * E8S_PER_POINT, 100 * E8S, monday(5) - 1);
+        let ev = s.rewards().banked_ev.unwrap();
+        assert_eq!(ev, 4 * 80_000_000 + 4 * 200_000_000);
+        assert_eq!(ev, s.recount_banked_ev());
+        assert!(2 * ev > FISH_RESERVE_FLOOR, "banked EV {ev} sets the reserve");
+        let take = house_take(&s);
+        s.tick(monday(5));
+        assert_eq!(s.rewards().fish_pool, 2 * ev);
+        assert_eq!(house_take(&s), take);
+    }
+
+    #[test]
+    fn sweep_runs_once_per_week() {
+        let mut s = setup();
+        s.rewards_mut().fish_pool = 50 * E8S;
+        s.rewards_mut().fish_week = Some(4);
+        s.tick(monday(5));
+        let treasury = s.treasury;
+        assert_eq!(s.rewards().fish_pool, 10 * E8S);
+        // Two ticks in the same second, and a top-up later in the week: no second sweep.
+        s.tick(monday(5));
+        s.rewards_mut().fish_pool += 30 * E8S;
+        s.tick(monday(5) + 3 * DAY_NS);
+        assert_eq!(s.rewards().fish_pool, 40 * E8S);
+        assert_eq!(s.treasury, treasury);
+        // Downtime: the first tick after three missed weeks sweeps once and records one week.
+        let weeks = s.rewards().fish_paid_weeks.map_or(0, |w| w.len());
+        s.tick(monday(9) + DAY_NS);
+        assert_eq!(s.rewards().fish_pool, 10 * E8S);
+        assert_eq!(s.rewards().fish_paid_weeks.unwrap().len(), weeks + 1);
+        assert_eq!(s.rewards().fish_week, Some(9));
+        s.rewards_mut().fish_pool += 30 * E8S;
+        s.tick(monday(9) + DAY_NS + 1);
+        assert_eq!(s.rewards().fish_pool, 40 * E8S);
+
+        // An old snapshot: the new fields are absent. The first tick only
+        // records the week (no mid-week sweep, no zero week in the history);
+        // the next Monday sweeps.
+        let mut s = setup();
+        {
+            let r = s.rewards_mut();
+            r.fish_pool = 50 * E8S;
+            r.fish_paid_weeks = None;
+            r.fish_paid_this_week = None;
+            r.banked_ev = None;
+            r.fish_week = None;
+        }
+        let treasury = s.treasury;
+        s.tick(monday(5) + 7);
+        assert_eq!(s.rewards().fish_pool, 50 * E8S);
+        assert_eq!(s.treasury, treasury);
+        assert_eq!(s.rewards().fish_week, Some(5));
+        assert_eq!(s.rewards().fish_paid_weeks.as_ref().map_or(0, |w| w.len()), 0);
+        s.tick(monday(5) + 8);
+        assert_eq!(s.rewards().fish_pool, 50 * E8S);
+        s.tick(monday(6));
+        assert_eq!(s.rewards().fish_pool, 10 * E8S);
+        assert_eq!(s.treasury, treasury + 40 * E8S);
+        assert_eq!(s.rewards().fish_paid_weeks.as_ref().unwrap().len(), 1);
+        s.rewards_mut().fish_pool += 30 * E8S;
+        s.tick(monday(6) + 8);
+        assert_eq!(s.rewards().fish_pool, 40 * E8S);
+    }
+
+    #[test]
+    fn banked_ev_tracks_banking_and_spinning() {
+        let mut s = setup();
+        s.rewards_mut().fish_pool = 1_000 * E8S;
+        // 400 points at Plankton: 4 spins of 1 ICP stake, EV 8% each.
+        s.earn_rake(&p(1), 400 * E8S_PER_POINT, 4 * E8S, SEC);
+        assert_eq!(s.rewards().banked_ev, Some(4 * 8_000_000));
+        assert_eq!(s.rewards().banked_ev.unwrap(), s.recount_banked_ev());
+        // Past the 50 cap: dropped steps add nothing.
+        s.earn_rake(&p(1), 20_000 * E8S, 20_000 * E8S, 2 * SEC);
+        assert_eq!(account(&s, p(1)).spins.len(), 50);
+        assert_eq!(s.rewards().banked_ev.unwrap(), s.recount_banked_ev());
+        // Spinning everything (paid in full or capped) brings it back to 0, and
+        // the payouts count toward the week.
+        s.rewards_mut().fish_pool = 20 * E8S;
+        let pool_before = s.rewards().fish_pool;
+        for k in 0..50 {
+            s.spin_wheel(p(1), 3 * SEC + k).unwrap();
+        }
+        assert_eq!(s.rewards().banked_ev, Some(0));
+        // The week counts what was paid, not the (capped) prizes.
+        assert!(account(&s, p(1)).history.iter().any(|r| r.capped), "some spin was capped");
+        assert_eq!(s.rewards().fish_paid_this_week, Some(pool_before - s.rewards().fish_pool));
+        // A spin the running total never saw (an old snapshot's) saturates at 0.
+        s.rewards_mut().banked_ev = Some(0);
+        bank_spin(&mut s, p(2), 10 * E8S, 6);
+        s.spin_wheel(p(2), 4 * SEC).unwrap();
+        assert_eq!(s.rewards().banked_ev, Some(0));
+    }
+
+    #[test]
+    fn banked_ev_is_seeded_from_spins_banked_before_it_existed() {
+        let mut s = setup();
+        bank_spin(&mut s, p(1), 10 * E8S, 0);
+        bank_spin(&mut s, p(2), 10 * E8S, 6);
+        s.rewards_mut().banked_ev = None;
+        let expected = 10 * E8S * 800 / 10_000 + 10 * E8S * crate::rewards::TIERS[6].rate_bps / 10_000;
+        assert_eq!(s.recount_banked_ev(), expected);
+        // The first sweep seeds the running total from the banked spins.
+        s.rewards_mut().fish_pool = 500 * E8S;
+        s.rewards_mut().fish_week = Some(4);
+        s.tick(monday(5));
+        assert_eq!(s.rewards().banked_ev, Some(expected));
+        assert_eq!(s.rewards().fish_pool, (2 * expected).max(FISH_RESERVE_FLOOR));
+    }
+
+    #[test]
+    fn seed_banked_ev_counts_once_and_later_calls_stay_consistent() {
+        let mut s = setup();
+        bank_spin(&mut s, p(1), 10 * E8S, 0);
+        bank_spin(&mut s, p(2), 10 * E8S, 6);
+        s.rewards_mut().banked_ev = None;
+        let expected = s.recount_banked_ev();
+        assert!(expected > 0);
+        s.seed_banked_ev();
+        assert_eq!(s.rewards().banked_ev, Some(expected));
+        // A second call is a no-op: it does not recount.
+        s.rewards_mut().banked_ev = Some(7);
+        s.seed_banked_ev();
+        assert_eq!(s.rewards().banked_ev, Some(7));
+        // Later earn/spin keep the running total in step with the recount.
+        s.rewards_mut().banked_ev = Some(expected);
+        s.rewards_mut().fish_pool = 500 * E8S;
+        s.earn_rake(&p(3), 400 * E8S_PER_POINT, 4 * E8S, SEC);
+        assert_eq!(s.rewards().banked_ev.unwrap(), s.recount_banked_ev());
+        s.spin_wheel(p(3), 2 * SEC).unwrap();
+        assert_eq!(s.rewards().banked_ev.unwrap(), s.recount_banked_ev());
     }
 
     #[test]
