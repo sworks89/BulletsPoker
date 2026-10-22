@@ -2027,25 +2027,29 @@ impl State {
             let kept = self.cashouts.get(&key).filter(|(_, at)| now < at + RETURN_WINDOW_NS).map_or(0, |(c, _)| *c);
             self.cashouts.insert(key, (chips.max(kept), now));
         }
-        let name = self.user(&caller)?.username.clone();
+        let name = self.users.get(&caller).map(|u| u.username.clone()).unwrap_or_default();
         self.post(Channel::Table(id), None, String::new(), format!("{name} left the table"), MessageKind::System, now);
         Ok(())
     }
 
-    /// Once the hand is over, stands up and pays out everyone who asked to
-    /// leave during it. Idempotent: each leaver is taken off the table once.
+    /// At the end of the results pause (the table is ready for the next hand),
+    /// stands up and pays out everyone who asked to leave during the hand.
+    /// Until then their seat stays: the result, its winner highlight and the
+    /// shown cards are keyed by seat, and nobody else may sit there. Credited
+    /// once: `take_leavers` removes the seat.
     fn settle_leavers(&mut self, id: u64, now: u64) {
         if self.table_tournament.contains_key(&id) {
             return;
         }
         let Some(t) = self.tables.get_mut(&id) else { return };
-        if t.phase != Phase::HandOver {
+        if t.phase != Phase::HandOver || !t.ready_for_next_hand(now) {
             return;
         }
         let currency = t.config.currency;
         for (p, chips) in t.take_leavers() {
-            // Only fails for an unknown user, which a seated player never is.
-            // Keep the books whole even then: the chips go to the treasury.
+            // `pay_out_leaver` can only fail in `credit_in` (an unknown user,
+            // which a seated player never is, or an overflow). Keep the books
+            // whole even then: the ICP goes to the treasury.
             if self.pay_out_leaver(p, id, currency, chips, now).is_err() && currency == Currency::Icp {
                 self.treasury += chips;
             }
@@ -2229,8 +2233,7 @@ impl State {
         if in_tournament {
             self.after_tournament_hand(id, now);
         } else {
-            // After the hand is recorded (it reads the seats), before top-ups.
-            self.settle_leavers(id, now);
+            // Leavers stay seated through the results pause (see `settle_leavers`).
             self.auto_top_up(id);
         }
     }
@@ -2336,7 +2339,7 @@ impl State {
             .seats
             .iter()
             .flatten()
-            .filter(|s| !s.left && s.stack < max / 2)
+            .filter(|s| !s.left && !s.is_leaving() && s.stack < max / 2)
             .filter(|s| self.users.get(&s.player).is_some_and(|u| u.settings.auto_top_up))
             .map(|s| (s.player, max - s.stack))
             .collect();
@@ -2403,6 +2406,11 @@ impl State {
         self.tournament_tick(now);
         self.close_idle_rooms(now);
         self.close_empty_copies(now);
+        // Before the queues, so a line gets a leaver's seat as soon as it's free.
+        let ids: Vec<u64> = self.tables.keys().copied().collect();
+        for id in ids {
+            self.settle_leavers(id, now);
+        }
         self.seat_from_queues(now);
         self.stand_up_idle(now);
         self.cashouts.retain(|_, (_, at)| now < *at + RETURN_WINDOW_NS);
@@ -2418,8 +2426,6 @@ impl State {
                 }
                 self.after_table_change(id, now);
             }
-            // Normally done by the hand-end hook already; never deal a leaver in.
-            self.settle_leavers(id, now);
             let t = self.tables.get_mut(&id).unwrap();
             if t.ready_for_next_hand(now) {
                 if t.eligible_count() >= 2 {
@@ -2453,6 +2459,8 @@ impl State {
     }
 
     pub fn start_hand(&mut self, id: u64, seed: [u8; 32], now: u64) {
+        // Normally done by the tick already; never deal a leaver in.
+        self.settle_leavers(id, now);
         if let Some(t) = self.tables.get_mut(&id) {
             if t.ready_for_next_hand(now) && t.start_hand(seed, now).is_ok() {
                 self.counters.hands_dealt += 1;
@@ -4139,6 +4147,16 @@ pub(crate) mod tests {
         now
     }
 
+    /// Ticks at the end of the results pause, when leavers are stood up.
+    fn end_pause(s: &mut State, table: u64) -> u64 {
+        assert_eq!(s.tables[&table].phase, Phase::HandOver);
+        let at = s.tables[&table].phase_changed_at + 5 * SEC;
+        s.tick(at - 1);
+        assert!(s.tables[&table].seats.iter().flatten().any(|x| x.is_leaving()), "seated through the results pause");
+        s.tick(at);
+        at
+    }
+
     #[test]
     fn leaving_between_hands_is_immediate() {
         let mut s = setup();
@@ -4166,7 +4184,9 @@ pub(crate) mod tests {
         assert!(s.tables[&table].seat_of(&p(k)).is_some(), "still in the hand");
         let v = s.table_view(table, Some(p(k)), SEC).unwrap();
         assert!(v.seats.iter().flatten().any(|x| x.player == p(k) && x.leaving));
-        let now = finish_hand(&mut s, table, SEC);
+        finish_hand(&mut s, table, SEC);
+        assert_eq!(wallet(&s, k), held, "not before the results pause is over");
+        let now = end_pause(&mut s, table);
         let r = s.tables[&table].last_result.clone().unwrap();
         let pr = r.players.iter().find(|x| x.player == p(k)).unwrap();
         assert_eq!(wallet(&s, k), held + buy - pr.committed + pr.won, "their whole stack, winnings included");
@@ -4209,6 +4229,7 @@ pub(crate) mod tests {
         assert_eq!(wallet(&s, k), held);
         // The others call and check it down.
         finish_hand(&mut s, table, SEC);
+        end_pause(&mut s, table);
         let r = s.tables[&table].last_result.clone().unwrap();
         let pr = r.players.iter().find(|x| x.player == shover).unwrap();
         assert!(pr.won > pr.committed, "the aces won the pot");
@@ -4232,7 +4253,9 @@ pub(crate) mod tests {
         assert!(s.join_table(p(k), table, 5, buy, None, 2 * SEC).is_err());
         assert!(s.join_game(p(k), table, buy, 2 * SEC).is_err(), "not another copy of the game either");
         assert_eq!(s.leave_table(p(k), table, 2 * SEC).unwrap(), LeaveResult::AfterHand);
-        let now = finish_hand(&mut s, table, 2 * SEC);
+        finish_hand(&mut s, table, 2 * SEC);
+        assert!(s.join_table(p(k), table, 5, buy, None, 2 * SEC).is_err(), "nor during the results pause");
+        let now = end_pause(&mut s, table);
         assert!(s.tables[&table].seat_of(&p(k)).is_none());
         let back = s.min_return_buy_in(table, &p(k), now);
         s.join_table(p(k), table, 5, back, None, now).unwrap();
@@ -4637,6 +4660,53 @@ pub(crate) mod tests {
         assert!(queued(1)(&s.auto_sit_ping(p(3), c, SEC)));
         assert_eq!(s.auto_sit(p(3), c, None, SEC).unwrap(), AutoSitStatus::NotQueued);
         assert_eq!(s.auto_sit_ping(p(3), c, SEC), AutoSitStatus::NotQueued);
+    }
+
+    #[test]
+    fn leaver_keeps_the_seat_and_the_win_through_the_results_pause() {
+        let card = |r: u8, su: u8| r * 4 + su;
+        let mut s = full_hu();
+        s.auto_sit(p(3), HU, Some(1_000), 0).unwrap(); // a line for the full table
+        assert_eq!(s.tick(SEC), vec![HU]);
+        s.start_hand(HU, [1; 32], SEC);
+        let shover = to_act(&s, HU);
+        let t = s.tables.get_mut(&HU).unwrap();
+        for seat in t.seats.iter_mut().flatten() {
+            seat.hole = if seat.player == shover { vec![card(12, 3), card(12, 2)] } else { vec![card(1, 1), card(6, 2)] };
+        }
+        t.deck = vec![card(2, 0), card(6, 0), card(9, 3), card(4, 0), card(7, 2), card(5, 1), card(0, 0), card(3, 0)];
+        let i = s.tables[&HU].seat_of(&shover).unwrap() as u8;
+        s.act(shover, HU, Action::AllIn, SEC).unwrap();
+        assert_eq!(s.leave_table(shover, HU, SEC).unwrap(), LeaveResult::AfterHand);
+        let other = to_act(&s, HU);
+        s.act(other, HU, Action::Call, SEC).unwrap();
+        assert_eq!(s.tables[&HU].phase, Phase::HandOver);
+        let held = s.users.get(&shover).unwrap().chips;
+        // During the pause: the queued player isn't seated, and everyone sees the
+        // leaver win with their cards on their own seat.
+        for at in [SEC + 1, 3 * SEC, 6 * SEC - 1] {
+            s.auto_sit_ping(p(3), HU, at);
+            s.tick(at);
+            assert!(s.tables[&HU].seat_of(&p(3)).is_none(), "seat still taken");
+            let v = s.table_view(HU, Some(p(3)), at).unwrap();
+            let r = v.last_result.clone().unwrap();
+            assert!(r.winners.iter().all(|w| w.seat == i && w.player == shover));
+            let seat = v.seats[i as usize].as_ref().unwrap();
+            assert_eq!(seat.player, shover);
+            assert_eq!(seat.cards, vec![card(12, 3), card(12, 2)]);
+            assert_eq!(s.users.get(&shover).unwrap().chips, held, "paid when the pause ends");
+        }
+        // After the pause: paid once, and the line gets the seat.
+        let won: u64 = s.tables[&HU].last_result.as_ref().unwrap().winners.iter().map(|w| w.amount).sum();
+        s.auto_sit_ping(p(3), HU, 6 * SEC);
+        s.tick(6 * SEC);
+        assert!(s.tables[&HU].seat_of(&shover).is_none());
+        assert_eq!(s.users.get(&shover).unwrap().chips, held + won);
+        s.auto_sit_ping(p(3), HU, 7 * SEC);
+        s.tick(7 * SEC);
+        assert!(s.tables[&HU].seat_of(&p(3)).is_some(), "the queued player sits down");
+        s.tick(8 * SEC);
+        assert_eq!(s.users.get(&shover).unwrap().chips, held + won, "credited once");
     }
 
     #[test]
