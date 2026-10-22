@@ -10,10 +10,10 @@ export function welcomeProgress(v: WelcomeView): number {
   return Math.min(1, Math.max(0, p));
 }
 
-/** Whole days until the bonus expires; 0 once it has. */
+/** Days until the bonus expires, rounded up so the last day reads 1; 0 once it has expired. */
 export function daysLeft(expiresAtNs: bigint, nowMs: number): number {
   const leftMs = Number(expiresAtNs / NS_PER_MS) - nowMs;
-  return leftMs > 0 ? Math.floor(leftMs / DAY_MS) : 0;
+  return leftMs > 0 ? Math.ceil(leftMs / DAY_MS) : 0;
 }
 
 export type WelcomeStatus = 'offer' | 'active' | 'done' | 'expired' | 'none';
@@ -51,4 +51,16 @@ export function markAnnounced(who: string, s: WelcomeStatus): void {
   } catch {
     /* storage unavailable: the toast may repeat */
   }
+}
+
+/**
+ * The toast to show when the status moves from `prev` (last announced here) to
+ * `status`, or null. With nothing announced on this device, done/expired are
+ * stale news (a new device or cleared storage), so they stay quiet.
+ */
+export function toastFor(prev: WelcomeStatus | null, status: WelcomeStatus): 'active' | 'done' | 'expired' | null {
+  if (prev === status) return null;
+  if (status === 'active') return 'active';
+  if ((status === 'done' || status === 'expired') && prev !== null) return status;
+  return null;
 }

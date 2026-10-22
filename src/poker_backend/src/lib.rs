@@ -208,6 +208,7 @@ fn post_upgrade() {
     state.migrate_icp_tournament_prices();
     // Players who deposited before the welcome bonus existed are not eligible.
     state.mark_existing_depositors();
+    state.seed_banked_ev();
     STATE.with(|s| *s.borrow_mut() = Some(state));
     start_timers();
 }

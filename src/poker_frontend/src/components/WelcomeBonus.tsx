@@ -22,7 +22,6 @@ export function useWelcome() {
 export function WelcomeBanner() {
   return (
     <div className="panel welcome-banner">
-      <div className="panel-title">Welcome bonus</div>
       <p className="small">Welcome bonus: we double your first deposit, up to 100 ICP.</p>
       <p className="muted small">Every 1 ICP of rake you pay releases 0.3 ICP of bonus.</p>
     </div>

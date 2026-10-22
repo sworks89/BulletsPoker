@@ -5019,7 +5019,9 @@ pub(crate) mod tests {
         s.tick(monday(9) + DAY_NS + 1);
         assert_eq!(s.rewards().fish_pool, 40 * E8S);
 
-        // An old snapshot: the new fields are absent. The first tick sweeps once.
+        // An old snapshot: the new fields are absent. The first tick only
+        // records the week (no mid-week sweep, no zero week in the history);
+        // the next Monday sweeps.
         let mut s = setup();
         {
             let r = s.rewards_mut();
@@ -5031,10 +5033,18 @@ pub(crate) mod tests {
         }
         let treasury = s.treasury;
         s.tick(monday(5) + 7);
+        assert_eq!(s.rewards().fish_pool, 50 * E8S);
+        assert_eq!(s.treasury, treasury);
+        assert_eq!(s.rewards().fish_week, Some(5));
+        assert_eq!(s.rewards().fish_paid_weeks.as_ref().map_or(0, |w| w.len()), 0);
+        s.tick(monday(5) + 8);
+        assert_eq!(s.rewards().fish_pool, 50 * E8S);
+        s.tick(monday(6));
         assert_eq!(s.rewards().fish_pool, 10 * E8S);
         assert_eq!(s.treasury, treasury + 40 * E8S);
+        assert_eq!(s.rewards().fish_paid_weeks.as_ref().unwrap().len(), 1);
         s.rewards_mut().fish_pool += 30 * E8S;
-        s.tick(monday(5) + 8);
+        s.tick(monday(6) + 8);
         assert_eq!(s.rewards().fish_pool, 40 * E8S);
     }
 
@@ -5078,9 +5088,33 @@ pub(crate) mod tests {
         assert_eq!(s.recount_banked_ev(), expected);
         // The first sweep seeds the running total from the banked spins.
         s.rewards_mut().fish_pool = 500 * E8S;
+        s.rewards_mut().fish_week = Some(4);
         s.tick(monday(5));
         assert_eq!(s.rewards().banked_ev, Some(expected));
         assert_eq!(s.rewards().fish_pool, (2 * expected).max(FISH_RESERVE_FLOOR));
+    }
+
+    #[test]
+    fn seed_banked_ev_counts_once_and_later_calls_stay_consistent() {
+        let mut s = setup();
+        bank_spin(&mut s, p(1), 10 * E8S, 0);
+        bank_spin(&mut s, p(2), 10 * E8S, 6);
+        s.rewards_mut().banked_ev = None;
+        let expected = s.recount_banked_ev();
+        assert!(expected > 0);
+        s.seed_banked_ev();
+        assert_eq!(s.rewards().banked_ev, Some(expected));
+        // A second call is a no-op: it does not recount.
+        s.rewards_mut().banked_ev = Some(7);
+        s.seed_banked_ev();
+        assert_eq!(s.rewards().banked_ev, Some(7));
+        // Later earn/spin keep the running total in step with the recount.
+        s.rewards_mut().banked_ev = Some(expected);
+        s.rewards_mut().fish_pool = 500 * E8S;
+        s.earn_rake(&p(3), 400 * E8S_PER_POINT, 4 * E8S, SEC);
+        assert_eq!(s.rewards().banked_ev.unwrap(), s.recount_banked_ev());
+        s.spin_wheel(p(3), 2 * SEC).unwrap();
+        assert_eq!(s.rewards().banked_ev.unwrap(), s.recount_banked_ev());
     }
 
     #[test]

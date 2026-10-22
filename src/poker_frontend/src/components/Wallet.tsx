@@ -5,7 +5,7 @@ import { usePoll } from '../context';
 import { icp, parseIcp, timeAgo } from '../format';
 import { prizeIcp } from '../rewards';
 import { WelcomeBanner, WelcomeCard, useWelcome } from './WelcomeBonus';
-import { lastAnnounced, markAnnounced, welcomeStatus } from '../welcome';
+import { lastAnnounced, markAnnounced, toastFor, welcomeStatus } from '../welcome';
 
 export function Wallet() {
   const { backend, ledger, principal, profile, run, refreshProfile, notify } = useApp();
@@ -34,11 +34,13 @@ export function Wallet() {
   const status = welcome ? welcomeStatus(welcome) : null;
   useEffect(() => {
     if (!who || !welcome || !status || status === 'offer' || status === 'none') return;
-    if (lastAnnounced(who) === status) return;
+    const prev = lastAnnounced(who);
+    if (prev === status) return;
     markAnnounced(who, status);
-    if (status === 'active') notify(`Welcome bonus: ${prizeIcp(welcome.locked)} ICP is locked for you. Play to release it.`);
-    else if (status === 'done') notify('Your welcome bonus is fully released.');
-    else notify('Your welcome bonus has expired.');
+    const toast = toastFor(prev, status);
+    if (toast === 'active') notify(`Welcome bonus: ${prizeIcp(welcome.locked)} ICP is locked for you. Play to release it.`);
+    else if (toast === 'done') notify('Your welcome bonus is fully released.');
+    else if (toast === 'expired') notify('Your welcome bonus has expired.');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [who, status]);
 

@@ -432,8 +432,15 @@ impl State {
     /// Money only moves from `fish_pool` to `treasury`.
     pub(crate) fn sweep_fish_surplus(&mut self, now: u64) {
         let current = week_of(now);
-        if current <= self.rewards.as_ref().and_then(|r| r.fish_week).unwrap_or(0) {
-            return;
+        match self.rewards.as_ref().and_then(|r| r.fish_week) {
+            // First tick on a snapshot without a week marker: no history to
+            // sweep against, so wait for the next Monday.
+            None => {
+                self.rewards_mut().fish_week = Some(current);
+                return;
+            }
+            Some(w) if current <= w => return,
+            Some(_) => {}
         }
         let banked_ev = self.banked_ev();
         let r = self.rewards_mut();
@@ -463,6 +470,15 @@ impl State {
     /// The running EV of all banked spins. Snapshots from before it existed
     /// have `None`: it is then seeded once from a full scan of the users, so
     /// spins banked before the upgrade are covered by the reserve too.
+    pub fn seed_banked_ev(&mut self) {
+        if self.rewards.as_ref().is_some_and(|r| r.banked_ev.is_some()) {
+            return;
+        }
+        let ev = self.recount_banked_ev();
+        self.rewards_mut().banked_ev = Some(ev);
+    }
+
+    /// Lazy fallback; `post_upgrade` seeds it so no ordinary message pays for the scan.
     fn banked_ev(&mut self) -> u64 {
         if let Some(ev) = self.rewards.as_ref().and_then(|r| r.banked_ev) {
             return ev;
