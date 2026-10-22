@@ -240,6 +240,8 @@ pub struct Table {
     /// When the regular time of the current turn ends. Fixed when the turn starts, so
     /// sitting out and coming back can't restart it.
     pub turn_deadline: Option<u64>,
+    /// When the time bank in use ends; fixed when the bank starts.
+    pub bank_deadline: Option<u64>,
     /// For a copy opened when its game filled up: the original table's id.
     pub game: Option<u64>,
     /// For a copy: its number in the game (the original is 1).
@@ -291,6 +293,7 @@ impl Table {
             time_bank_active: false,
             bank_started_at: 0,
             turn_deadline: None,
+            bank_deadline: None,
             game: None,
             copy_number: None,
             empty_since: None,
@@ -449,23 +452,15 @@ impl Table {
         // Their turn right now: sitting out acts at once, coming back resumes the turn's
         // remaining budget. Neither ever gives them more time than they had.
         if self.phase.is_betting() && self.to_act == Some(i) {
-            if self.time_bank_active {
-                let started = self.bank_started_at;
-                let s = self.seat_mut(i);
-                if out {
-                    s.time_bank = s.time_bank.saturating_sub(now.saturating_sub(started));
-                }
-                let left = s.time_bank;
-                self.bank_started_at = now;
-                if left == 0 {
-                    self.time_bank_active = false;
-                }
-                self.action_deadline = if out { now } else { now + left };
-            } else if out {
-                self.action_deadline = now;
+            // Away time counts as elapsed: sitting out only acts at once, and coming
+            // back restores the deadline the turn (or its time bank) already had.
+            self.action_deadline = if out {
+                now
+            } else if self.time_bank_active {
+                self.bank_deadline.unwrap_or(self.action_deadline)
             } else {
-                self.action_deadline = self.turn_deadline.unwrap_or(self.action_deadline);
-            }
+                self.turn_deadline.unwrap_or(self.action_deadline)
+            };
         }
         Ok(())
     }
@@ -708,6 +703,7 @@ impl Table {
         self.time_bank_active = false;
         let regular = now + self.config.action_timeout_secs * NANOS;
         self.turn_deadline = Some(regular);
+        self.bank_deadline = None;
         self.action_deadline = if away { now } else { regular };
     }
 
@@ -1111,6 +1107,7 @@ impl Table {
             self.time_bank_active = true;
             self.bank_started_at = self.action_deadline;
             self.action_deadline += bank;
+            self.bank_deadline = Some(self.action_deadline);
             return None;
         }
         let action = if s.bet >= self.current_bet { Action::Check } else { Action::Fold };
@@ -1693,8 +1690,8 @@ mod tests {
         assert_eq!(t.handle_timeout(12 * NANOS), Some(who));
     }
 
-    #[test]
-    fn toggling_during_the_time_bank_charges_the_bank() {
+    /// Heads-up preflop, first actor on the time bank (started at 20s, ends at 50s).
+    fn on_the_time_bank() -> (Table, Principal, usize) {
         let mut t = Table::new(1, config());
         t.sit(p(1), 0, 200).unwrap();
         t.sit(p(2), 1, 200).unwrap();
@@ -1703,22 +1700,62 @@ mod tests {
         let i = t.seat_of(&who).unwrap();
         assert!(t.handle_timeout(20 * NANOS).is_none());
         assert!(t.time_bank_active);
-        // 10s into the bank: sit out, charged for the 10s.
+        assert_eq!(t.action_deadline, 50 * NANOS);
+        (t, who, i)
+    }
+
+    #[test]
+    fn toggling_during_the_time_bank_charges_the_bank() {
+        let (mut t, who, i) = on_the_time_bank();
         t.set_sitting_out(&who, true, 30 * NANOS).unwrap();
-        assert_eq!(t.seat(i).time_bank, 20 * NANOS);
         assert_eq!(t.action_deadline, 30 * NANOS);
-        // Back a second later: only the remaining bank, not a fresh one.
         t.set_sitting_out(&who, false, 31 * NANOS).unwrap();
-        assert_eq!(t.action_deadline, 51 * NANOS);
-        assert!(t.time_bank_active);
-        // Toggle again 9s later: charged again.
+        assert_eq!(t.action_deadline, 50 * NANOS);
         t.set_sitting_out(&who, true, 40 * NANOS).unwrap();
-        assert_eq!(t.seat(i).time_bank, 11 * NANOS);
         t.set_sitting_out(&who, false, 41 * NANOS).unwrap();
-        assert_eq!(t.action_deadline, 52 * NANOS);
-        // Acting is charged only for the time since coming back.
+        assert_eq!(t.action_deadline, 50 * NANOS);
+        assert!(t.time_bank_active);
+        // Away time counts: acting at 45s used 25s of the bank.
         t.act(&who, Action::Call, 45 * NANOS).unwrap();
-        assert_eq!(t.seat(i).time_bank, 7 * NANOS);
+        assert_eq!(t.seat(i).time_bank, 5 * NANOS);
+    }
+
+    #[test]
+    fn rapid_toggles_never_extend_the_bank() {
+        let (mut t, who, i) = on_the_time_bank();
+        let tenth = NANOS / 10;
+        for k in 0..40u64 {
+            let base = 21 * NANOS + k * NANOS;
+            t.set_sitting_out(&who, true, base + tenth).unwrap();
+            t.set_sitting_out(&who, false, base + 9 * tenth).unwrap();
+            assert_eq!(t.action_deadline, 50 * NANOS, "cycle {k}");
+        }
+        // Back after the bank is gone: acted on at the next tick.
+        assert_eq!(t.handle_timeout(61 * NANOS), Some(who));
+        assert_eq!(t.seat(i).time_bank, 0);
+    }
+
+    #[test]
+    fn rapid_toggle_then_act_charges_full_elapsed_time() {
+        let (mut t, who, i) = on_the_time_bank();
+        t.set_sitting_out(&who, true, 25 * NANOS).unwrap();
+        t.set_sitting_out(&who, false, 26 * NANOS).unwrap();
+        t.act(&who, Action::Call, 40 * NANOS).unwrap();
+        assert_eq!(t.seat(i).time_bank, 10 * NANOS, "20s used since the bank started");
+    }
+
+    #[test]
+    fn sitting_out_on_the_bank_acts_at_once_and_bank_runs_out_while_away() {
+        let (mut t, who, i) = on_the_time_bank();
+        t.set_sitting_out(&who, true, 30 * NANOS).unwrap();
+        assert_eq!(t.handle_timeout(30 * NANOS), Some(who));
+        assert_eq!(t.seat(i).time_bank, 20 * NANOS);
+        // Away until past the bank end: comes back to an expired clock.
+        let (mut t, who, _) = on_the_time_bank();
+        t.set_sitting_out(&who, true, 30 * NANOS).unwrap();
+        t.set_sitting_out(&who, false, 55 * NANOS).unwrap();
+        assert_eq!(t.action_deadline, 50 * NANOS);
+        assert_eq!(t.handle_timeout(55 * NANOS), Some(who));
     }
 
     #[test]
