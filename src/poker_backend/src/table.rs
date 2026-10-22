@@ -240,6 +240,9 @@ pub struct Table {
     /// When the regular time of the current turn ends. Fixed when the turn starts, so
     /// sitting out and coming back can't restart it.
     pub turn_deadline: Option<u64>,
+    /// Revision of the decision on the table; moves whenever the actor or the amount
+    /// to call changes, so a command made for an earlier decision can be refused.
+    pub action_seq: Option<u64>,
     /// When the time bank in use ends; fixed when the bank starts.
     pub bank_deadline: Option<u64>,
     /// For a copy opened when its game filled up: the original table's id.
@@ -293,6 +296,7 @@ impl Table {
             time_bank_active: false,
             bank_started_at: 0,
             turn_deadline: None,
+            action_seq: None,
             bank_deadline: None,
             game: None,
             copy_number: None,
@@ -643,7 +647,12 @@ impl Table {
         Ok(())
     }
 
+    fn bump_seq(&mut self) {
+        self.action_seq = Some(self.action_seq.unwrap_or(0) + 1);
+    }
+
     fn set_phase(&mut self, p: Phase, now: u64) {
+        self.bump_seq();
         self.phase = p;
         self.phase_changed_at = now;
     }
@@ -666,6 +675,7 @@ impl Table {
     /// Moves the hand forward after an action. `from` is the seat that just
     /// acted (if it was their turn).
     fn progress(&mut self, from: Option<usize>, now: u64) {
+        self.bump_seq();
         if self.live_count() <= 1 {
             self.finish_uncontested(now);
             return;
@@ -699,6 +709,7 @@ impl Table {
     /// Starts the clock for whoever is to act. Players sitting out (absent tournament
     /// players, or a cash player whose clock ran out mid-hand) are checked or folded at once.
     fn set_deadline(&mut self, now: u64) {
+        self.bump_seq();
         let away = self.to_act.is_some_and(|i| self.seats[i].as_ref().is_some_and(|s| s.sitting_out));
         self.time_bank_active = false;
         let regular = now + self.config.action_timeout_secs * NANOS;
@@ -989,6 +1000,14 @@ impl Table {
     // ---------------------------------------------------------------- actions
 
     pub fn act(&mut self, player: &Principal, action: Action, now: u64) -> Result<(), String> {
+        self.act_for(player, action, now, None)
+    }
+
+    /// Like `act`, for a command made at revision `expected` (`None`: any).
+    pub fn act_for(&mut self, player: &Principal, action: Action, now: u64, expected: Option<u64>) -> Result<(), String> {
+        if expected.is_some_and(|n| n != self.action_seq.unwrap_or(0)) {
+            return Err("The table moved on — check the new situation and act again".into());
+        }
         if !self.phase.is_betting() {
             return Err("No hand in progress".into());
         }
@@ -1844,5 +1863,125 @@ mod tests {
             now += 10 * NANOS;
         }
         assert_eq!(t.hand_no, 500);
+    }
+
+    // --------------------------------------------------- stale betting commands
+
+    const STALE: &str = "The table moved on";
+
+    fn three_handed() -> Table {
+        let mut t = Table::new(1, config());
+        for k in 0..3 {
+            t.sit(p(k + 1), k, 500).unwrap();
+        }
+        t.start_hand([3; 32], 0).unwrap();
+        t
+    }
+
+    fn seq(t: &Table) -> u64 {
+        t.action_seq.unwrap_or(0)
+    }
+
+    #[test]
+    fn stale_call_from_an_earlier_street_is_rejected() {
+        let mut t = three_handed();
+        let who = to_act_player(&t);
+        let old = seq(&t);
+        t.act_for(&who, Action::Call, 1, Some(old)).unwrap();
+        // Play on to the flop; the same command, delivered late, must not apply.
+        while t.phase == Phase::PreFlop {
+            let pl = to_act_player(&t);
+            if t.act(&pl, Action::Check, 1).is_err() {
+                t.act(&pl, Action::Call, 1).unwrap();
+            }
+        }
+        let pl = to_act_player(&t);
+        let before = (t.pot(), t.seat(t.to_act.unwrap()).stack, t.to_act);
+        let err = t.act_for(&pl, Action::Call, 1, Some(old)).unwrap_err();
+        assert!(err.contains(STALE), "{err}");
+        assert!(t.act_for(&pl, Action::AllIn, 1, Some(old)).unwrap_err().contains(STALE));
+        assert_eq!(before, (t.pot(), t.seat(t.to_act.unwrap()).stack, t.to_act));
+    }
+
+    #[test]
+    fn stale_fold_from_an_earlier_hand_is_rejected() {
+        let mut t = three_handed();
+        let old = seq(&t);
+        let first = to_act_player(&t);
+        t.act_for(&first, Action::Fold, 1, Some(old)).unwrap();
+        let second = to_act_player(&t);
+        t.act(&second, Action::Fold, 1).unwrap();
+        assert_eq!(t.phase, Phase::HandOver);
+        t.start_hand([4; 32], 2).unwrap();
+        let pl = to_act_player(&t);
+        let err = t.act_for(&pl, Action::Fold, 3, Some(old)).unwrap_err();
+        assert!(err.contains(STALE), "{err}");
+        assert!(!t.seat(t.seat_of(&pl).unwrap()).folded);
+        assert_eq!(t.to_act, t.seat_of(&pl));
+    }
+
+    #[test]
+    fn stale_command_does_not_charge_the_time_bank() {
+        let mut t = three_handed();
+        let old = seq(&t);
+        let pl = to_act_player(&t);
+        t.act(&pl, Action::Call, 1).unwrap();
+        let next = to_act_player(&t);
+        let i = t.seat_of(&next).unwrap();
+        t.time_bank_active = true;
+        t.bank_started_at = 0;
+        let bank = t.seat(i).time_bank;
+        assert!(t.act_for(&next, Action::Call, 5 * NANOS, Some(old)).is_err());
+        assert_eq!(t.seat(i).time_bank, bank);
+    }
+
+    #[test]
+    fn duplicate_delivery_applies_once() {
+        let mut t = three_handed();
+        let who = to_act_player(&t);
+        let old = seq(&t);
+        t.act_for(&who, Action::Call, 1, Some(old)).unwrap();
+        let after = (t.pot(), t.to_act);
+        for pl in [who, to_act_player(&t)] {
+            assert!(t.act_for(&pl, Action::Call, 1, Some(old)).is_err());
+        }
+        assert_eq!((t.pot(), t.to_act), after);
+    }
+
+    #[test]
+    fn current_revision_is_accepted() {
+        let mut t = three_handed();
+        let pl = to_act_player(&t);
+        let s1 = seq(&t);
+        t.act_for(&pl, Action::Call, 1, Some(s1)).unwrap();
+        let pl = to_act_player(&t);
+        let s2 = seq(&t);
+        assert!(s2 > s1);
+        t.act_for(&pl, Action::Call, 1, Some(s2)).unwrap();
+        // None keeps the old behaviour.
+        let pl = to_act_player(&t);
+        t.act_for(&pl, Action::Call, 1, None).unwrap();
+    }
+
+    #[test]
+    fn revision_changes_when_the_amount_to_call_changes() {
+        let mut t = three_handed();
+        let a = to_act_player(&t);
+        let old = seq(&t);
+        t.act(&a, Action::Raise(40), 1).unwrap();
+        let b = to_act_player(&t);
+        assert_ne!(seq(&t), old);
+        // The next player's revision predates the raise: their Call for 10 is rejected.
+        assert!(t.act_for(&b, Action::Call, 1, Some(old)).unwrap_err().contains(STALE));
+        // Each action, and an auto-act, moves it on too.
+        let s1 = seq(&t);
+        t.act(&b, Action::Call, 1).unwrap();
+        assert_ne!(seq(&t), s1);
+        let c = to_act_player(&t);
+        let s2 = seq(&t);
+        let c_seat = t.seat_of(&c).unwrap();
+        t.seat_mut(c_seat).sitting_out = true;
+        t.handle_timeout(t.action_deadline + 1);
+        assert_ne!(seq(&t), s2);
     }
 }

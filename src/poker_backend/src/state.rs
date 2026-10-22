@@ -539,6 +539,8 @@ pub struct TableView {
     /// Smallest buy-in the viewer may sit down with (they left recently with
     /// this many chips); 0 means the table's normal minimum.
     pub my_min_buy_in: u64,
+    /// Revision of the decision on the table; send it back with `act`.
+    pub action_seq: u64,
     /// Bad-beat jackpot for this table's currency (0 at tournament tables).
     pub jackpot: u64,
     /// A jackpot hit in the hand on screen, for the celebration.
@@ -2052,8 +2054,12 @@ impl State {
     }
 
     pub fn act(&mut self, caller: Principal, id: u64, action: Action, now: u64) -> R<()> {
+        self.act_for(caller, id, action, now, None)
+    }
+
+    pub fn act_for(&mut self, caller: Principal, id: u64, action: Action, now: u64, expected: Option<u64>) -> R<()> {
         self.check_not_banned(&caller, now)?;
-        self.table_mut(id)?.act(&caller, action, now)?;
+        self.table_mut(id)?.act_for(&caller, action, now, expected)?;
         self.after_table_change(id, now);
         Ok(())
     }
@@ -2531,6 +2537,7 @@ impl State {
             jackpot_hit: self.current_hit(id),
             restricted: false,
             my_min_buy_in: viewer.map_or(0, |v| self.min_return_buy_in(id, &v, now)),
+            action_seq: t.action_seq.unwrap_or(0),
         })
     }
 }

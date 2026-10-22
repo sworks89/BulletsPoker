@@ -668,6 +668,8 @@ type TableView = record {
   locked : bool;
   last_result : opt HandResult;
   tournament : opt TournamentBadge;
+  // Revision of the decision on the table; send it back with `act`.
+  action_seq : nat64;
   // The player to act is on their time bank (`action_deadline` includes it).
   time_bank_active : bool;
   min_raise_to : nat64;
@@ -820,7 +822,7 @@ type Winner = record {
   amount : nat64;
 };
 service : (opt InitArgs) -> {
-  act : (nat64, Action) -> (Result);
+  act : (nat64, Action, opt nat64) -> (Result);
   // Takes the one-time add-on at the end of a tournament's rebuy period.
   addon_tournament : (nat64) -> (Result);
   admin_add_item : (StoreItem) -> (Result_1);

@@ -554,6 +554,7 @@ export const idlFactory = ({ IDL }) => {
     'locked' : IDL.Bool,
     'last_result' : IDL.Opt(HandResult),
     'tournament' : IDL.Opt(TournamentBadge),
+    'action_seq' : IDL.Nat64,
     'time_bank_active' : IDL.Bool,
     'min_raise_to' : IDL.Nat64,
     'seats' : IDL.Vec(IDL.Opt(SeatView)),
@@ -731,7 +732,7 @@ export const idlFactory = ({ IDL }) => {
   const Result_15 = IDL.Variant({ 'Ok' : Profile, 'Err' : IDL.Text });
   const Result_16 = IDL.Variant({ 'Ok' : SpinRecord, 'Err' : IDL.Text });
   return IDL.Service({
-    'act' : IDL.Func([IDL.Nat64, Action], [Result], []),
+    'act' : IDL.Func([IDL.Nat64, Action, IDL.Opt(IDL.Nat64)], [Result], []),
     'addon_tournament' : IDL.Func([IDL.Nat64], [Result], []),
     'admin_add_item' : IDL.Func([StoreItem], [Result_1], []),
     'admin_add_tournament' : IDL.Func([TournamentTemplate], [Result_1], []),

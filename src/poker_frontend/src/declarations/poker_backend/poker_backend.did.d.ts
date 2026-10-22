@@ -932,6 +932,10 @@ export interface TableView {
   'last_result' : [] | [HandResult],
   'tournament' : [] | [TournamentBadge],
   /**
+   * Revision of the decision on the table; send it back with `act`.
+   */
+  'action_seq' : bigint,
+  /**
    * The player to act is on their time bank (`action_deadline` includes it).
    */
   'time_bank_active' : boolean,
@@ -1144,7 +1148,7 @@ export interface Winner {
   'amount' : bigint,
 }
 export interface _SERVICE {
-  'act' : ActorMethod<[bigint, Action], Result>,
+  'act' : ActorMethod<[bigint, Action, [] | [bigint]], Result>,
   /**
    * Takes the one-time add-on at the end of a tournament's rebuy period.
    */

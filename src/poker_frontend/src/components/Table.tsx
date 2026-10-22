@@ -267,7 +267,7 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
   const act = async (action: Parameters<typeof backend.act>[1]) => {
     setBusy(true);
     if (settings?.sound && !('Fold' in action) && !('Check' in action)) sounds.chips();
-    await run(async () => unwrap(await backend.act(id, action)));
+    await run(async () => unwrap(await backend.act(id, action, [view.action_seq])));
     await load();
     setBusy(false);
   };

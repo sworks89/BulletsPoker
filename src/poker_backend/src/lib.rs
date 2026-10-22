@@ -739,9 +739,9 @@ fn show_cards(id: u64) -> R<()> {
 }
 
 #[update]
-fn act(id: u64, action: Action) -> R<()> {
+fn act(id: u64, action: Action, expected: Option<u64>) -> R<()> {
     let p = caller()?;
-    with_mut(|s| s.act(p, id, action, now()))
+    with_mut(|s| s.act_for(p, id, action, now(), expected))
 }
 
 // -------------------------------------------------------------- chat/social
