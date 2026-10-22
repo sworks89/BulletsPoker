@@ -237,6 +237,9 @@ pub struct Table {
     /// which they started drawing on at `bank_started_at`.
     pub time_bank_active: bool,
     pub bank_started_at: u64,
+    /// When the regular time of the current turn ends. Fixed when the turn starts, so
+    /// sitting out and coming back can't restart it.
+    pub turn_deadline: Option<u64>,
     /// For a copy opened when its game filled up: the original table's id.
     pub game: Option<u64>,
     /// For a copy: its number in the game (the original is 1).
@@ -287,6 +290,7 @@ impl Table {
             tournament_mode: false,
             time_bank_active: false,
             bank_started_at: 0,
+            turn_deadline: None,
             game: None,
             copy_number: None,
             empty_since: None,
@@ -436,12 +440,32 @@ impl Table {
 
     pub fn set_sitting_out(&mut self, player: &Principal, out: bool, now: u64) -> Result<(), String> {
         let i = self.seat_of(player).ok_or("You are not seated")?;
+        if self.seat(i).sitting_out == out {
+            return Ok(());
+        }
         let s = self.seat_mut(i);
         s.sitting_out = out;
         s.sitting_out_since = if out { s.sitting_out_since.or(Some(now)) } else { None };
-        // Their turn right now: coming back restarts the clock, sitting out acts at once.
+        // Their turn right now: sitting out acts at once, coming back resumes the turn's
+        // remaining budget. Neither ever gives them more time than they had.
         if self.phase.is_betting() && self.to_act == Some(i) {
-            self.set_deadline(now);
+            if self.time_bank_active {
+                let started = self.bank_started_at;
+                let s = self.seat_mut(i);
+                if out {
+                    s.time_bank = s.time_bank.saturating_sub(now.saturating_sub(started));
+                }
+                let left = s.time_bank;
+                self.bank_started_at = now;
+                if left == 0 {
+                    self.time_bank_active = false;
+                }
+                self.action_deadline = if out { now } else { now + left };
+            } else if out {
+                self.action_deadline = now;
+            } else {
+                self.action_deadline = self.turn_deadline.unwrap_or(self.action_deadline);
+            }
         }
         Ok(())
     }
@@ -682,7 +706,9 @@ impl Table {
     fn set_deadline(&mut self, now: u64) {
         let away = self.to_act.is_some_and(|i| self.seats[i].as_ref().is_some_and(|s| s.sitting_out));
         self.time_bank_active = false;
-        self.action_deadline = if away { now } else { now + self.config.action_timeout_secs * NANOS };
+        let regular = now + self.config.action_timeout_secs * NANOS;
+        self.turn_deadline = Some(regular);
+        self.action_deadline = if away { now } else { regular };
     }
 
     fn deal_board(&mut self, n: usize) {
@@ -1599,16 +1625,100 @@ mod tests {
     }
 
     #[test]
-    fn coming_back_mid_hand_gets_a_fresh_clock() {
+    fn coming_back_mid_hand_does_not_get_a_fresh_clock() {
         let mut t = Table::new(1, config());
         let (late, out_at) = time_out_on_the_flop(&mut t);
         let other = to_act_player(&t);
         t.act(&other, Action::Check, out_at + NANOS).unwrap();
         assert_eq!(to_act_player(&t), late);
+        // The turn began at out_at + 1s with the regular 20s; coming back later keeps that deadline.
         t.set_sitting_out(&late, false, out_at + 2 * NANOS).unwrap();
-        assert_eq!(t.action_deadline, out_at + 2 * NANOS + 20 * NANOS);
+        assert_eq!(t.action_deadline, out_at + NANOS + 20 * NANOS);
         assert!(t.handle_timeout(out_at + 2 * NANOS).is_none());
         t.act(&late, Action::Check, out_at + 3 * NANOS).unwrap();
+    }
+
+    #[test]
+    fn coming_back_after_auto_sit_out_on_a_later_turn_gets_normal_time() {
+        let mut t = Table::new(1, config());
+        let (late, out_at) = time_out_on_the_flop(&mut t);
+        let other = to_act_player(&t);
+        t.act(&other, Action::Check, out_at + 5 * NANOS).unwrap();
+        assert_eq!(to_act_player(&t), late);
+        t.set_sitting_out(&late, false, out_at + 6 * NANOS).unwrap();
+        assert_eq!(t.action_deadline, out_at + 5 * NANOS + 20 * NANOS, "a full regular turn");
+        assert!(!t.time_bank_active);
+    }
+
+    #[test]
+    fn repeated_back_calls_do_not_move_the_deadline() {
+        let mut t = Table::new(1, config());
+        t.sit(p(1), 0, 200).unwrap();
+        t.sit(p(2), 1, 200).unwrap();
+        t.start_hand([6; 32], 0).unwrap();
+        let who = to_act_player(&t);
+        let deadline = t.action_deadline;
+        for k in 1..=10 {
+            t.set_sitting_out(&who, false, k * NANOS).unwrap();
+            assert_eq!(t.action_deadline, deadline);
+        }
+        // Same while on the time bank.
+        assert!(t.handle_timeout(deadline).is_none());
+        let bank_deadline = t.action_deadline;
+        for k in 1..=10 {
+            t.set_sitting_out(&who, false, deadline + k * NANOS).unwrap();
+            assert_eq!(t.action_deadline, bank_deadline);
+            assert!(t.time_bank_active);
+        }
+    }
+
+    #[test]
+    fn sit_out_and_back_does_not_extend_the_turn() {
+        let mut t = Table::new(1, config());
+        t.sit(p(1), 0, 200).unwrap();
+        t.sit(p(2), 1, 200).unwrap();
+        t.start_hand([6; 32], 0).unwrap();
+        let who = to_act_player(&t);
+        let deadline = t.action_deadline;
+        for k in 0..5 {
+            t.set_sitting_out(&who, true, (10 + 2 * k) * NANOS).unwrap();
+            t.set_sitting_out(&who, false, (11 + 2 * k) * NANOS).unwrap();
+            assert_eq!(t.action_deadline, deadline, "toggle {k}");
+        }
+        assert!(t.handle_timeout(deadline - 1).is_none());
+        assert!(!t.time_bank_active);
+        // Sitting out on your turn still acts at once.
+        t.set_sitting_out(&who, true, 12 * NANOS).unwrap();
+        assert_eq!(t.action_deadline, 12 * NANOS);
+        assert_eq!(t.handle_timeout(12 * NANOS), Some(who));
+    }
+
+    #[test]
+    fn toggling_during_the_time_bank_charges_the_bank() {
+        let mut t = Table::new(1, config());
+        t.sit(p(1), 0, 200).unwrap();
+        t.sit(p(2), 1, 200).unwrap();
+        t.start_hand([6; 32], 0).unwrap();
+        let who = to_act_player(&t);
+        let i = t.seat_of(&who).unwrap();
+        assert!(t.handle_timeout(20 * NANOS).is_none());
+        assert!(t.time_bank_active);
+        // 10s into the bank: sit out, charged for the 10s.
+        t.set_sitting_out(&who, true, 30 * NANOS).unwrap();
+        assert_eq!(t.seat(i).time_bank, 20 * NANOS);
+        assert_eq!(t.action_deadline, 30 * NANOS);
+        // Back a second later: only the remaining bank, not a fresh one.
+        t.set_sitting_out(&who, false, 31 * NANOS).unwrap();
+        assert_eq!(t.action_deadline, 51 * NANOS);
+        assert!(t.time_bank_active);
+        // Toggle again 9s later: charged again.
+        t.set_sitting_out(&who, true, 40 * NANOS).unwrap();
+        assert_eq!(t.seat(i).time_bank, 11 * NANOS);
+        t.set_sitting_out(&who, false, 41 * NANOS).unwrap();
+        assert_eq!(t.action_deadline, 52 * NANOS);
+        // Acting is charged only for the time since coming back.
+        t.act(&who, Action::Call, 45 * NANOS).unwrap();
+        assert_eq!(t.seat(i).time_bank, 7 * NANOS);
     }
 
     #[test]
