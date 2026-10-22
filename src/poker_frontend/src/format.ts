@@ -47,6 +47,12 @@ export function timeAgo(ns: bigint): string {
   return `${Math.floor(secs / 3600)}h`;
 }
 
+/** Like timeAgo but a complete phrase: "just now", "5m ago". */
+export function agoText(ns: bigint): string {
+  const t = timeAgo(ns);
+  return t === 'now' ? 'just now' : `${t} ago`;
+}
+
 export function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
@@ -78,4 +84,9 @@ export function countdown(targetNs: bigint): string {
   const h = Math.floor(ms / 3_600_000);
   const m = Math.floor((ms % 3_600_000) / 60_000);
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+/** A tournament prize in the tournament's own currency (ICP prizes are e8s, not chips). */
+export function prizeText(prize: bigint | number, currency: CurrencyV): string {
+  return amountWithUnit(prize, currency);
 }

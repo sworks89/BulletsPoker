@@ -4,7 +4,9 @@ import { useApp, usePoll } from '../context';
 import { unwrap, type LeaderboardEntry, type RewardsView, type Settings } from '../ic';
 import { icp } from '../format';
 import { Avatar } from '../art/Avatar';
+import { Dialog } from './Dialog';
 import { leaderboardMedal } from '../rewards';
+import { clearRememberedRef, peekRememberedRef, rememberRef, takeRememberedRef } from '../referrals';
 
 export function ProfilePage() {
   const { backend, profile, items, run, refreshProfile } = useApp();
@@ -230,9 +232,10 @@ export function Leaderboard() {
 }
 
 export function Register() {
-  const { backend, run, refreshProfile, principal } = useApp();
+  const { backend, run, notify, refreshProfile, principal } = useApp();
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
+  const [ref, setRef] = useState<string | null>(() => peekRememberedRef());
 
   // Sign-ups carry a small proof-of-work against bulk bot accounts. The
   // difficulty can rise while we work, so retry a couple of times.
@@ -241,14 +244,35 @@ export function Register() {
       const { difficulty } = await backend.get_signup_challenge();
       const nonce = await solvePow(principal!.toUint8Array(), difficulty);
       const r = await backend.register(name.trim(), [nonce]);
-      if ('Ok' in r || attempt >= 2 || !r.Err.includes('Sign-up check failed')) return unwrap(r);
+      if ('Ok' in r || attempt >= 2 || !r.Err.includes('Sign-up check failed')) {
+        const done = unwrap(r);
+        await attachReferrer();
+        return done;
+      }
+    }
+  };
+
+  // A code from a ?ref= link, still present at submit. Signup never fails
+  // because of it.
+  const attachReferrer = async () => {
+    const code = takeRememberedRef();
+    if (!code) return;
+    try {
+      const r = await backend.set_referrer(code);
+      if ('Err' in r) {
+        notify(`Referral code: ${r.Err} — you can enter one on the Referrals page within 24 hours`, 'err');
+      }
+    } catch {
+      // The call itself failed: keep the code so the Referrals page can retry.
+      rememberRef(code);
+      notify('Could not add your referral code — you can enter it on the Referrals page within 24 hours', 'err');
     }
   };
 
   return (
-    <div className="modal-bg">
+    <Dialog title="Pick your table name">
       <form
-        className="modal"
+        className="dialog-form"
         onSubmit={async (e) => {
           e.preventDefault();
           setBusy(true);
@@ -257,13 +281,27 @@ export function Register() {
           if (r !== undefined) await refreshProfile();
         }}
       >
-        <h3>Pick your table name</h3>
         <p className="muted small">3–16 letters, digits or underscores. This is how other players see you.</p>
-        <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Username" />
+        <input autoFocus aria-label="Username" value={name} onChange={(e) => setName(e.target.value)} placeholder="Username" />
+        {ref && (
+          <p className="muted small">
+            Referred by <strong>{ref}</strong>{' '}
+            <button
+              type="button"
+              className="link"
+              onClick={() => {
+                clearRememberedRef();
+                setRef(null);
+              }}
+            >
+              Remove
+            </button>
+          </p>
+        )}
         <button className="btn" disabled={busy || !principal}>
           {busy ? 'Setting up your account…' : 'Create profile'}
         </button>
       </form>
-    </div>
+    </Dialog>
   );
 }

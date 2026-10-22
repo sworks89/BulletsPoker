@@ -9,6 +9,7 @@ pub mod medals;
 pub mod metrics;
 pub mod moderation;
 pub mod ratelimit;
+pub mod referrals;
 pub mod rewards;
 pub mod signup;
 pub mod state;
@@ -16,6 +17,7 @@ pub mod store;
 pub mod table;
 pub mod tournament;
 pub mod wallet;
+pub mod welcome;
 
 use candid::{CandidType, Deserialize, Principal};
 use ic_cdk::{init, inspect_message, post_upgrade, pre_upgrade, query, update};
@@ -204,6 +206,9 @@ fn post_upgrade() {
     // House ICP tables deployed before the stake ladder move to the new blinds.
     state.migrate_icp_stakes();
     state.migrate_icp_tournament_prices();
+    // Players who deposited before the welcome bonus existed are not eligible.
+    state.mark_existing_depositors();
+    state.seed_banked_ev();
     STATE.with(|s| *s.borrow_mut() = Some(state));
     start_timers();
 }
@@ -228,6 +233,7 @@ async fn refresh_entropy() {
 /// Re-sends ledger ops whose outcome is unknown. The ledger either executes
 /// them now or reports them as duplicates of the original, so nothing runs twice.
 async fn retry_unknown_ops() {
+    with_mut(|s| s.prune_failed_deposits(now()));
     if RETRYING.get() {
         return;
     }
@@ -318,6 +324,21 @@ fn register(username: String, pow: Option<u64>) -> R<Profile> {
     let p = caller()?;
     with(|s| s.check_signup_pow(&p, pow.unwrap_or(0), now()))?;
     with_mut(|s| s.register(p, username, now()))
+}
+
+/// Attaches a referrer (another player's username) within your first 24 hours.
+#[update]
+fn set_referrer(code: String) -> R<()> {
+    let p = active_caller()?;
+    with_mut(|s| s.set_referrer(p, &code, now()))
+}
+
+/// Every table where the caller holds a seat (cash or tournament), so a client
+/// can find seats it doesn't know about: tournament moves, another device.
+#[query]
+fn get_my_seats() -> Vec<SeatRef> {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.my_seats(&p))
 }
 
 #[query]
@@ -517,6 +538,20 @@ fn get_rewards() -> rewards::RewardsView {
     with(|s| s.rewards_view(&p, now()))
 }
 
+/// The caller's referral earnings and friends, `offset` friends in (newest first).
+#[query]
+fn get_referrals(offset: u32) -> referrals::ReferralView {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.referral_view(&p, offset, now()))
+}
+
+/// The caller's welcome bonus: the offer, or its progress.
+#[query]
+fn get_welcome() -> welcome::WelcomeView {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.welcome_view(&p, now()))
+}
+
 /// The four weekly and monthly leaderboards, with the caller's own row.
 #[query]
 fn get_leaderboards() -> Vec<leaderboards::BoardView> {
@@ -688,7 +723,7 @@ fn list_medals() -> Vec<MedalDef> {
 }
 
 #[update]
-fn leave_table(id: u64) -> R<u64> {
+fn leave_table(id: u64) -> R<LeaveResult> {
     let p = caller()?;
     with_mut(|s| s.leave_table(p, id, now()))
 }
@@ -713,9 +748,9 @@ fn show_cards(id: u64) -> R<()> {
 }
 
 #[update]
-fn act(id: u64, action: Action) -> R<()> {
+fn act(id: u64, action: Action, expected: Option<u64>) -> R<()> {
     let p = caller()?;
-    with_mut(|s| s.act(p, id, action, now()))
+    with_mut(|s| s.act_for(p, id, action, now(), expected))
 }
 
 // -------------------------------------------------------------- chat/social

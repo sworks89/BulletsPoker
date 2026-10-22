@@ -165,6 +165,26 @@ export interface FriendInfo {
   'avatar' : string,
   'online' : boolean,
 }
+/**
+ * One friend in the referrer's list.
+ */
+export interface FriendRow {
+  /**
+   * Earned the referrer something in the last 7 days.
+   */
+  'active' : boolean,
+  'username' : string,
+  /**
+   * When the 12-month earning window for this friend ends (ns).
+   */
+  'ends_at' : bigint,
+  /**
+   * Cuts earned from this friend (e8s). Earned, not paid: a cut forfeited
+   * because the referrer was suspended at payout still counts here.
+   */
+  'earned' : bigint,
+  'joined_at' : bigint,
+}
 export interface HandPlayer {
   'won' : bigint,
   'username' : string,
@@ -234,6 +254,10 @@ export interface HouseStats {
    * Fish and leaderboard prize pools, owed to players.
    */
   'rewards_pools' : bigint,
+  /**
+   * Referral cuts owed to referrers, paid at the weekly close.
+   */
+  'referral_owed' : bigint,
   'users' : bigint,
   'treasury' : bigint,
 }
@@ -301,6 +325,12 @@ export interface LeaderboardEntry {
   'stats' : Stats,
   'avatar' : string,
 }
+/**
+ * What `leave_table` did: stood up now with these chips (back in the wallet),
+ * or the player is in a live hand and leaves when it ends.
+ */
+export type LeaveResult = { 'Left' : bigint } |
+  { 'AfterHand' : null };
 export interface LedgerOp {
   'id' : bigint,
   'to' : Account,
@@ -539,6 +569,44 @@ export interface PublicProfile {
   'medals' : Array<string>,
   'online' : boolean,
 }
+/**
+ * What the referrals page shows. The zero view (`Default`) is for an
+ * anonymous caller or a player with no profile.
+ */
+export interface ReferralView {
+  /**
+   * Friends who earned something in the last 7 days. Counted over the
+   * newest `ACTIVE_SCAN_MAX` (2,000) friends only, so with more friends than
+   * that it can undercount.
+   */
+  'active_7d' : number,
+  /**
+   * Username of the caller's referrer.
+   */
+  'my_referrer' : [] | [string],
+  /**
+   * Within the first 24 hours and no referrer yet.
+   */
+  'can_enter_code' : boolean,
+  /**
+   * The caller's username, which is their referral code.
+   */
+  'code' : string,
+  /**
+   * At most `FRIENDS_PAGE` friends, newest first, from `offset`.
+   */
+  'rows' : Array<FriendRow>,
+  /**
+   * Cuts waiting for the next Monday payout (e8s).
+   */
+  'owed_this_week' : bigint,
+  'paid_total' : bigint,
+  'friends' : number,
+  /**
+   * The next Monday 00:00 UTC (ns), when `owed_this_week` is paid.
+   */
+  'pays_at' : bigint,
+}
 export interface Report {
   'id' : bigint,
   'status' : ReportStatus,
@@ -588,15 +656,17 @@ export type Result_10 = { 'Ok' : Array<LedgerOp> } |
   { 'Err' : string };
 export type Result_11 = { 'Ok' : AutoSitStatus } |
   { 'Err' : string };
-export type Result_12 = { 'Ok' : ModPlayerView } |
+export type Result_12 = { 'Ok' : LeaveResult } |
   { 'Err' : string };
-export type Result_13 = { 'Ok' : ReportPage } |
+export type Result_13 = { 'Ok' : ModPlayerView } |
   { 'Err' : string };
-export type Result_14 = { 'Ok' : Array<Report> } |
+export type Result_14 = { 'Ok' : ReportPage } |
   { 'Err' : string };
-export type Result_15 = { 'Ok' : Profile } |
+export type Result_15 = { 'Ok' : Array<Report> } |
   { 'Err' : string };
-export type Result_16 = { 'Ok' : SpinRecord } |
+export type Result_16 = { 'Ok' : Profile } |
+  { 'Err' : string };
+export type Result_17 = { 'Ok' : SpinRecord } |
   { 'Err' : string };
 export type Result_2 = { 'Ok' : Array<AuditEntry> } |
   { 'Err' : string };
@@ -650,9 +720,21 @@ export interface RoomArgs {
   'currency' : Currency,
   'big_blind' : bigint,
 }
+/**
+ * A table where a player holds a seat.
+ */
+export interface SeatRef {
+  'table' : bigint,
+  'leaving' : boolean,
+  'tournament' : [] | [bigint],
+}
 export interface SeatView {
   'bet' : bigint,
   'in_hand' : boolean,
+  /**
+   * Leaving when the current hand ends.
+   */
+  'leaving' : boolean,
   /**
    * Seconds left in this player's time bank.
    */
@@ -870,6 +952,10 @@ export interface TableView {
   'last_result' : [] | [HandResult],
   'tournament' : [] | [TournamentBadge],
   /**
+   * Revision of the decision on the table; send it back with `act`.
+   */
+  'action_seq' : bigint,
+  /**
    * The player to act is on their time bank (`action_deadline` includes it).
    */
   'time_bank_active' : boolean,
@@ -1054,6 +1140,27 @@ export interface TournamentTemplate {
    */
   'late_reg_levels' : number,
 }
+/**
+ * What the caller sees of their welcome bonus.
+ */
+export interface WelcomeView {
+  /**
+   * Granted, not fully released, not expired.
+   */
+  'active' : boolean,
+  'expired' : boolean,
+  /**
+   * Still locked: zero once expired or fully released.
+   */
+  'locked' : bigint,
+  'released' : bigint,
+  /**
+   * No bonus yet and still entitled to one on the first deposit.
+   */
+  'eligible' : boolean,
+  'amount' : bigint,
+  'expires_at' : bigint,
+}
 export interface Winner {
   'player' : Principal,
   'hand' : string,
@@ -1061,7 +1168,7 @@ export interface Winner {
   'amount' : bigint,
 }
 export interface _SERVICE {
-  'act' : ActorMethod<[bigint, Action], Result>,
+  'act' : ActorMethod<[bigint, Action, [] | [bigint]], Result>,
   /**
    * Takes the one-time add-on at the end of a tournament's rebuy period.
    */
@@ -1191,10 +1298,19 @@ export interface _SERVICE {
   'get_my_profile' : ActorMethod<[], [] | [Profile]>,
   'get_my_roles' : ActorMethod<[], Roles>,
   /**
+   * Every table where the caller holds a seat (cash or tournament), so a client
+   * can find seats it doesn't know about: tournament moves, another device.
+   */
+  'get_my_seats' : ActorMethod<[], Array<SeatRef>>,
+  /**
    * All your notes, most recently updated first.
    */
   'get_notes' : ActorMethod<[], Array<NoteView>>,
   'get_profile' : ActorMethod<[Principal], [] | [PublicProfile]>,
+  /**
+   * The caller's referral earnings and friends, `offset` friends in (newest first).
+   */
+  'get_referrals' : ActorMethod<[number], ReferralView>,
   /**
    * The caller's Fish Buffet standing, spins and history.
    */
@@ -1212,6 +1328,10 @@ export interface _SERVICE {
   'get_tables' : ActorMethod<[BigUint64Array | bigint[]], Array<TableView>>,
   'get_tournament' : ActorMethod<[bigint], [] | [TournamentDetail]>,
   /**
+   * The caller's welcome bonus: the offer, or its progress.
+   */
+  'get_welcome' : ActorMethod<[], WelcomeView>,
+  /**
    * `GET /metrics` (Prometheus text, without the house's money figures) and
    * `GET /health` on the canister's raw domain. Responses are not certified, so
    * they're for monitoring only.
@@ -1226,7 +1346,7 @@ export interface _SERVICE {
    * `password` is only needed for password-protected player rooms.
    */
   'join_table' : ActorMethod<[bigint, number, bigint, [] | [string]], Result>,
-  'leave_table' : ActorMethod<[bigint], Result_5>,
+  'leave_table' : ActorMethod<[bigint], Result_12>,
   'list_medals' : ActorMethod<[], Array<MedalDef>>,
   'list_store' : ActorMethod<[], Array<StoreItem>>,
   'list_tables' : ActorMethod<[], Array<TableSummary>>,
@@ -1235,7 +1355,7 @@ export interface _SERVICE {
    * Suspends a player for `hours` (0 = permanent). They keep access to withdrawals.
    */
   'mod_ban' : ActorMethod<[Principal, number, string], Result>,
-  'mod_get_player' : ActorMethod<[Principal], Result_12>,
+  'mod_get_player' : ActorMethod<[Principal], Result_13>,
   /**
    * Mutes a player in every chat for `hours` (0 lifts the mute).
    */
@@ -1243,11 +1363,11 @@ export interface _SERVICE {
   /**
    * The open-report queue, oldest first: up to `limit` (max 50) after report `after`.
    */
-  'mod_open_reports' : ActorMethod<[[] | [bigint], number], Result_13>,
+  'mod_open_reports' : ActorMethod<[[] | [bigint], number], Result_14>,
   /**
    * The latest reports, open or resolved.
    */
-  'mod_recent_reports' : ActorMethod<[number], Result_14>,
+  'mod_recent_reports' : ActorMethod<[number], Result_15>,
   'mod_resolve_report' : ActorMethod<[bigint, ModAction, string], Result>,
   'mod_unban' : ActorMethod<[Principal], Result>,
   /**
@@ -1257,7 +1377,7 @@ export interface _SERVICE {
   /**
    * Creates your profile. `pow` is a nonce solving `get_signup_challenge`.
    */
-  'register' : ActorMethod<[string, [] | [bigint]], Result_15>,
+  'register' : ActorMethod<[string, [] | [bigint]], Result_16>,
   'register_tournament' : ActorMethod<[bigint], Result>,
   'remove_friend' : ActorMethod<[Principal], Result>,
   /**
@@ -1277,6 +1397,10 @@ export interface _SERVICE {
    * Saves a private note about a player. Empty text and no color deletes it.
    */
   'set_note' : ActorMethod<[Principal, string, [] | [NoteColor]], Result>,
+  /**
+   * Attaches a referrer (another player's username) within your first 24 hours.
+   */
+  'set_referrer' : ActorMethod<[string], Result>,
   'set_status' : ActorMethod<[string], Result>,
   /**
    * Shows your cards after winning a hand uncontested, until the next hand is dealt.
@@ -1286,7 +1410,7 @@ export interface _SERVICE {
   /**
    * Spins the oldest banked Fish Buffet spin for ICP cashback.
    */
-  'spin_wheel' : ActorMethod<[], Result_16>,
+  'spin_wheel' : ActorMethod<[], Result_17>,
   'throw_item' : ActorMethod<[bigint, Principal, number, Currency], Result>,
   'top_up' : ActorMethod<[bigint, bigint], Result>,
   /**

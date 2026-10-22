@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useApp } from '../context';
 import { unwrap, type TableConfig } from '../ic';
 import { amountWithUnit, isChips } from '../format';
 import type { GameRow } from '../lobby';
+import { Dialog } from './Dialog';
 
 type Limits = Pick<TableConfig, 'currency' | 'min_buy_in' | 'max_buy_in' | 'big_blind'>;
 
@@ -35,11 +36,10 @@ export function BuyInPicker({
   const [value, setValue] = useState<bigint>(start);
   const [busy, setBusy] = useState(false);
   const short = balance < limits.min_buy_in;
+  const sliderId = useId();
 
   return (
-    <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>{title}</h3>
+    <Dialog title={title} onClose={onClose}>
         <p className="muted">
           {chips ? 'Play chips' : 'Wallet balance'}: <b>{amountWithUnit(balance, currency)}</b>
         </p>
@@ -56,7 +56,12 @@ export function BuyInPicker({
           </>
         ) : (
           <>
+            <label htmlFor={sliderId} className="small muted">
+              Buy-in amount
+            </label>
             <input
+              id={sliderId}
+              aria-valuetext={amountWithUnit(value, currency)}
               type="range"
               min={Number(limits.min_buy_in)}
               max={Number(max)}
@@ -84,8 +89,7 @@ export function BuyInPicker({
             </div>
           </>
         )}
-      </div>
-    </div>
+    </Dialog>
   );
 }
 

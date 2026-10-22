@@ -13,9 +13,12 @@ import { Store } from './components/Store';
 import { Friends } from './components/Friends';
 import { ProfilePage, Register } from './components/Profile';
 import { Rewards, TierWatch } from './components/Rewards';
+import { Referrals } from './components/Referrals';
 import { AccountNotice } from './components/Safety';
 import { Admin } from './components/Admin';
 import { Avatar } from './art/Avatar';
+import { shouldOfferRegistration } from './startup';
+import { pauseBanner } from './pause';
 
 const NAV: { name: View['name']; label: string }[] = [
   { name: 'lobby', label: 'Lobby' },
@@ -24,11 +27,12 @@ const NAV: { name: View['name']; label: string }[] = [
   { name: 'friends', label: 'Friends & Notes' },
   { name: 'history', label: 'History' },
   { name: 'rewards', label: 'Rewards' },
+  { name: 'referrals', label: 'Referrals' },
   { name: 'wallet', label: 'Wallet' },
 ];
 
 function Shell() {
-  const { view, go, principal, profile, items, signIn, signOut, run, notify, backend, refreshProfile } = useApp();
+  const { view, go, principal, profile, profileLoad, retryProfile, items, signIn, signOut, run, notify, backend, refreshProfile } = useApp();
   const dailyReady = !!profile && Number(profile.next_daily_at / 1_000_000n) <= Date.now();
   const claimDaily = async () => {
     const got = await run(async () => unwrap(await backend.claim_daily_chips()));
@@ -51,10 +55,10 @@ function Shell() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand" onClick={() => go({ name: 'lobby' })}>
+        <button className="brand btn-reset" onClick={() => go({ name: 'lobby' })} aria-label="Bullets Poker, go to lobby">
           <span className="logo">♠</span> Bullets Poker
           <span className="tag">on ICP</span>
-        </div>
+        </button>
         <nav>
           {NAV.map((n) => (
             <button key={n.name} className={`nav ${view.name === n.name || (n.name === 'rewards' && view.name === 'leaderboard') ? 'active' : ''}`} onClick={() => go({ name: n.name } as View)}>
@@ -115,6 +119,16 @@ function Shell() {
       <ConnectionBanner />
       <TableStrip />
 
+      {principal && !profile && profileLoad === 'failed' && (
+        <div className="panel" role="alert">
+          <h3>Couldn't load your profile</h3>
+          <p className="muted">Your account is fine; we just couldn't reach it. Retrying automatically.</p>
+          <button className="btn" onClick={retryProfile}>
+            Retry
+          </button>
+        </div>
+      )}
+
       <main>
         {view.name === 'lobby' && <Lobby />}
         <TableArea />
@@ -124,6 +138,7 @@ function Shell() {
         {(view.name === 'rewards' || view.name === 'leaderboard') && (
           <Rewards key={view.name} initial={view.name === 'leaderboard' ? 'boards' : 'fish'} />
         )}
+        {view.name === 'referrals' && <Referrals />}
         {view.name === 'history' && <History />}
         {view.name === 'tournaments' && <Tournaments key={String(view.id ?? '')} initial={view.id} />}
         {view.name === 'profile' && <ProfilePage />}
@@ -134,7 +149,7 @@ function Shell() {
         Real-money play may be restricted where you live. Play responsibly. 18+.
       </footer>
 
-      {principal && !profile && <Register />}
+      {principal && !profile && shouldOfferRegistration(profileLoad) && <Register />}
     </div>
   );
 }
@@ -157,11 +172,11 @@ function StatusBanner() {
   usePoll(async () => setStatus(await backend.get_status()), 30000, [backend]);
   const p = status?.pause;
   if (!p) return null;
-  const paused = [p.deposits && 'deposits', p.withdrawals && 'withdrawals', p.dealing && 'new hands', p.joins && 'new seats'].filter(Boolean);
-  if (paused.length === 0) return null;
+  const text = pauseBanner(p, p.reason[0]);
+  if (!text) return null;
   return (
     <div className="status-banner">
-      ⚠️ Temporarily paused: {paused.join(', ')}.{p.reason[0] ? ` ${p.reason[0]}` : ''} Your balance is safe.
+      ⚠️ {text}
     </div>
   );
 }

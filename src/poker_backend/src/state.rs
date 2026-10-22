@@ -3,7 +3,7 @@
 //! caller and the current time are passed in) so it can be unit tested
 //! natively; `lib.rs` wraps it in canister endpoints.
 
-use crate::table::{Action, AutoSitEntry, Currency, HandResult, LogEntry, Phase, Table, TableConfig};
+use crate::table::{Action, AutoSitEntry, Currency, HandResult, LogEntry, Phase, StandOutcome, Table, TableConfig};
 use crate::jackpot::JackpotHit;
 use crate::store::{load_blob, save_blob, DmThread, Stores, UserMut, Users};
 use crate::moderation::{AuditEntry, Ban};
@@ -177,6 +177,17 @@ pub struct User {
     pub last_chat_at: u64,
     /// Fish Buffet points and banked spins; created on first earn.
     pub rewards: Option<crate::rewards::RewardsAccount>,
+    /// Who referred this player; set at most once.
+    pub referral: Option<crate::referrals::ReferralLink>,
+    /// Totals for the friends this player has referred; created on the first one.
+    pub referrer_stats: Option<crate::referrals::ReferrerStats>,
+    /// Welcome bonus verdict; `None` until the first deposit (see `crate::welcome`).
+    pub welcome: Option<crate::welcome::WelcomeBonus>,
+    /// Recent failed deposits/sweeps (see `crate::wallet`); created on the first.
+    pub deposit_fails: Option<crate::wallet::FailWindow>,
+    /// Set once a deposit or sweep completed; `None` on older accounts, which
+    /// `crate::wallet` checks against their recent ops.
+    pub has_deposited: Option<bool>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq)]
@@ -374,6 +385,14 @@ heap_state! {
     auto_sit_outcomes: Option<BTreeMap<Principal, AutoSitStatus>>,
     /// Reward pools (see `crate::rewards`).
     rewards: Option<crate::rewards::RewardsState>,
+    /// Referral cuts owed this week (see `crate::referrals`).
+    referrals: Option<crate::referrals::ReferralState>,
+    /// Set once existing depositors were marked ineligible for the welcome bonus.
+    welcome_marked: Option<bool>,
+    /// Failed deposit records across all players this hour (see `crate::wallet`).
+    deposit_fail_budget: Option<crate::wallet::FailWindow>,
+    /// Where the next failed-deposit prune resumes (ledger op id).
+    prune_cursor: Option<u64>,
 }
 
 /// Monotonic counters exported as metrics.
@@ -412,6 +431,14 @@ pub struct RoomArgs {
 }
 
 // ------------------------------------------------------------------ views
+
+/// A table where a player holds a seat.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SeatRef {
+    pub table: u64,
+    pub tournament: Option<u64>,
+    pub leaving: bool,
+}
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct Profile {
@@ -460,6 +487,14 @@ pub struct PublicProfile {
     pub medals: Vec<String>,
 }
 
+/// What `leave_table` did: stood up now with these chips (back in the wallet),
+/// or the player is in a live hand and leaves when it ends.
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeaveResult {
+    Left(u64),
+    AfterHand,
+}
+
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct SeatView {
     pub seat: u8,
@@ -474,6 +509,8 @@ pub struct SeatView {
     pub folded: bool,
     pub all_in: bool,
     pub sitting_out: bool,
+    /// Leaving when the current hand ends.
+    pub leaving: bool,
     pub has_cards: bool,
     pub cards: Vec<u8>,
     pub last_action: Option<String>,
@@ -529,6 +566,8 @@ pub struct TableView {
     /// Smallest buy-in the viewer may sit down with (they left recently with
     /// this many chips); 0 means the table's normal minimum.
     pub my_min_buy_in: u64,
+    /// Revision of the decision on the table; send it back with `act`.
+    pub action_seq: u64,
     /// Bad-beat jackpot for this table's currency (0 at tournament tables).
     pub jackpot: u64,
     /// A jackpot hit in the hand on screen, for the celebration.
@@ -607,6 +646,8 @@ pub struct HouseStats {
     pub liabilities_total: u64,
     /// Fish and leaderboard prize pools, owed to players.
     pub rewards_pools: u64,
+    /// Referral cuts owed to referrers, paid at the weekly close.
+    pub referral_owed: u64,
 }
 
 pub fn level_for_xp(xp: u64) -> u32 {
@@ -802,6 +843,10 @@ impl State {
             cashouts: BTreeMap::new(),
             auto_sit_outcomes: None,
             rewards: None,
+            referrals: None,
+            welcome_marked: None,
+            deposit_fail_budget: None,
+            prune_cursor: None,
             entropy: vec![],
         };
         let mut s = State::from_snapshot(users, stores, snap);
@@ -913,6 +958,11 @@ impl State {
                 last_seen: now,
                 last_chat_at: 0,
                 rewards: None,
+                referral: None,
+                referrer_stats: None,
+                welcome: None,
+                deposit_fails: None,
+                has_deposited: None,
             },
         );
         Ok(self.profile(&caller).unwrap())
@@ -1304,6 +1354,7 @@ impl State {
             .map(|t| t.chips_in_play() + t.rake_accrued + t.jackpot_accrued)
             .sum();
         let rewards_pools = self.rewards.as_ref().map_or(0, |r| r.pools_total());
+        let referral_owed = self.referrals.as_ref().map_or(0, |r| r.owed_total);
         HouseStats {
             users: self.users.len() as u64,
             wallet_balances,
@@ -1315,8 +1366,10 @@ impl State {
                 + self.treasury
                 + self.icp_in_tournaments()
                 + self.jackpot(Currency::Icp)
-                + rewards_pools,
+                + rewards_pools
+                + referral_owed,
             rewards_pools,
+            referral_owed,
         }
     }
 
@@ -1721,6 +1774,21 @@ impl State {
         Ok(self.tables.get(&id).ok_or("No such table")?.config.currency)
     }
 
+    /// Every table where the caller holds a seat, cash or tournament.
+    pub fn my_seats(&self, caller: &Principal) -> Vec<SeatRef> {
+        self.tables
+            .values()
+            .filter_map(|t| {
+                let i = t.seat_of(caller)?;
+                Some(SeatRef {
+                    table: t.id,
+                    tournament: self.table_tournament.get(&t.id).copied(),
+                    leaving: t.seats[i].as_ref().is_some_and(|s| s.is_leaving()),
+                })
+            })
+            .collect()
+    }
+
     pub fn join_table(&mut self, caller: Principal, id: u64, seat: u8, buy_in: u64, password: Option<String>, now: u64) -> R<()> {
         if self.pause.joins {
             return Err(self.paused_msg("New seats"));
@@ -1736,6 +1804,7 @@ impl State {
         }
         let name = self.user(&caller)?.username.clone();
         let currency = self.table_currency(id)?;
+        self.check_not_leaving(&caller, self.game_of(id))?;
         if !self.can_watch(id, Some(caller)) {
             self.unlock_room(caller, id, password.unwrap_or_default())?;
         }
@@ -1756,6 +1825,18 @@ impl State {
         self.post(Channel::Table(id), None, String::new(), format!("{name} sat down"), MessageKind::System, now);
         // Sitting down yourself takes you out of this table's line.
         self.leave_auto_sit_at(&caller, id);
+        Ok(())
+    }
+
+    /// A player leaving a table of `game` when its hand ends can't sit down at
+    /// it (or another copy) until then: the buy-back minimum isn't known yet.
+    fn check_not_leaving(&self, p: &Principal, game: u64) -> R<()> {
+        let leaving = self.tables.values().any(|t| {
+            self.game_of(t.id) == game && t.seat_of(p).and_then(|i| t.seats[i].as_ref()).is_some_and(|s| s.is_leaving())
+        });
+        if leaving {
+            return Err(crate::table::LEAVING_MSG.into());
+        }
         Ok(())
     }
 
@@ -1912,6 +1993,7 @@ impl State {
         if !self.is_copyable_game(game) {
             return Err("Join this table directly".into());
         }
+        self.check_not_leaving(&caller, game)?;
         // Cheap checks first, so a caller who can't sit can't open copies either.
         if self.pause.joins {
             return Err(self.paused_msg("New seats"));
@@ -1958,9 +2040,22 @@ impl State {
         Ok(id)
     }
 
-    pub fn leave_table(&mut self, caller: Principal, id: u64, now: u64) -> R<u64> {
+    /// Stands the caller up. In a live hand they leave when it ends (see
+    /// `settle_leavers`), never forfeiting a pot they are in.
+    pub fn leave_table(&mut self, caller: Principal, id: u64, now: u64) -> R<LeaveResult> {
         let currency = self.table_currency(id)?;
-        let chips = self.table_mut(id)?.stand(&caller, now)?;
+        let StandOutcome::Left(chips) = self.table_mut(id)?.stand(&caller, now)? else {
+            // On their turn they're acted for at once by the next tick.
+            return Ok(LeaveResult::AfterHand);
+        };
+        self.pay_out_leaver(caller, id, currency, chips, now)?;
+        self.after_table_change(id, now);
+        Ok(LeaveResult::Left(chips))
+    }
+
+    /// The one place a cash player's stack goes back to their wallet when they
+    /// leave: credit, buy-back record and the table notice.
+    fn pay_out_leaver(&mut self, caller: Principal, id: u64, currency: Currency, chips: u64, now: u64) -> R<()> {
         self.credit_in(&caller, currency, chips)?;
         if !self.table_tournament.contains_key(&id) {
             // Per game: leaving another table of it can't lower what you must bring back.
@@ -1968,10 +2063,33 @@ impl State {
             let kept = self.cashouts.get(&key).filter(|(_, at)| now < at + RETURN_WINDOW_NS).map_or(0, |(c, _)| *c);
             self.cashouts.insert(key, (chips.max(kept), now));
         }
-        let name = self.user(&caller)?.username.clone();
+        let name = self.users.get(&caller).map(|u| u.username.clone()).unwrap_or_default();
         self.post(Channel::Table(id), None, String::new(), format!("{name} left the table"), MessageKind::System, now);
-        self.after_table_change(id, now);
-        Ok(chips)
+        Ok(())
+    }
+
+    /// At the end of the results pause (the table is ready for the next hand),
+    /// stands up and pays out everyone who asked to leave during the hand.
+    /// Until then their seat stays: the result, its winner highlight and the
+    /// shown cards are keyed by seat, and nobody else may sit there. Credited
+    /// once: `take_leavers` removes the seat.
+    fn settle_leavers(&mut self, id: u64, now: u64) {
+        if self.table_tournament.contains_key(&id) {
+            return;
+        }
+        let Some(t) = self.tables.get_mut(&id) else { return };
+        if t.phase != Phase::HandOver || !t.ready_for_next_hand(now) {
+            return;
+        }
+        let currency = t.config.currency;
+        for (p, chips) in t.take_leavers() {
+            // `pay_out_leaver` can only fail in `credit_in` (an unknown user,
+            // which a seated player never is, or an overflow). Keep the books
+            // whole even then: the ICP goes to the treasury.
+            if self.pay_out_leaver(p, id, currency, chips, now).is_err() && currency == Currency::Icp {
+                self.treasury += chips;
+            }
+        }
     }
 
     pub fn top_up(&mut self, caller: Principal, id: u64, amount: u64) -> R<()> {
@@ -2032,8 +2150,16 @@ impl State {
     }
 
     pub fn act(&mut self, caller: Principal, id: u64, action: Action, now: u64) -> R<()> {
+        self.act_for(caller, id, action, now, None)
+    }
+
+    pub fn act_for(&mut self, caller: Principal, id: u64, action: Action, now: u64, expected: Option<u64>) -> R<()> {
         self.check_not_banned(&caller, now)?;
-        self.table_mut(id)?.act(&caller, action, now)?;
+        let t = self.tables.get(&id).ok_or("No such table")?;
+        if t.seat_of(&caller).and_then(|i| t.seats[i].as_ref()).is_some_and(|s| s.is_leaving()) {
+            return Err(crate::table::LEAVING_MSG.into());
+        }
+        self.table_mut(id)?.act_for(&caller, action, now, expected)?;
         self.after_table_change(id, now);
         Ok(())
     }
@@ -2143,6 +2269,7 @@ impl State {
         if in_tournament {
             self.after_tournament_hand(id, now);
         } else {
+            // Leavers stay seated through the results pause (see `settle_leavers`).
             self.auto_top_up(id);
         }
     }
@@ -2248,7 +2375,7 @@ impl State {
             .seats
             .iter()
             .flatten()
-            .filter(|s| !s.left && s.stack < max / 2)
+            .filter(|s| !s.left && !s.is_leaving() && s.stack < max / 2)
             .filter(|s| self.users.get(&s.player).is_some_and(|u| u.settings.auto_top_up))
             .map(|s| (s.player, max - s.stack))
             .collect();
@@ -2310,9 +2437,16 @@ impl State {
     /// Times out slow players and reports tables that need a new hand dealt.
     pub fn tick(&mut self, now: u64) -> Vec<u64> {
         self.close_periods(now);
+        self.close_referral_week(now);
+        self.sweep_fish_surplus(now);
         self.tournament_tick(now);
         self.close_idle_rooms(now);
         self.close_empty_copies(now);
+        // Before the queues, so a line gets a leaver's seat as soon as it's free.
+        let ids: Vec<u64> = self.tables.keys().copied().collect();
+        for id in ids {
+            self.settle_leavers(id, now);
+        }
         self.seat_from_queues(now);
         self.stand_up_idle(now);
         self.cashouts.retain(|_, (_, at)| now < *at + RETURN_WINDOW_NS);
@@ -2321,8 +2455,11 @@ impl State {
         for id in ids {
             let t = self.tables.get_mut(&id).unwrap();
             if let Some(p) = t.handle_timeout(now) {
-                let name = self.users.get(&p).map(|u| u.username.clone()).unwrap_or_default();
-                self.post(Channel::Table(id), None, String::new(), format!("{name} timed out and is sitting out"), MessageKind::System, now);
+                let leaving = t.seat_of(&p).and_then(|i| t.seats[i].as_ref()).is_some_and(|s| s.is_leaving());
+                if !leaving {
+                    let name = self.users.get(&p).map(|u| u.username.clone()).unwrap_or_default();
+                    self.post(Channel::Table(id), None, String::new(), format!("{name} timed out and is sitting out"), MessageKind::System, now);
+                }
                 self.after_table_change(id, now);
             }
             let t = self.tables.get_mut(&id).unwrap();
@@ -2358,6 +2495,8 @@ impl State {
     }
 
     pub fn start_hand(&mut self, id: u64, seed: [u8; 32], now: u64) {
+        // Normally done by the tick already; never deal a leaver in.
+        self.settle_leavers(id, now);
         if let Some(t) = self.tables.get_mut(&id) {
             if t.ready_for_next_hand(now) && t.start_hand(seed, now).is_ok() {
                 self.counters.hands_dealt += 1;
@@ -2446,6 +2585,7 @@ impl State {
                     folded: s.folded,
                     all_in: s.all_in,
                     sitting_out: s.sitting_out,
+                    leaving: s.is_leaving(),
                     has_cards: s.in_hand && !s.folded && !s.hole.is_empty(),
                     cards: t.visible_cards(i, viewer.as_ref()),
                     last_action: s.last_action.clone(),
@@ -2509,6 +2649,7 @@ impl State {
             jackpot_hit: self.current_hit(id),
             restricted: false,
             my_min_buy_in: viewer.map_or(0, |v| self.min_return_buy_in(id, &v, now)),
+            action_seq: t.action_seq.unwrap_or(0),
         })
     }
 }
@@ -2559,17 +2700,17 @@ pub fn fmt_icp(e8s: u64) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::rewards::E8S_PER_POINT;
+    use crate::rewards::{E8S_PER_POINT, FISH_RESERVE_FLOOR};
 
-    const SEC: u64 = 1_000_000_000;
+    pub(crate) const SEC: u64 = 1_000_000_000;
 
-    fn p(n: u8) -> Principal {
+    pub(crate) fn p(n: u8) -> Principal {
         Principal::from_slice(&[n; 10])
     }
 
-    fn setup() -> State {
+    pub(crate) fn setup() -> State {
         let mut s = State::new(Principal::management_canister(), 10_000);
         for k in 1..=3 {
             s.register(p(k), format!("player{k}"), 0).unwrap();
@@ -2578,12 +2719,12 @@ mod tests {
         s
     }
 
-    fn total_value(s: &State) -> u64 {
+    pub(crate) fn total_value(s: &State) -> u64 {
         s.house_stats().liabilities_total
     }
 
     /// Everything the house holds as its own or earmarked: treasury plus reward pools.
-    fn house_take(s: &State) -> u64 {
+    pub(crate) fn house_take(s: &State) -> u64 {
         s.treasury + s.house_stats().rewards_pools
     }
 
@@ -2922,7 +3063,7 @@ mod tests {
     }
 
     /// Drives every table: deals ready tables and plays aggressively until `done`.
-    fn run_until(s: &mut State, mut now: u64, max_rounds: u32, done: impl Fn(&State) -> bool) -> u64 {
+    pub(crate) fn run_until(s: &mut State, mut now: u64, max_rounds: u32, done: impl Fn(&State) -> bool) -> u64 {
         let mut k: u64 = 7;
         for round in 0..max_rounds {
             if done(s) {
@@ -2953,7 +3094,7 @@ mod tests {
         panic!("did not finish in {max_rounds} rounds");
     }
 
-    fn open_tournament(s: &mut State, name: &str) -> u64 {
+    pub(crate) fn open_tournament(s: &mut State, name: &str) -> u64 {
         s.ensure_tournaments(0);
         s.tournaments
             .values()
@@ -2962,7 +3103,7 @@ mod tests {
             .id
     }
 
-    fn many_players(s: &mut State, n: u8) {
+    pub(crate) fn many_players(s: &mut State, n: u8) {
         for k in 10..10 + n {
             s.register(p(k), format!("bot{k}"), 0).unwrap();
             s.credit(&p(k), 10 * E8S).unwrap();
@@ -3026,6 +3167,68 @@ mod tests {
         assert_eq!(house_take(&s), 2 * fee);
         let balances = s.users.get(&p(10)).unwrap().balance + s.users.get(&p(11)).unwrap().balance;
         assert_eq!(balances, 20 * E8S - 2 * fee);
+    }
+
+    #[test]
+    fn my_seats_lists_cash_and_tournament_seats() {
+        let mut s = setup();
+        many_players(&mut s, 6);
+        let table = 7;
+        let buy = s.tables[&table].config.max_buy_in;
+        s.join_table(p(1), table, 0, buy, None, 0).unwrap();
+        assert_eq!(s.my_seats(&p(1)), vec![SeatRef { table, tournament: None, leaving: false }]);
+        assert!(s.my_seats(&p(2)).is_empty());
+        assert!(s.my_seats(&Principal::anonymous()).is_empty());
+
+        let id = open_tournament(&mut s, "Chip Sit & Go · 6 max");
+        for k in 10..16 {
+            s.register_tournament(p(k), id, SEC).unwrap();
+        }
+        s.tick(s.tournaments[&id].start_at.max(10 * SEC));
+        let seats = s.my_seats(&p(10));
+        assert_eq!(seats.len(), 1);
+        assert_eq!(seats[0].tournament, Some(id));
+        let tt = seats[0].table;
+        // A cash and a tournament seat together are both listed.
+        s.join_table(p(10), table, 1, buy, None, 0).unwrap();
+        let seats = s.my_seats(&p(10));
+        assert_eq!(seats.len(), 2);
+        assert!(seats.contains(&SeatRef { table, tournament: None, leaving: false }));
+        assert!(seats.contains(&SeatRef { table: tt, tournament: Some(id), leaving: false }));
+    }
+
+    #[test]
+    fn my_seats_follows_a_tournament_move() {
+        use crate::tournament::TournamentStatus::*;
+        let mut s = setup();
+        many_players(&mut s, 20);
+        let id = open_tournament(&mut s, "Hourly Freeroll");
+        let start_at = s.tournaments[&id].start_at;
+        for k in 10..30 {
+            s.register_tournament(p(k), id, SEC).unwrap();
+        }
+        s.tick(start_at);
+        assert_eq!(s.tournaments[&id].status, Running);
+        let last: std::cell::RefCell<std::collections::HashMap<Principal, u64>> =
+            std::cell::RefCell::new((10..30).map(|k| (p(k), s.my_seats(&p(k))[0].table)).collect());
+        let moved = std::cell::Cell::new(0);
+        run_until(&mut s, start_at, 20_000, |s| {
+            for k in 10..30 {
+                if !s.tournaments[&id].entrants.iter().any(|e| e.player == p(k) && e.active()) {
+                    continue;
+                }
+                let seats = s.my_seats(&p(k));
+                assert_eq!(seats.len(), 1, "an active player is seated exactly once");
+                assert_eq!(seats[0].tournament, Some(id));
+                assert!(s.tables.contains_key(&seats[0].table));
+                if last.borrow()[&p(k)] != seats[0].table {
+                    moved.set(moved.get() + 1);
+                    last.borrow_mut().insert(p(k), seats[0].table);
+                }
+            }
+            s.tournaments[&id].status == Finished
+        });
+        assert!(moved.get() > 0, "balancing or merging moved somebody");
     }
 
     #[test]
@@ -3168,7 +3371,7 @@ mod tests {
         // p1 wins big, then leaves.
         let i = s.tables[&table].seat_of(&p(1)).unwrap();
         s.tables.get_mut(&table).unwrap().seats[i].as_mut().unwrap().stack = max * 3;
-        assert_eq!(s.leave_table(p(1), table, SEC).unwrap(), max * 3);
+        assert_eq!(s.leave_table(p(1), table, SEC).unwrap(), LeaveResult::Left(max * 3));
         // Coming back soon means bringing the stack back, even above the table max.
         assert!(s.join_table(p(1), table, 0, min, None, 2 * SEC).unwrap_err().contains("buy back in"));
         assert_eq!(s.table_view(table, Some(p(1)), 2 * SEC).unwrap().my_min_buy_in, max * 3);
@@ -3297,7 +3500,7 @@ mod tests {
         assert_eq!(chips + dropped, 3 * SIGNUP_CHIPS);
     }
 
-    fn start_scheduled(s: &mut State, name: &str, players: std::ops::Range<u8>) -> (u64, u64) {
+    pub(crate) fn start_scheduled(s: &mut State, name: &str, players: std::ops::Range<u8>) -> (u64, u64) {
         let id = open_tournament(s, name);
         for k in players {
             s.register_tournament(p(k), id, SEC).unwrap();
@@ -3870,6 +4073,7 @@ mod tests {
             }
         }
         assert_eq!(s.wallet_total, s.recount_wallet_total());
+        assert_eq!(s.rewards().banked_ev.unwrap_or(0), s.recount_banked_ev());
     }
 
     #[test]
@@ -3999,6 +4203,160 @@ mod tests {
         assert!(s.join_table(p(3), 1, 0, 1_000, None, u64::MAX / 2).is_err(), "permanent");
         s.unban(p(200), p(3), 0).unwrap();
         s.join_table(p(3), 1, 0, 1_000, None, 0).unwrap();
+    }
+
+    fn wallet(s: &State, k: u8) -> u64 {
+        s.users.get(&p(k)).unwrap().balance
+    }
+
+    /// Seats p1-p3 at Low Rollers (ICP, raked) and deals a hand.
+    fn leave_test_hand(s: &mut State, seed: u8) -> (u64, u64) {
+        let table = 7;
+        let buy = s.tables[&table].config.max_buy_in;
+        for k in 1..=3 {
+            s.join_table(p(k), table, k - 1, buy, None, 0).unwrap();
+        }
+        assert_eq!(s.tick(SEC), vec![table]);
+        s.start_hand(table, [seed; 32], SEC);
+        assert!(s.tables[&table].phase.is_betting());
+        (table, buy)
+    }
+
+    fn to_act(s: &State, table: u64) -> Principal {
+        let t = &s.tables[&table];
+        t.seats[t.to_act.unwrap()].as_ref().unwrap().player
+    }
+
+    /// Plays the hand out: players check or call, and the 1 s tick acts for
+    /// anyone sitting out.
+    fn finish_hand(s: &mut State, table: u64, mut now: u64) -> u64 {
+        while s.tables[&table].phase.is_betting() {
+            let t = &s.tables[&table];
+            if t.seats[t.to_act.unwrap()].as_ref().unwrap().sitting_out {
+                now += SEC;
+                s.tick(now);
+                continue;
+            }
+            let actor = to_act(s, table);
+            if s.act(actor, table, Action::Check, now).is_err() {
+                s.act(actor, table, Action::Call, now).unwrap();
+            }
+        }
+        now
+    }
+
+    /// Ticks at the end of the results pause, when leavers are stood up.
+    fn end_pause(s: &mut State, table: u64) -> u64 {
+        assert_eq!(s.tables[&table].phase, Phase::HandOver);
+        let at = s.tables[&table].phase_changed_at + 5 * SEC;
+        s.tick(at - 1);
+        assert!(s.tables[&table].seats.iter().flatten().any(|x| x.is_leaving()), "seated through the results pause");
+        s.tick(at);
+        at
+    }
+
+    #[test]
+    fn leaving_between_hands_is_immediate() {
+        let mut s = setup();
+        let table = 7;
+        let buy = s.tables[&table].config.max_buy_in;
+        let before = wallet(&s, 1);
+        s.join_table(p(1), table, 0, buy, None, 0).unwrap();
+        s.join_table(p(2), table, 1, buy, None, 0).unwrap();
+        assert_eq!(s.leave_table(p(1), table, SEC).unwrap(), LeaveResult::Left(buy));
+        assert_eq!(wallet(&s, 1), before);
+        assert!(s.tables[&table].seat_of(&p(1)).is_none());
+        assert!(s.chat_since(Channel::Table(table), 0).iter().any(|m| m.text == "player1 left the table"));
+    }
+
+    #[test]
+    fn leaver_is_credited_once_at_hand_end() {
+        let mut s = setup();
+        let before = total_value(&s);
+        let (table, buy) = leave_test_hand(&mut s, 5);
+        let actor = to_act(&s, table);
+        let k = (1..=3).find(|&k| p(k) != actor).unwrap();
+        let held = wallet(&s, k);
+        assert_eq!(s.leave_table(p(k), table, SEC).unwrap(), LeaveResult::AfterHand);
+        assert_eq!(wallet(&s, k), held, "nothing is paid out mid-hand");
+        assert!(s.tables[&table].seat_of(&p(k)).is_some(), "still in the hand");
+        let v = s.table_view(table, Some(p(k)), SEC).unwrap();
+        assert!(v.seats.iter().flatten().any(|x| x.player == p(k) && x.leaving));
+        finish_hand(&mut s, table, SEC);
+        assert_eq!(wallet(&s, k), held, "not before the results pause is over");
+        let now = end_pause(&mut s, table);
+        let r = s.tables[&table].last_result.clone().unwrap();
+        let pr = r.players.iter().find(|x| x.player == p(k)).unwrap();
+        assert_eq!(wallet(&s, k), held + buy - pr.committed + pr.won, "their whole stack, winnings included");
+        assert!(s.tables[&table].seat_of(&p(k)).is_none());
+        assert_eq!(s.min_return_buy_in(table, &p(k), now), buy - pr.committed + pr.won);
+        assert!(s.chat_since(Channel::Table(table), 0).iter().any(|m| m.text == format!("player{k} left the table")));
+        // Never again: more ticks, another hand, a repeated hand-end hook.
+        let credited = wallet(&s, k);
+        s.after_table_change(table, now);
+        let later = now + 6 * SEC;
+        assert_eq!(s.tick(later), vec![table]);
+        s.start_hand(table, [6; 32], later);
+        let end = finish_hand(&mut s, table, later);
+        s.tick(end + 6 * SEC);
+        assert_eq!(wallet(&s, k), credited);
+        assert_eq!(total_value(&s), before);
+        assert_eq!(s.wallet_total, s.recount_wallet_total());
+    }
+
+    #[test]
+    fn moderation_removal_keeps_all_in_entitlement() {
+        let card = |r: u8, su: u8| r * 4 + su;
+        let mut s = setup();
+        let before = total_value(&s);
+        let (table, buy) = leave_test_hand(&mut s, 3);
+        let shover = to_act(&s, table);
+        let k = (1..=3).find(|&k| p(k) == shover).unwrap();
+        let t = s.tables.get_mut(&table).unwrap();
+        // The shover holds aces against rags on a dry board (deck pops from the end).
+        let mut rags = vec![vec![card(1, 1), card(6, 2)], vec![card(3, 2), card(8, 1)]];
+        for seat in t.seats.iter_mut().flatten() {
+            seat.hole = if seat.player == shover { vec![card(12, 3), card(12, 2)] } else { rags.pop().unwrap() };
+        }
+        t.deck = vec![card(2, 0), card(6, 0), card(9, 3), card(4, 0), card(7, 2), card(5, 1), card(0, 0), card(3, 0)];
+        let held = wallet(&s, k);
+        s.act(shover, table, Action::AllIn, SEC).unwrap();
+        s.ban(p(200), shover, 24, "collusion", SEC).unwrap();
+        let i = s.tables[&table].seat_of(&shover).unwrap();
+        assert!(!s.tables[&table].seats[i].as_ref().unwrap().folded, "removal never folds an all-in");
+        assert_eq!(wallet(&s, k), held);
+        // The others call and check it down.
+        finish_hand(&mut s, table, SEC);
+        end_pause(&mut s, table);
+        let r = s.tables[&table].last_result.clone().unwrap();
+        let pr = r.players.iter().find(|x| x.player == shover).unwrap();
+        assert!(pr.won > pr.committed, "the aces won the pot");
+        assert_eq!(wallet(&s, k), held + buy - pr.committed + pr.won);
+        assert!(s.tables[&table].seat_of(&shover).is_none());
+        assert_eq!(total_value(&s), before);
+    }
+
+    #[test]
+    fn leaver_cannot_rejoin_until_the_hand_ends() {
+        let mut s = setup();
+        let (table, buy) = leave_test_hand(&mut s, 5);
+        let actor = to_act(&s, table);
+        let k = (1..=3).find(|&k| p(k) == actor).unwrap();
+        assert_eq!(s.leave_table(p(k), table, SEC).unwrap(), LeaveResult::AfterHand);
+        assert!(s.sit_out(p(k), table, false, SEC).is_err(), "no coming back while leaving");
+        assert!(s.act(p(k), table, Action::Call, SEC).is_err(), "their turns are played for them");
+        s.tick(2 * SEC); // folded for them
+        assert!(s.tables[&table].phase.is_betting());
+        assert!(s.top_up(p(k), table, 1).is_err());
+        assert!(s.join_table(p(k), table, 5, buy, None, 2 * SEC).is_err());
+        assert!(s.join_game(p(k), table, buy, 2 * SEC).is_err(), "not another copy of the game either");
+        assert_eq!(s.leave_table(p(k), table, 2 * SEC).unwrap(), LeaveResult::AfterHand);
+        finish_hand(&mut s, table, 2 * SEC);
+        assert!(s.join_table(p(k), table, 5, buy, None, 2 * SEC).is_err(), "nor during the results pause");
+        let now = end_pause(&mut s, table);
+        assert!(s.tables[&table].seat_of(&p(k)).is_none());
+        let back = s.min_return_buy_in(table, &p(k), now);
+        s.join_table(p(k), table, 5, back, None, now).unwrap();
     }
 
     #[test]
@@ -4400,6 +4758,53 @@ mod tests {
         assert!(queued(1)(&s.auto_sit_ping(p(3), c, SEC)));
         assert_eq!(s.auto_sit(p(3), c, None, SEC).unwrap(), AutoSitStatus::NotQueued);
         assert_eq!(s.auto_sit_ping(p(3), c, SEC), AutoSitStatus::NotQueued);
+    }
+
+    #[test]
+    fn leaver_keeps_the_seat_and_the_win_through_the_results_pause() {
+        let card = |r: u8, su: u8| r * 4 + su;
+        let mut s = full_hu();
+        s.auto_sit(p(3), HU, Some(1_000), 0).unwrap(); // a line for the full table
+        assert_eq!(s.tick(SEC), vec![HU]);
+        s.start_hand(HU, [1; 32], SEC);
+        let shover = to_act(&s, HU);
+        let t = s.tables.get_mut(&HU).unwrap();
+        for seat in t.seats.iter_mut().flatten() {
+            seat.hole = if seat.player == shover { vec![card(12, 3), card(12, 2)] } else { vec![card(1, 1), card(6, 2)] };
+        }
+        t.deck = vec![card(2, 0), card(6, 0), card(9, 3), card(4, 0), card(7, 2), card(5, 1), card(0, 0), card(3, 0)];
+        let i = s.tables[&HU].seat_of(&shover).unwrap() as u8;
+        s.act(shover, HU, Action::AllIn, SEC).unwrap();
+        assert_eq!(s.leave_table(shover, HU, SEC).unwrap(), LeaveResult::AfterHand);
+        let other = to_act(&s, HU);
+        s.act(other, HU, Action::Call, SEC).unwrap();
+        assert_eq!(s.tables[&HU].phase, Phase::HandOver);
+        let held = s.users.get(&shover).unwrap().chips;
+        // During the pause: the queued player isn't seated, and everyone sees the
+        // leaver win with their cards on their own seat.
+        for at in [SEC + 1, 3 * SEC, 6 * SEC - 1] {
+            s.auto_sit_ping(p(3), HU, at);
+            s.tick(at);
+            assert!(s.tables[&HU].seat_of(&p(3)).is_none(), "seat still taken");
+            let v = s.table_view(HU, Some(p(3)), at).unwrap();
+            let r = v.last_result.clone().unwrap();
+            assert!(r.winners.iter().all(|w| w.seat == i && w.player == shover));
+            let seat = v.seats[i as usize].as_ref().unwrap();
+            assert_eq!(seat.player, shover);
+            assert_eq!(seat.cards, vec![card(12, 3), card(12, 2)]);
+            assert_eq!(s.users.get(&shover).unwrap().chips, held, "paid when the pause ends");
+        }
+        // After the pause: paid once, and the line gets the seat.
+        let won: u64 = s.tables[&HU].last_result.as_ref().unwrap().winners.iter().map(|w| w.amount).sum();
+        s.auto_sit_ping(p(3), HU, 6 * SEC);
+        s.tick(6 * SEC);
+        assert!(s.tables[&HU].seat_of(&shover).is_none());
+        assert_eq!(s.users.get(&shover).unwrap().chips, held + won);
+        s.auto_sit_ping(p(3), HU, 7 * SEC);
+        s.tick(7 * SEC);
+        assert!(s.tables[&HU].seat_of(&p(3)).is_some(), "the queued player sits down");
+        s.tick(8 * SEC);
+        assert_eq!(s.users.get(&shover).unwrap().chips, held + won, "credited once");
     }
 
     #[test]
@@ -4893,6 +5298,205 @@ mod tests {
         assert_eq!(total_value(&s), before.0);
         assert_eq!(house_take(&s), before.1 - paid);
         assert_eq!(s.wallet_total, before.2 + paid);
+    }
+
+    // ---- Fish Buffet: weekly sweep of the pool's surplus ----
+
+    /// Monday 00:00 UTC opening week `k` (`week_of` rolls over at day 7k - 3).
+    fn monday(k: u64) -> u64 {
+        (7 * k - 3) * DAY_NS
+    }
+
+    #[test]
+    fn surplus_above_the_reserve_returns_to_the_treasury() {
+        use crate::leaderboards::week_of;
+        assert_eq!((week_of(monday(5) - 1), week_of(monday(5))), (4, 5));
+        let mut s = setup();
+        s.rewards_mut().fish_pool = 50 * E8S;
+        s.rewards_mut().fish_week = Some(4);
+        let (treasury, take, total) = (s.treasury, house_take(&s), total_value(&s));
+        // The last nanosecond of the week sweeps nothing.
+        s.tick(monday(5) - 1);
+        assert_eq!(s.rewards().fish_pool, 50 * E8S);
+        assert_eq!(s.treasury, treasury);
+        // The Monday tick keeps the 10 ICP floor and returns the rest.
+        s.tick(monday(5));
+        assert_eq!(s.rewards().fish_pool, 10 * E8S);
+        assert_eq!(s.treasury, treasury + 40 * E8S);
+        assert_eq!(house_take(&s), take);
+        assert_eq!(total_value(&s), total);
+        assert_eq!(s.rewards().fish_week, Some(5));
+    }
+
+    #[test]
+    fn reserve_covers_recent_payouts() {
+        let mut s = setup();
+        {
+            let r = s.rewards_mut();
+            r.fish_pool = 50 * E8S;
+            r.fish_week = Some(4);
+            // 13 weeks summing to 30 ICP once the open week is pushed (the oldest is 0, so it may fall out).
+            let mut weeks: VecDeque<u64> = std::iter::repeat_n(2 * E8S, 12).collect();
+            weeks.push_front(0);
+            r.fish_paid_weeks = Some(weeks);
+            r.fish_paid_this_week = Some(6 * E8S);
+        }
+        let treasury = s.treasury;
+        s.tick(monday(5));
+        let r = s.rewards();
+        assert_eq!(r.fish_paid_weeks.as_ref().unwrap().len(), 13);
+        assert_eq!(r.fish_paid_weeks.as_ref().unwrap().back(), Some(&(6 * E8S)));
+        assert_eq!(r.fish_paid_this_week, Some(0));
+        assert_eq!(r.fish_pool, 30 * E8S);
+        assert_eq!(s.treasury, treasury + 20 * E8S);
+        // A week later the oldest 2 ICP falls out of the window: 28 kept.
+        s.rewards_mut().fish_pool = 50 * E8S;
+        s.tick(monday(6));
+        assert_eq!(s.rewards().fish_paid_weeks.as_ref().unwrap().len(), 13);
+        assert_eq!(s.rewards().fish_pool, 28 * E8S);
+    }
+
+    #[test]
+    fn reserve_covers_twice_the_banked_spins() {
+        let mut s = setup();
+        s.rewards_mut().fish_pool = 1_000 * E8S;
+        s.rewards_mut().fish_week = Some(4);
+        // 400 points at Plankton bank 4 spins of 10 ICP stake each, EV 8% = 0.8 ICP each.
+        s.earn_rake(&p(1), 400 * E8S_PER_POINT, 40 * E8S, monday(5) - 1);
+        assert_eq!(account(&s, p(1)).spins.len(), 4);
+        assert_eq!(s.rewards().banked_ev, Some(4 * 80_000_000));
+        // 3.2 ICP of EV is under the floor; add a bigger stake to pass it.
+        s.earn_rake(&p(2), 400 * E8S_PER_POINT, 100 * E8S, monday(5) - 1);
+        let ev = s.rewards().banked_ev.unwrap();
+        assert_eq!(ev, 4 * 80_000_000 + 4 * 200_000_000);
+        assert_eq!(ev, s.recount_banked_ev());
+        assert!(2 * ev > FISH_RESERVE_FLOOR, "banked EV {ev} sets the reserve");
+        let take = house_take(&s);
+        s.tick(monday(5));
+        assert_eq!(s.rewards().fish_pool, 2 * ev);
+        assert_eq!(house_take(&s), take);
+    }
+
+    #[test]
+    fn sweep_runs_once_per_week() {
+        let mut s = setup();
+        s.rewards_mut().fish_pool = 50 * E8S;
+        s.rewards_mut().fish_week = Some(4);
+        s.tick(monday(5));
+        let treasury = s.treasury;
+        assert_eq!(s.rewards().fish_pool, 10 * E8S);
+        // Two ticks in the same second, and a top-up later in the week: no second sweep.
+        s.tick(monday(5));
+        s.rewards_mut().fish_pool += 30 * E8S;
+        s.tick(monday(5) + 3 * DAY_NS);
+        assert_eq!(s.rewards().fish_pool, 40 * E8S);
+        assert_eq!(s.treasury, treasury);
+        // Downtime: the first tick after three missed weeks sweeps once and records one week.
+        let weeks = s.rewards().fish_paid_weeks.map_or(0, |w| w.len());
+        s.tick(monday(9) + DAY_NS);
+        assert_eq!(s.rewards().fish_pool, 10 * E8S);
+        assert_eq!(s.rewards().fish_paid_weeks.unwrap().len(), weeks + 1);
+        assert_eq!(s.rewards().fish_week, Some(9));
+        s.rewards_mut().fish_pool += 30 * E8S;
+        s.tick(monday(9) + DAY_NS + 1);
+        assert_eq!(s.rewards().fish_pool, 40 * E8S);
+
+        // An old snapshot: the new fields are absent. The first tick only
+        // records the week (no mid-week sweep, no zero week in the history);
+        // the next Monday sweeps.
+        let mut s = setup();
+        {
+            let r = s.rewards_mut();
+            r.fish_pool = 50 * E8S;
+            r.fish_paid_weeks = None;
+            r.fish_paid_this_week = None;
+            r.banked_ev = None;
+            r.fish_week = None;
+        }
+        let treasury = s.treasury;
+        s.tick(monday(5) + 7);
+        assert_eq!(s.rewards().fish_pool, 50 * E8S);
+        assert_eq!(s.treasury, treasury);
+        assert_eq!(s.rewards().fish_week, Some(5));
+        assert_eq!(s.rewards().fish_paid_weeks.as_ref().map_or(0, |w| w.len()), 0);
+        s.tick(monday(5) + 8);
+        assert_eq!(s.rewards().fish_pool, 50 * E8S);
+        s.tick(monday(6));
+        assert_eq!(s.rewards().fish_pool, 10 * E8S);
+        assert_eq!(s.treasury, treasury + 40 * E8S);
+        assert_eq!(s.rewards().fish_paid_weeks.as_ref().unwrap().len(), 1);
+        s.rewards_mut().fish_pool += 30 * E8S;
+        s.tick(monday(6) + 8);
+        assert_eq!(s.rewards().fish_pool, 40 * E8S);
+    }
+
+    #[test]
+    fn banked_ev_tracks_banking_and_spinning() {
+        let mut s = setup();
+        s.rewards_mut().fish_pool = 1_000 * E8S;
+        // 400 points at Plankton: 4 spins of 1 ICP stake, EV 8% each.
+        s.earn_rake(&p(1), 400 * E8S_PER_POINT, 4 * E8S, SEC);
+        assert_eq!(s.rewards().banked_ev, Some(4 * 8_000_000));
+        assert_eq!(s.rewards().banked_ev.unwrap(), s.recount_banked_ev());
+        // Past the 50 cap: dropped steps add nothing.
+        s.earn_rake(&p(1), 20_000 * E8S, 20_000 * E8S, 2 * SEC);
+        assert_eq!(account(&s, p(1)).spins.len(), 50);
+        assert_eq!(s.rewards().banked_ev.unwrap(), s.recount_banked_ev());
+        // Spinning everything (paid in full or capped) brings it back to 0, and
+        // the payouts count toward the week.
+        s.rewards_mut().fish_pool = 20 * E8S;
+        let pool_before = s.rewards().fish_pool;
+        for k in 0..50 {
+            s.spin_wheel(p(1), 3 * SEC + k).unwrap();
+        }
+        assert_eq!(s.rewards().banked_ev, Some(0));
+        // The week counts what was paid, not the (capped) prizes.
+        assert!(account(&s, p(1)).history.iter().any(|r| r.capped), "some spin was capped");
+        assert_eq!(s.rewards().fish_paid_this_week, Some(pool_before - s.rewards().fish_pool));
+        // A spin the running total never saw (an old snapshot's) saturates at 0.
+        s.rewards_mut().banked_ev = Some(0);
+        bank_spin(&mut s, p(2), 10 * E8S, 6);
+        s.spin_wheel(p(2), 4 * SEC).unwrap();
+        assert_eq!(s.rewards().banked_ev, Some(0));
+    }
+
+    #[test]
+    fn banked_ev_is_seeded_from_spins_banked_before_it_existed() {
+        let mut s = setup();
+        bank_spin(&mut s, p(1), 10 * E8S, 0);
+        bank_spin(&mut s, p(2), 10 * E8S, 6);
+        s.rewards_mut().banked_ev = None;
+        let expected = 10 * E8S * 800 / 10_000 + 10 * E8S * crate::rewards::TIERS[6].rate_bps / 10_000;
+        assert_eq!(s.recount_banked_ev(), expected);
+        // The first sweep seeds the running total from the banked spins.
+        s.rewards_mut().fish_pool = 500 * E8S;
+        s.rewards_mut().fish_week = Some(4);
+        s.tick(monday(5));
+        assert_eq!(s.rewards().banked_ev, Some(expected));
+        assert_eq!(s.rewards().fish_pool, (2 * expected).max(FISH_RESERVE_FLOOR));
+    }
+
+    #[test]
+    fn seed_banked_ev_counts_once_and_later_calls_stay_consistent() {
+        let mut s = setup();
+        bank_spin(&mut s, p(1), 10 * E8S, 0);
+        bank_spin(&mut s, p(2), 10 * E8S, 6);
+        s.rewards_mut().banked_ev = None;
+        let expected = s.recount_banked_ev();
+        assert!(expected > 0);
+        s.seed_banked_ev();
+        assert_eq!(s.rewards().banked_ev, Some(expected));
+        // A second call is a no-op: it does not recount.
+        s.rewards_mut().banked_ev = Some(7);
+        s.seed_banked_ev();
+        assert_eq!(s.rewards().banked_ev, Some(7));
+        // Later earn/spin keep the running total in step with the recount.
+        s.rewards_mut().banked_ev = Some(expected);
+        s.rewards_mut().fish_pool = 500 * E8S;
+        s.earn_rake(&p(3), 400 * E8S_PER_POINT, 4 * E8S, SEC);
+        assert_eq!(s.rewards().banked_ev.unwrap(), s.recount_banked_ev());
+        s.spin_wheel(p(3), 2 * SEC).unwrap();
+        assert_eq!(s.rewards().banked_ev.unwrap(), s.recount_banked_ev());
     }
 
     #[test]

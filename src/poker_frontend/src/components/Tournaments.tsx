@@ -89,7 +89,7 @@ export function Tournaments({ initial }: { initial?: bigint }) {
             <div key={String(t.id)} className={`tourney-row ${selected === t.id ? 'active' : ''}`} onClick={() => setSelected(t.id)}>
               <div className="grow">
                 <div>
-                  <b>{t.name}</b> <span className={`tag ${isChips(t.currency) ? 'chips' : ''}`}>{isChips(t.currency) ? 'chips' : 'ICP'}</span>
+                  <button className="btn-reset" aria-pressed={selected === t.id} onClick={(e) => { e.stopPropagation(); setSelected(t.id); }}><b>{t.name}</b></button> <span className={`tag ${isChips(t.currency) ? 'chips' : ''}`}>{isChips(t.currency) ? 'chips' : 'ICP'}</span>
                   {status === 'Running' && <span className="tag live">LIVE</span>}
                 </div>
                 <div className="muted small">

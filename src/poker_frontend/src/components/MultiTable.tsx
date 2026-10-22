@@ -8,17 +8,35 @@ import { Chat } from './Chat';
 /** Strip of open tables, shown on every page so you never miss your turn. */
 export function TableStrip() {
   const { view, go } = useApp();
-  const { open, active, views, clockOffset, layout, autoFocus, focus, closeTable, setLayout, setAutoFocus } = useTables();
+  const { open, active, views, clockOffset, layout, autoFocus, focus, closeTable, setLayout, setAutoFocus, notices, dismissNotice } = useTables();
   const [, tick] = useState(0);
   useEffect(() => {
     const t = setInterval(() => tick((x) => x + 1), 500);
     return () => clearInterval(t);
   }, []);
-  if (open.length === 0) return null;
+  if (open.length === 0 && notices.length === 0) return null;
   const onTables = view.name === 'table';
 
   return (
-    <div className="table-strip">
+    <>
+      {notices.length > 0 && (
+        <div className="strip-notices">
+          {notices.map((n) => (
+            <div key={n.key} className="strip-notice" role="status">
+              <span>{n.text}</span>
+              {n.table !== undefined && (
+                <button className="btn ghost small" onClick={() => focus(n.table!)}>
+                  Go to table
+                </button>
+              )}
+              <button className="btn ghost small" onClick={() => dismissNotice(n.key)} aria-label="Dismiss">
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="table-strip">
       {open.map((id) => {
         const v = views.get(String(id));
         const turn = isMyTurn(v);
@@ -28,15 +46,17 @@ export function TableStrip() {
           <div
             key={String(id)}
             className={`strip-tab ${onTables && active === id ? 'active' : ''} ${turn ? 'turn' : ''}`}
-            onClick={() => focus(id)}
           >
-            <span className="strip-name">{v?.tournament[0] ? '🏆 ' : ''}{v?.config.name ?? 'Table'}</span>
-            <span className="strip-info">
-              {turn ? `Your turn · ${secs}s${v!.time_bank_active ? ' ⏳' : ''}` : me ? amount(me.stack, v!.config.currency) : 'watching'}
-            </span>
+            <button className="strip-main btn-reset" onClick={() => focus(id)} aria-current={onTables && active === id ? 'true' : undefined}>
+              <span className="strip-name">{v?.tournament[0] ? '🏆 ' : ''}{v?.config.name ?? 'Table'}</span>
+              <span className="strip-info">
+                {turn ? `Your turn · ${secs}s${v!.time_bank_active ? ' ⏳' : ''}` : me ? amount(me.stack, v!.config.currency) : 'watching'}
+              </span>
+            </button>
             <button
               className="strip-close"
-              title="Close table"
+              aria-label={`${v?.my_seat.length ? (v.tournament[0] ? 'Tournament seat' : 'Leave table') : 'Close table'}: ${v?.config.name ?? 'Table'}`}
+              title={v?.my_seat.length ? (v.tournament[0] ? 'Tournament seat' : 'Leave table') : 'Close table'}
               onClick={(e) => {
                 e.stopPropagation();
                 closeTable(id);
@@ -47,16 +67,16 @@ export function TableStrip() {
           </div>
         );
       })}
-      {open.length < MAX_OPEN && (
+      {open.filter((id) => !views.get(String(id))?.my_seat.length).length < MAX_OPEN && (
         <button className="strip-add" title="Open another table" onClick={() => go({ name: 'lobby' })}>
           + Table
         </button>
       )}
       <div className="strip-controls">
-        <button className={`chip ${layout === 'tabs' ? 'active' : ''}`} onClick={() => setLayout('tabs')} title="One table at a time">
+        <button aria-pressed={layout === 'tabs'} className={`chip ${layout === 'tabs' ? 'active' : ''}`} onClick={() => setLayout('tabs')} title="One table at a time">
           ▭ Tabs
         </button>
-        <button className={`chip ${layout === 'tile' ? 'active' : ''}`} onClick={() => setLayout('tile')} title="All tables side by side">
+        <button aria-pressed={layout === 'tile'} className={`chip ${layout === 'tile' ? 'active' : ''}`} onClick={() => setLayout('tile')} title="All tables side by side">
           ⊞ Tile
         </button>
         {layout === 'tabs' && (
@@ -65,7 +85,8 @@ export function TableStrip() {
           </label>
         )}
       </div>
-    </div>
+      </div>
+    </>
   );
 }
 

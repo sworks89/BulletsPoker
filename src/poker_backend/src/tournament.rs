@@ -5,7 +5,7 @@
 //! tournament's prize pool and is paid out to wallets as players finish.
 
 use crate::state::{Channel, MessageKind, State, E8S, R};
-use crate::table::{Currency, Table, TableConfig};
+use crate::table::{Currency, StandOutcome, Table, TableConfig};
 use candid::{CandidType, Deserialize, Principal};
 use sha2::{Digest, Sha256};
 
@@ -1090,7 +1090,8 @@ impl State {
 
     fn move_player(&mut self, p: &Principal, from: u64, to: u64) {
         let away = self.tables[&from].seat_of(p).and_then(|i| self.tables[&from].seats[i].as_ref()).is_some_and(|s| s.sitting_out);
-        let Ok(stack) = self.tables.get_mut(&from).unwrap().stand(p, 0) else { return };
+        // Only between hands, so the player always leaves at once.
+        let Ok(StandOutcome::Left(stack)) = self.tables.get_mut(&from).unwrap().stand(p, 0) else { return };
         let dest = self.tables.get_mut(&to).unwrap();
         let seat = dest.free_seats()[0];
         dest.seat_player(*p, seat, stack).unwrap();
