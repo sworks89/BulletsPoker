@@ -185,6 +185,9 @@ pub struct User {
     pub welcome: Option<crate::welcome::WelcomeBonus>,
     /// Recent failed deposits/sweeps (see `crate::wallet`); created on the first.
     pub deposit_fails: Option<crate::wallet::FailWindow>,
+    /// Set once a deposit or sweep completed; `None` on older accounts, which
+    /// `crate::wallet` checks against their recent ops.
+    pub has_deposited: Option<bool>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq)]
@@ -959,6 +962,7 @@ impl State {
                 referrer_stats: None,
                 welcome: None,
                 deposit_fails: None,
+                has_deposited: None,
             },
         );
         Ok(self.profile(&caller).unwrap())

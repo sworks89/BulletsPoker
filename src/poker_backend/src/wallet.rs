@@ -36,6 +36,8 @@ pub const USER_FAILS_PER_HOUR: u32 = 5;
 pub const TOTAL_FAILS_PER_HOUR: u32 = 500;
 /// Failed deposit/sweep records are kept this long.
 pub const PRUNE_AFTER_NS: u64 = 30 * 24 * 3600 * NANOS;
+/// Start of the reason on ops an admin settled; those records are never pruned.
+const ADMIN_RESOLVED: &str = "Resolved by admin";
 /// Most records removed per prune run.
 pub const PRUNE_BATCH: usize = 500;
 /// Most records looked at per prune run.
@@ -190,7 +192,11 @@ impl State {
         self.user(&user)?;
         self.check_not_banned(&user, now)?;
         self.check_user_fails(&user, now)?;
-        if self.deposit_fail_budget.is_some_and(|w| now < w.start.saturating_add(HOUR_NS) && w.count >= TOTAL_FAILS_PER_HOUR) {
+        // Only accounts that never deposited are held back, so cheap accounts
+        // burning the budget can't lock out established players.
+        if self.deposit_fail_budget.is_some_and(|w| now < w.start.saturating_add(HOUR_NS) && w.count >= TOTAL_FAILS_PER_HOUR)
+            && !self.has_deposited(&user)
+        {
             return Err("Deposits are busy right now, try again shortly".into());
         }
         let mut op = self.new_op(OpKind::Deposit, user, amount, to, now);
@@ -210,6 +216,17 @@ impl State {
         op.from_subaccount = Some(sub);
         self.stores.ledger_ops.insert(op.id, op.clone());
         Ok(op)
+    }
+
+    /// Has this player ever had a deposit or sweep complete? Accounts from before
+    /// the flag existed are judged by their recent ops.
+    fn has_deposited(&self, user: &Principal) -> bool {
+        let Some(u) = self.users.get(user) else { return false };
+        u.has_deposited.unwrap_or_else(|| {
+            u.ops.iter().filter_map(|id| self.stores.ledger_ops.get(id)).any(|op| {
+                matches!(op.kind, OpKind::Deposit | OpKind::Sweep) && matches!(op.status, OpStatus::Completed { .. })
+            })
+        })
     }
 
     /// Refuses a deposit or sweep from a player with too many recent failures.
@@ -265,7 +282,8 @@ impl State {
             }
             scanned += 1;
             let money_free = matches!(op.kind, OpKind::Deposit | OpKind::Sweep);
-            if money_free && matches!(op.status, OpStatus::Failed { .. }) {
+            // An admin's decision is kept as a record.
+            if money_free && matches!(&op.status, OpStatus::Failed { reason } if !reason.starts_with(ADMIN_RESOLVED)) {
                 doomed.push(op);
             }
         }
@@ -302,6 +320,7 @@ impl State {
                 if matches!(op.kind, OpKind::Deposit | OpKind::Sweep) {
                     if let Some(mut u) = self.users.get_mut(&op.user) {
                         u.deposit_fails = None;
+                        u.has_deposited = Some(true);
                     }
                 }
                 OpStatus::Completed { block }
@@ -405,7 +424,7 @@ impl State {
         // finish_op keeps a failed *unknown* op unknown, so settle it directly.
         self.apply_failure(&op);
         self.counters.ledger_ops_failed += 1;
-        op.status = OpStatus::Failed { reason: "Resolved by admin: the transfer did not happen".into() };
+        op.status = OpStatus::Failed { reason: format!("{ADMIN_RESOLVED}: the transfer did not happen") };
         op.updated_at = now;
         self.unresolved.remove(&id);
         self.stores.ledger_ops.insert(id, op.clone());
@@ -714,15 +733,72 @@ mod tests {
         // A failed withdrawal (refunded) is a money record and stays.
         let w = s.begin_withdraw(p(1), acct(9), E8S, 5).unwrap();
         s.finish_op(w.id, Outcome::Failed("x".into()), 6).unwrap();
-        let t = s.begin_treasury_withdraw(Principal::management_canister(), acct(9), 1, 7);
-        let _ = t;
+        s.treasury = 10 * E8S;
+        let t = s.begin_treasury_withdraw(Principal::management_canister(), acct(9), 1, 7).unwrap();
+        s.finish_op(t.id, Outcome::Failed("x".into()), 8).unwrap();
         let failed = age_failed(&mut s, true, 8);
         let far = 100 * PRUNE_AFTER_NS;
         assert_eq!(s.prune_failed_deposits(far), 1);
-        for id in [done.id, unknown.id, pending.id, w.id] {
+        for id in [done.id, unknown.id, pending.id, w.id, t.id] {
             assert!(s.stores.ledger_ops.get(&id).is_some(), "op {id} must stay");
         }
         assert!(s.stores.ledger_ops.get(&failed).is_none());
         assert_eq!(s.unresolved_ops().len(), 1);
+    }
+
+    fn exhaust_budget(s: &mut State) {
+        for n in 0..100u8 {
+            let who = 100 + n;
+            s.register(p(who), format!("user{who}"), 0).unwrap();
+            for i in 0..5 {
+                fail_deposit(s, who, i);
+            }
+        }
+    }
+
+    #[test]
+    fn established_depositors_are_not_blocked_by_the_budget() {
+        let mut s = setup();
+        let me = Account { owner: Principal::anonymous(), subaccount: None };
+        let done = s.begin_deposit(p(1), acct(1), me, E8S, 0).unwrap();
+        s.finish_op(done.id, Outcome::Ok(1), 1).unwrap();
+        // An older account: no flag, but a completed deposit among its ops.
+        s.register(p(2), "bob".into(), 0).unwrap();
+        let old = s.begin_deposit(p(2), acct(2), me, E8S, 0).unwrap();
+        s.finish_op(old.id, Outcome::Ok(2), 1).unwrap();
+        s.users.get_mut(&p(2)).unwrap().has_deposited = None;
+        s.register(p(3), "carol".into(), 0).unwrap();
+        exhaust_budget(&mut s);
+        assert!(s.begin_deposit(p(1), acct(1), me, E8S, 20).is_ok(), "flagged depositor");
+        assert!(s.begin_deposit(p(2), acct(2), me, E8S, 20).is_ok(), "older depositor");
+        assert!(s.begin_deposit(p(3), acct(3), me, E8S, 20).unwrap_err().contains("busy"), "new account");
+    }
+
+    #[test]
+    fn prune_keeps_admin_decisions() {
+        let mut s = setup();
+        let me = Account { owner: Principal::anonymous(), subaccount: None };
+        let op = s.begin_deposit(p(1), acct(1), me, E8S, 0).unwrap();
+        s.finish_op(op.id, Outcome::Unknown("?".into()), 1).unwrap();
+        s.resolve_op(op.id, false, None, RESOLVE_AFTER_NS).unwrap();
+        assert_eq!(s.prune_failed_deposits(RESOLVE_AFTER_NS + 100 * PRUNE_AFTER_NS), 0);
+        assert!(s.stores.ledger_ops.get(&op.id).is_some());
+    }
+
+    #[test]
+    fn prune_takes_several_runs_for_many_records() {
+        let mut s = setup();
+        for i in 0..(PRUNE_BATCH as u64 + 10) {
+            let me = Account { owner: Principal::anonymous(), subaccount: None };
+            let op = s.begin_deposit(p(1), acct(1), me, E8S, i).unwrap();
+            s.finish_op(op.id, Outcome::Failed("x".into()), i).unwrap();
+            s.users.get_mut(&p(1)).unwrap().deposit_fails = None;
+            s.deposit_fail_budget = None;
+        }
+        let far = 100 * PRUNE_AFTER_NS;
+        assert_eq!(s.prune_failed_deposits(far), PRUNE_BATCH);
+        assert_eq!(s.prune_failed_deposits(far), 10);
+        assert_eq!(s.prune_failed_deposits(far), 0);
+        assert!(s.stores.ledger_ops.iter().next().is_none());
     }
 }
