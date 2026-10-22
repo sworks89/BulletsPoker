@@ -17,6 +17,7 @@ import { Referrals } from './components/Referrals';
 import { AccountNotice } from './components/Safety';
 import { Admin } from './components/Admin';
 import { Avatar } from './art/Avatar';
+import { shouldOfferRegistration } from './startup';
 
 const NAV: { name: View['name']; label: string }[] = [
   { name: 'lobby', label: 'Lobby' },
@@ -30,7 +31,7 @@ const NAV: { name: View['name']; label: string }[] = [
 ];
 
 function Shell() {
-  const { view, go, principal, profile, items, signIn, signOut, run, notify, backend, refreshProfile } = useApp();
+  const { view, go, principal, profile, profileLoad, retryProfile, items, signIn, signOut, run, notify, backend, refreshProfile } = useApp();
   const dailyReady = !!profile && Number(profile.next_daily_at / 1_000_000n) <= Date.now();
   const claimDaily = async () => {
     const got = await run(async () => unwrap(await backend.claim_daily_chips()));
@@ -117,6 +118,16 @@ function Shell() {
       <ConnectionBanner />
       <TableStrip />
 
+      {principal && !profile && profileLoad === 'failed' && (
+        <div className="panel" role="alert">
+          <h3>Couldn't load your profile</h3>
+          <p className="muted">Your account is fine; we just couldn't reach it. Retrying automatically.</p>
+          <button className="btn" onClick={retryProfile}>
+            Retry
+          </button>
+        </div>
+      )}
+
       <main>
         {view.name === 'lobby' && <Lobby />}
         <TableArea />
@@ -137,7 +148,7 @@ function Shell() {
         Real-money play may be restricted where you live. Play responsibly. 18+.
       </footer>
 
-      {principal && !profile && <Register />}
+      {principal && !profile && shouldOfferRegistration(profileLoad) && <Register />}
     </div>
   );
 }
