@@ -332,6 +332,14 @@ fn set_referrer(code: String) -> R<()> {
     with_mut(|s| s.set_referrer(p, &code, now()))
 }
 
+/// Every table where the caller holds a seat (cash or tournament), so a client
+/// can find seats it doesn't know about: tournament moves, another device.
+#[query]
+fn get_my_seats() -> Vec<SeatRef> {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.my_seats(&p))
+}
+
 #[query]
 fn get_my_profile() -> Option<Profile> {
     let p = ic_cdk::api::msg_caller();

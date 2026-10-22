@@ -511,6 +511,8 @@ type RoomArgs = record {
   currency : Currency;
   big_blind : nat64;
 };
+// A table where a player holds a seat.
+type SeatRef = record { table : nat64; leaving : bool; tournament : opt nat64 };
 type SeatView = record {
   bet : nat64;
   in_hand : bool;
@@ -905,6 +907,9 @@ service : (opt InitArgs) -> {
   get_my_ledger_ops : () -> (vec LedgerOp) query;
   get_my_profile : () -> (opt Profile) query;
   get_my_roles : () -> (Roles) query;
+  // Every table where the caller holds a seat (cash or tournament), so a client
+  // can find seats it doesn't know about: tournament moves, another device.
+  get_my_seats : () -> (vec SeatRef) query;
   // All your notes, most recently updated first.
   get_notes : () -> (vec NoteView) query;
   get_profile : (principal) -> (opt PublicProfile) query;

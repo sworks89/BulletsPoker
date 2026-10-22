@@ -423,6 +423,14 @@ pub struct RoomArgs {
 
 // ------------------------------------------------------------------ views
 
+/// A table where a player holds a seat.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SeatRef {
+    pub table: u64,
+    pub tournament: Option<u64>,
+    pub leaving: bool,
+}
+
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct Profile {
     pub id: Principal,
@@ -1751,6 +1759,21 @@ impl State {
             return Err("This is a tournament table. Register from the Tournaments page; sit out if you need a break".into());
         }
         Ok(self.tables.get(&id).ok_or("No such table")?.config.currency)
+    }
+
+    /// Every table where the caller holds a seat, cash or tournament.
+    pub fn my_seats(&self, caller: &Principal) -> Vec<SeatRef> {
+        self.tables
+            .values()
+            .filter_map(|t| {
+                let i = t.seat_of(caller)?;
+                Some(SeatRef {
+                    table: t.id,
+                    tournament: self.table_tournament.get(&t.id).copied(),
+                    leaving: t.seats[i].as_ref().is_some_and(|s| s.is_leaving()),
+                })
+            })
+            .collect()
     }
 
     pub fn join_table(&mut self, caller: Principal, id: u64, seat: u8, buy_in: u64, password: Option<String>, now: u64) -> R<()> {
@@ -3131,6 +3154,68 @@ pub(crate) mod tests {
         assert_eq!(house_take(&s), 2 * fee);
         let balances = s.users.get(&p(10)).unwrap().balance + s.users.get(&p(11)).unwrap().balance;
         assert_eq!(balances, 20 * E8S - 2 * fee);
+    }
+
+    #[test]
+    fn my_seats_lists_cash_and_tournament_seats() {
+        let mut s = setup();
+        many_players(&mut s, 6);
+        let table = 7;
+        let buy = s.tables[&table].config.max_buy_in;
+        s.join_table(p(1), table, 0, buy, None, 0).unwrap();
+        assert_eq!(s.my_seats(&p(1)), vec![SeatRef { table, tournament: None, leaving: false }]);
+        assert!(s.my_seats(&p(2)).is_empty());
+        assert!(s.my_seats(&Principal::anonymous()).is_empty());
+
+        let id = open_tournament(&mut s, "Chip Sit & Go · 6 max");
+        for k in 10..16 {
+            s.register_tournament(p(k), id, SEC).unwrap();
+        }
+        s.tick(s.tournaments[&id].start_at.max(10 * SEC));
+        let seats = s.my_seats(&p(10));
+        assert_eq!(seats.len(), 1);
+        assert_eq!(seats[0].tournament, Some(id));
+        let tt = seats[0].table;
+        // A cash and a tournament seat together are both listed.
+        s.join_table(p(10), table, 1, buy, None, 0).unwrap();
+        let seats = s.my_seats(&p(10));
+        assert_eq!(seats.len(), 2);
+        assert!(seats.contains(&SeatRef { table, tournament: None, leaving: false }));
+        assert!(seats.contains(&SeatRef { table: tt, tournament: Some(id), leaving: false }));
+    }
+
+    #[test]
+    fn my_seats_follows_a_tournament_move() {
+        use crate::tournament::TournamentStatus::*;
+        let mut s = setup();
+        many_players(&mut s, 20);
+        let id = open_tournament(&mut s, "Hourly Freeroll");
+        let start_at = s.tournaments[&id].start_at;
+        for k in 10..30 {
+            s.register_tournament(p(k), id, SEC).unwrap();
+        }
+        s.tick(start_at);
+        assert_eq!(s.tournaments[&id].status, Running);
+        let last: std::cell::RefCell<std::collections::HashMap<Principal, u64>> =
+            std::cell::RefCell::new((10..30).map(|k| (p(k), s.my_seats(&p(k))[0].table)).collect());
+        let moved = std::cell::Cell::new(0);
+        run_until(&mut s, start_at, 20_000, |s| {
+            for k in 10..30 {
+                if !s.tournaments[&id].entrants.iter().any(|e| e.player == p(k) && e.active()) {
+                    continue;
+                }
+                let seats = s.my_seats(&p(k));
+                assert_eq!(seats.len(), 1, "an active player is seated exactly once");
+                assert_eq!(seats[0].tournament, Some(id));
+                assert!(s.tables.contains_key(&seats[0].table));
+                if last.borrow()[&p(k)] != seats[0].table {
+                    moved.set(moved.get() + 1);
+                    last.borrow_mut().insert(p(k), seats[0].table);
+                }
+            }
+            s.tournaments[&id].status == Finished
+        });
+        assert!(moved.get() > 0, "balancing or merging moved somebody");
     }
 
     #[test]

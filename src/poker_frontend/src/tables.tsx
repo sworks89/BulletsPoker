@@ -1,15 +1,24 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useApp, usePoll } from './context';
+import { unwrap } from './ic';
+import { LEAVE_CONFIRM, leavesAfterHand } from './leave';
 import type { TableView } from './ic';
 import { isMyTurn } from './turn';
-import { afterClosing } from './tablesNav';
+import { afterClosing, reconcileSeats } from './tablesNav';
 
 export { isMyTurn };
 
-/** Most tables a player can have open at once. */
+/** Most tables a player can watch at once; tables they are seated at always stay open. */
 export const MAX_OPEN = 4;
 
 export type Layout = 'tabs' | 'tile';
+
+export interface Notice {
+  key: string;
+  text: string;
+  /** Opening this table clears the notice. */
+  table?: bigint;
+}
 
 interface TablesState {
   open: bigint[];
@@ -21,6 +30,9 @@ interface TablesState {
   autoFocus: boolean;
   openTable: (id: bigint) => void;
   closeTable: (id: bigint) => void;
+  /** Notices that stay until dismissed (moved tables, a failed auto-sit cancel). */
+  notices: Notice[];
+  dismissNotice: (key: string) => void;
   focus: (id: bigint) => void;
   setLayout: (l: Layout) => void;
   setAutoFocus: (on: boolean) => void;
@@ -57,7 +69,7 @@ function save(key: string, value: unknown) {
 }
 
 export function TablesProvider({ children }: { children: ReactNode }) {
-  const { backend, view, go, notify } = useApp();
+  const { backend, view, go, notify, principal, refreshProfile } = useApp();
   const [open, setOpen] = useState<bigint[]>(() => load<string[]>('bp.openTables', []).map((s) => BigInt(s)));
   const [views, setViews] = useState<Map<string, TableView>>(new Map());
   const [clockOffset, setClockOffset] = useState(0);
@@ -67,38 +79,140 @@ export function TablesProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => save('bp.openTables', open.map(String)), [open]);
 
+  const [notices, setNotices] = useState<Notice[]>([]);
+  const addNotice = useCallback(
+    (n: Notice) => setNotices((cur) => [...cur.filter((x) => x.key !== n.key), n]),
+    [],
+  );
+  const dismissNotice = useCallback((key: string) => setNotices((cur) => cur.filter((x) => x.key !== key)), []);
+  // Opening the table a notice is about answers it.
+  useEffect(() => {
+    if (active !== null) setNotices((cur) => (cur.some((n) => n.table === active) ? cur.filter((n) => n.table !== active) : cur));
+  }, [active]);
+
+  // The tables I hold a seat at, as the server last said (table id -> tournament id).
+  const seats = useRef<Map<string, bigint | null>>(new Map());
+  const seatIds = () => [...seats.current.keys()].map((s) => BigInt(s));
+  const openRef = useRef(open);
+  openRef.current = open;
+
   const openTable = useCallback((id: bigint) => go({ name: 'table', id }), [go]);
 
-  // Navigating to a table (from the lobby, tournaments, friends…) opens it. When
-  // the limit is reached, a table you're only watching makes room; tables you're
-  // seated at are never closed for you.
+  // Navigating to a table (from the lobby, tournaments, friends…) opens it. Past
+  // the watch limit, the oldest table you're only watching makes room; seated
+  // tables are never closed for you and don't count toward the limit.
   useEffect(() => {
     if (active === null || open.includes(active)) return;
-    if (open.length < MAX_OPEN) {
-      setOpen([...open, active]);
-      return;
-    }
-    const watching = open.find((id) => !views.get(String(id))?.my_seat.length);
-    if (watching === undefined) {
-      notify(`You can have ${MAX_OPEN} tables open. Leave one first.`, 'err');
-      go({ name: 'table', id: open[open.length - 1] });
-      return;
-    }
-    setOpen([...open.filter((id) => id !== watching), active]);
-    // views is read for the decision only
+    setOpen(reconcileSeats([...open, active], seatIds(), MAX_OPEN).open);
+    // seats is read for the decision only
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
 
+  // Leaving a seat from the ✕: the same flow as the table's Leave button.
+  const leaveSeat = useCallback(
+    async (id: bigint) => {
+      const v = views.get(String(id));
+      const me = v && v.my_seat.length ? v.seats[v.my_seat[0]][0] : undefined;
+      if (me && leavesAfterHand(Object.keys(v!.phase)[0], me) && !confirm(LEAVE_CONFIRM)) return;
+      try {
+        const r = unwrap(await backend.leave_table(id));
+        if ('Left' in r) {
+          seats.current.delete(String(id));
+          const next = afterClosing(openRef.current, active, [id]);
+          setOpen(next.open);
+          if (next.goTo !== null) go(next.goTo === 'lobby' ? { name: 'lobby' } : { name: 'table', id: next.goTo });
+          await refreshProfile();
+        } else {
+          notify("You'll leave when this hand ends.");
+        }
+      } catch (e) {
+        notify(e instanceof Error ? e.message : String(e), 'err');
+      }
+    },
+    [views, backend, active, go, notify, refreshProfile],
+  );
+
   const closeTable = useCallback(
-    (id: bigint) => {
+    async (id: bigint) => {
+      // A seat is never just hidden: ✕ on a seated table leaves it (cash) or
+      // explains why a tournament seat can't be closed.
+      if (seats.current.has(String(id))) {
+        if (seats.current.get(String(id)) != null) {
+          notify('Tournament seats stay open until you are out. Sit out from the table if you need a break.', 'err');
+          go({ name: 'table', id });
+        } else {
+          await leaveSeat(id);
+        }
+        return;
+      }
       // Closing a table you're waiting at takes you out of its auto-sit line,
-      // so you're never seated (and charged) at a table you closed.
-      if (views.get(String(id))?.my_auto_sit.length) backend.auto_sit(id, []).catch(() => {});
-      const next = afterClosing(open, active, [id]);
+      // so you're never seated (and charged) at a table you closed. If it can't
+      // be cancelled the table stays open and says so.
+      if (views.get(String(id))?.my_auto_sit.length) {
+        let failed: unknown;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            unwrap(await backend.auto_sit(id, []));
+            failed = undefined;
+            break;
+          } catch (e) {
+            failed = e;
+            if (attempt === 0) notify(e instanceof Error ? e.message : String(e), 'err');
+          }
+        }
+        if (failed !== undefined) {
+          addNotice({ key: `autosit-${id}`, text: "Couldn't leave the waiting line — try again", table: id });
+          return;
+        }
+      }
+      const next = afterClosing(openRef.current, active, [id]);
       setOpen(next.open);
       if (next.goTo !== null) go(next.goTo === 'lobby' ? { name: 'lobby' } : { name: 'table', id: next.goTo });
     },
-    [open, active, go, views, backend],
+    [active, go, views, backend, notify, addNotice, leaveSeat],
+  );
+
+  // Every seat I hold stays open, wherever the server put it: tournament
+  // balancing and merges move me between tables, and a new device knows none of
+  // them. Checked on sign-in and every few seconds.
+  const synced = useRef(false);
+  useEffect(() => {
+    synced.current = false;
+    seats.current = new Map();
+  }, [principal]);
+  usePoll(
+    async () => {
+      if (!principal) return;
+      const refs = await backend.get_my_seats();
+      const now = new Map<string, bigint | null>(refs.map((r) => [String(r.table), r.tournament[0] ?? null]));
+      const before = seats.current;
+      seats.current = now;
+      const ids = refs.map((r) => r.table);
+      const { open: next } = reconcileSeats(openRef.current, ids, MAX_OPEN);
+      const newTourney = refs.filter((r) => r.tournament[0] !== undefined && !before.has(String(r.table)));
+      // A tournament table I was moved away from drops out (a busted player keeps theirs).
+      const movedTo = new Set(newTourney.map((r) => r.tournament[0]));
+      const left = [...before.entries()]
+        .filter(([k, t]) => t !== null && !now.has(k) && movedTo.has(t))
+        .map(([k]) => BigInt(k));
+      if (synced.current) {
+        for (const r of newTourney) {
+          addNotice({ key: `moved-${r.table}`, text: `You were moved to table ${r.table}`, table: r.table });
+        }
+      }
+      synced.current = true;
+      const done = afterClosing(next, active, left);
+      if (done.open.length !== openRef.current.length || done.open.some((id, i) => id !== openRef.current[i])) {
+        openRef.current = done.open;
+        setOpen(done.open);
+      }
+      if (done.goTo !== null && left.length) {
+        const dest = newTourney.length ? newTourney[newTourney.length - 1].table : done.goTo;
+        go(dest === 'lobby' ? { name: 'lobby' } : { name: 'table', id: dest });
+      }
+    },
+    3000,
+    [backend, principal, active],
   );
 
   const requested = useRef<bigint[]>([]);
@@ -181,6 +295,8 @@ export function TablesProvider({ children }: { children: ReactNode }) {
       autoFocus,
       openTable,
       closeTable,
+      notices,
+      dismissNotice,
       focus: (id) => go({ name: 'table', id }),
       setLayout: (l) => {
         setLayoutState(l);
@@ -193,7 +309,7 @@ export function TablesProvider({ children }: { children: ReactNode }) {
       refresh,
       reconnecting: reconnecting && open.length > 0,
     }),
-    [open, active, views, clockOffset, layout, autoFocus, openTable, closeTable, go, refresh, reconnecting],
+    [open, active, views, clockOffset, layout, autoFocus, openTable, closeTable, notices, dismissNotice, go, refresh, reconnecting],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

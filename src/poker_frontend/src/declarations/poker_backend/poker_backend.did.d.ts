@@ -720,6 +720,14 @@ export interface RoomArgs {
   'currency' : Currency,
   'big_blind' : bigint,
 }
+/**
+ * A table where a player holds a seat.
+ */
+export interface SeatRef {
+  'table' : bigint,
+  'leaving' : boolean,
+  'tournament' : [] | [bigint],
+}
 export interface SeatView {
   'bet' : bigint,
   'in_hand' : boolean,
@@ -1289,6 +1297,11 @@ export interface _SERVICE {
   'get_my_ledger_ops' : ActorMethod<[], Array<LedgerOp>>,
   'get_my_profile' : ActorMethod<[], [] | [Profile]>,
   'get_my_roles' : ActorMethod<[], Roles>,
+  /**
+   * Every table where the caller holds a seat (cash or tournament), so a client
+   * can find seats it doesn't know about: tournament moves, another device.
+   */
+  'get_my_seats' : ActorMethod<[], Array<SeatRef>>,
   /**
    * All your notes, most recently updated first.
    */

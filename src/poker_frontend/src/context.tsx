@@ -41,7 +41,7 @@ interface AppState {
   go: (v: View) => void;
   refreshProfile: () => Promise<void>;
   signIn: () => Promise<void>;
-  signOut: () => Promise<void>;
+  signOut: (idle?: boolean) => Promise<void>;
   notify: (text: string, kind?: 'ok' | 'err') => void;
   /** Runs an async action, reporting failures as a toast. */
   run: <T>(f: () => Promise<T>, success?: string) => Promise<T | undefined>;
@@ -96,7 +96,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Signing out forgets this browser's per-player state (open tables, layout)
   // and reloads, so nothing from the last session lingers in memory.
-  const signOut = useCallback(async () => {
+  const signOut = useCallback(async (idle = false) => {
+    // Seats stay live on the server while you're away: say so before leaving them.
+    if (!idle && actors) {
+      const seats = await actors.backend.get_my_seats().catch(() => []);
+      const n = seats.length;
+      if (
+        n > 0 &&
+        !confirm(
+          `You still have ${n === 1 ? 'a seat' : `${n} seats`} at the table${n === 1 ? '' : 's'}. The blinds keep running and your hands are folded for you while you're signed out. Sign in again to get back to ${n === 1 ? 'it' : 'them'}. Sign out anyway?`,
+        )
+      )
+        return;
+    }
     await authClient.signOut();
     try {
       Object.keys(localStorage)
@@ -106,7 +118,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // storage unavailable: nothing to clear
     }
     window.location.reload();
-  }, []);
+  }, [actors]);
 
   // Idle sign-out: a signed-in session that sees no input for a while ends,
   // so an unattended or shared computer doesn't stay logged in to a wallet.
@@ -119,7 +131,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const events = ['pointerdown', 'keydown', 'wheel', 'touchstart'] as const;
     events.forEach((e) => window.addEventListener(e, touch, { passive: true }));
     const timer = setInterval(() => {
-      if (Date.now() - last > IDLE_SIGN_OUT_MS) signOut();
+      if (Date.now() - last > IDLE_SIGN_OUT_MS) signOut(true);
     }, 30_000);
     return () => {
       events.forEach((e) => window.removeEventListener(e, touch));

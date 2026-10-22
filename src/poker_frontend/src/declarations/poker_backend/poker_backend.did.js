@@ -388,6 +388,11 @@ export const idlFactory = ({ IDL }) => {
     'medals' : IDL.Vec(EarnedMedal),
   });
   const Roles = IDL.Record({ 'admin' : IDL.Bool, 'moderator' : IDL.Bool });
+  const SeatRef = IDL.Record({
+    'table' : IDL.Nat64,
+    'leaving' : IDL.Bool,
+    'tournament' : IDL.Opt(IDL.Nat64),
+  });
   const NoteColor = IDL.Variant({
     'Red' : IDL.Null,
     'Yellow' : IDL.Null,
@@ -799,6 +804,7 @@ export const idlFactory = ({ IDL }) => {
     'get_my_ledger_ops' : IDL.Func([], [IDL.Vec(LedgerOp)], ['query']),
     'get_my_profile' : IDL.Func([], [IDL.Opt(Profile)], ['query']),
     'get_my_roles' : IDL.Func([], [Roles], ['query']),
+    'get_my_seats' : IDL.Func([], [IDL.Vec(SeatRef)], ['query']),
     'get_notes' : IDL.Func([], [IDL.Vec(NoteView)], ['query']),
     'get_profile' : IDL.Func(
         [IDL.Principal],
