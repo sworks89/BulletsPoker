@@ -233,6 +233,7 @@ async fn refresh_entropy() {
 /// Re-sends ledger ops whose outcome is unknown. The ledger either executes
 /// them now or reports them as duplicates of the original, so nothing runs twice.
 async fn retry_unknown_ops() {
+    with_mut(|s| s.prune_failed_deposits(now()));
     if RETRYING.get() {
         return;
     }

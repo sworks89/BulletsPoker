@@ -183,6 +183,8 @@ pub struct User {
     pub referrer_stats: Option<crate::referrals::ReferrerStats>,
     /// Welcome bonus verdict; `None` until the first deposit (see `crate::welcome`).
     pub welcome: Option<crate::welcome::WelcomeBonus>,
+    /// Recent failed deposits/sweeps (see `crate::wallet`); created on the first.
+    pub deposit_fails: Option<crate::wallet::FailWindow>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq)]
@@ -384,6 +386,10 @@ heap_state! {
     referrals: Option<crate::referrals::ReferralState>,
     /// Set once existing depositors were marked ineligible for the welcome bonus.
     welcome_marked: Option<bool>,
+    /// Failed deposit records across all players this hour (see `crate::wallet`).
+    deposit_fail_budget: Option<crate::wallet::FailWindow>,
+    /// Where the next failed-deposit prune resumes (ledger op id).
+    prune_cursor: Option<u64>,
 }
 
 /// Monotonic counters exported as metrics.
@@ -836,6 +842,8 @@ impl State {
             rewards: None,
             referrals: None,
             welcome_marked: None,
+            deposit_fail_budget: None,
+            prune_cursor: None,
             entropy: vec![],
         };
         let mut s = State::from_snapshot(users, stores, snap);
@@ -950,6 +958,7 @@ impl State {
                 referral: None,
                 referrer_stats: None,
                 welcome: None,
+                deposit_fails: None,
             },
         );
         Ok(self.profile(&caller).unwrap())
