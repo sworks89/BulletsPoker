@@ -714,7 +714,7 @@ fn list_medals() -> Vec<MedalDef> {
 }
 
 #[update]
-fn leave_table(id: u64) -> R<u64> {
+fn leave_table(id: u64) -> R<LeaveResult> {
     let p = caller()?;
     with_mut(|s| s.leave_table(p, id, now()))
 }

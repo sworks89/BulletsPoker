@@ -6,7 +6,7 @@
 use candid::{decode_one, encode_args, encode_one, CandidType, Deserialize, Nat, Principal};
 use icrc_ledger_types::icrc1::account::Account;
 use pocket_ic::{PocketIc, PocketIcBuilder};
-use poker_backend::state::{HouseStats, Profile, TableView};
+use poker_backend::state::{HouseStats, LeaveResult, Profile, TableView};
 use poker_backend::table::Action;
 use poker_backend::wallet::{LedgerOp, OpStatus, PauseFlags, SolvencyReport};
 use std::time::Duration;
@@ -323,7 +323,7 @@ fn icp_hands_and_an_upgrade_mid_game() {
 
     // Cash out and check the books still balance.
     for who in [alice, bob] {
-        let r: R<u64> = env.update(who, "leave_table", encode_one(table).unwrap());
+        let r: R<LeaveResult> = env.update(who, "leave_table", encode_one(table).unwrap());
         r.unwrap();
     }
     let report = env.solvency();

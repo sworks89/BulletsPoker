@@ -325,6 +325,12 @@ export interface LeaderboardEntry {
   'stats' : Stats,
   'avatar' : string,
 }
+/**
+ * What `leave_table` did: stood up now with these chips (back in the wallet),
+ * or the player is in a live hand and leaves when it ends.
+ */
+export type LeaveResult = { 'Left' : bigint } |
+  { 'AfterHand' : null };
 export interface LedgerOp {
   'id' : bigint,
   'to' : Account,
@@ -650,15 +656,17 @@ export type Result_10 = { 'Ok' : Array<LedgerOp> } |
   { 'Err' : string };
 export type Result_11 = { 'Ok' : AutoSitStatus } |
   { 'Err' : string };
-export type Result_12 = { 'Ok' : ModPlayerView } |
+export type Result_12 = { 'Ok' : LeaveResult } |
   { 'Err' : string };
-export type Result_13 = { 'Ok' : ReportPage } |
+export type Result_13 = { 'Ok' : ModPlayerView } |
   { 'Err' : string };
-export type Result_14 = { 'Ok' : Array<Report> } |
+export type Result_14 = { 'Ok' : ReportPage } |
   { 'Err' : string };
-export type Result_15 = { 'Ok' : Profile } |
+export type Result_15 = { 'Ok' : Array<Report> } |
   { 'Err' : string };
-export type Result_16 = { 'Ok' : SpinRecord } |
+export type Result_16 = { 'Ok' : Profile } |
+  { 'Err' : string };
+export type Result_17 = { 'Ok' : SpinRecord } |
   { 'Err' : string };
 export type Result_2 = { 'Ok' : Array<AuditEntry> } |
   { 'Err' : string };
@@ -715,6 +723,10 @@ export interface RoomArgs {
 export interface SeatView {
   'bet' : bigint,
   'in_hand' : boolean,
+  /**
+   * Leaving when the current hand ends.
+   */
+  'leaving' : boolean,
   /**
    * Seconds left in this player's time bank.
    */
@@ -1321,7 +1333,7 @@ export interface _SERVICE {
    * `password` is only needed for password-protected player rooms.
    */
   'join_table' : ActorMethod<[bigint, number, bigint, [] | [string]], Result>,
-  'leave_table' : ActorMethod<[bigint], Result_5>,
+  'leave_table' : ActorMethod<[bigint], Result_12>,
   'list_medals' : ActorMethod<[], Array<MedalDef>>,
   'list_store' : ActorMethod<[], Array<StoreItem>>,
   'list_tables' : ActorMethod<[], Array<TableSummary>>,
@@ -1330,7 +1342,7 @@ export interface _SERVICE {
    * Suspends a player for `hours` (0 = permanent). They keep access to withdrawals.
    */
   'mod_ban' : ActorMethod<[Principal, number, string], Result>,
-  'mod_get_player' : ActorMethod<[Principal], Result_12>,
+  'mod_get_player' : ActorMethod<[Principal], Result_13>,
   /**
    * Mutes a player in every chat for `hours` (0 lifts the mute).
    */
@@ -1338,11 +1350,11 @@ export interface _SERVICE {
   /**
    * The open-report queue, oldest first: up to `limit` (max 50) after report `after`.
    */
-  'mod_open_reports' : ActorMethod<[[] | [bigint], number], Result_13>,
+  'mod_open_reports' : ActorMethod<[[] | [bigint], number], Result_14>,
   /**
    * The latest reports, open or resolved.
    */
-  'mod_recent_reports' : ActorMethod<[number], Result_14>,
+  'mod_recent_reports' : ActorMethod<[number], Result_15>,
   'mod_resolve_report' : ActorMethod<[bigint, ModAction, string], Result>,
   'mod_unban' : ActorMethod<[Principal], Result>,
   /**
@@ -1352,7 +1364,7 @@ export interface _SERVICE {
   /**
    * Creates your profile. `pow` is a nonce solving `get_signup_challenge`.
    */
-  'register' : ActorMethod<[string, [] | [bigint]], Result_15>,
+  'register' : ActorMethod<[string, [] | [bigint]], Result_16>,
   'register_tournament' : ActorMethod<[bigint], Result>,
   'remove_friend' : ActorMethod<[Principal], Result>,
   /**
@@ -1385,7 +1397,7 @@ export interface _SERVICE {
   /**
    * Spins the oldest banked Fish Buffet spin for ICP cashback.
    */
-  'spin_wheel' : ActorMethod<[], Result_16>,
+  'spin_wheel' : ActorMethod<[], Result_17>,
   'throw_item' : ActorMethod<[bigint, Principal, number, Currency], Result>,
   'top_up' : ActorMethod<[bigint, bigint], Result>,
   /**

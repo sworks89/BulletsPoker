@@ -116,6 +116,18 @@ pub struct Seat {
     /// big blind the next time they're dealt in (unless in the blinds anyway),
     /// so sitting out through the blinds or seat-hopping saves nothing.
     pub owes_bb: bool,
+    /// Asked to leave during a live hand: sitting out until the hand ends, then
+    /// stood up with whatever they have (including anything they win).
+    pub leaving: Option<bool>,
+}
+
+pub const LEAVING_MSG: &str = "You're leaving this table when the hand ends";
+
+/// What standing up did: left at once with these chips, or leaves when the hand ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StandOutcome {
+    Left(u64),
+    AfterHand,
 }
 
 impl Seat {
@@ -137,11 +149,16 @@ impl Seat {
             time_bank: TIME_BANK_START,
             last_faced: None,
             owes_bb: false,
+            leaving: None,
         }
     }
 
     fn live(&self) -> bool {
         self.in_hand && !self.folded
+    }
+
+    pub fn is_leaving(&self) -> bool {
+        self.leaving == Some(true)
     }
 
     fn can_act(&self) -> bool {
@@ -381,6 +398,9 @@ impl Table {
             return Err("No such seat".into());
         }
         // Includes a seat left mid-hand that is still in play: one seat per player.
+        if self.seats.iter().flatten().any(|s| s.player == player && s.is_leaving()) {
+            return Err(LEAVING_MSG.into());
+        }
         if self.seats.iter().flatten().any(|s| s.player == player) {
             return Err("You are already seated at this table".into());
         }
@@ -434,6 +454,9 @@ impl Table {
         let i = self.seat_of(player).ok_or("You are not seated")?;
         let in_live_hand = self.phase.is_betting() && self.seat(i).live();
         let max_buy_in = self.config.max_buy_in;
+        if self.seat(i).is_leaving() {
+            return Err(LEAVING_MSG.into());
+        }
         let s = self.seat_mut(i);
         if in_live_hand {
             return Err("You can add chips once your hand is over".into());
@@ -447,6 +470,9 @@ impl Table {
 
     pub fn set_sitting_out(&mut self, player: &Principal, out: bool, now: u64) -> Result<(), String> {
         let i = self.seat_of(player).ok_or("You are not seated")?;
+        if !out && self.seat(i).is_leaving() {
+            return Err(LEAVING_MSG.into());
+        }
         if self.seat(i).sitting_out == out {
             return Ok(());
         }
@@ -475,34 +501,58 @@ impl Table {
         self.seats
             .iter()
             .flatten()
-            .filter(|s| !s.left && s.sitting_out && s.sitting_out_since.is_some_and(|t| t <= cutoff))
+            .filter(|s| !s.left && !s.is_leaving() && s.sitting_out && s.sitting_out_since.is_some_and(|t| t <= cutoff))
             .filter(|s| !(self.phase.is_betting() && s.live()))
             .map(|s| s.player)
             .collect()
     }
 
-    /// Stands a player up. Returns the chips to credit back to their wallet.
-    /// A player in a live hand folds; their chips already in the pot stay there.
-    pub fn stand(&mut self, player: &Principal, now: u64) -> Result<u64, String> {
+    /// Stands a player up. Out of a live hand they leave at once with their
+    /// stack (a player who already folded leaves their chips in the pot). In a
+    /// live hand, all-in included, they are never folded for it: they sit out,
+    /// their remaining turns are checked or folded for them, and they leave
+    /// with whatever they have when the hand ends (`take_leavers`).
+    pub fn stand(&mut self, player: &Principal, now: u64) -> Result<StandOutcome, String> {
         let i = self.seat_of(player).ok_or("You are not seated")?;
+        if self.seat(i).is_leaving() {
+            return Ok(StandOutcome::AfterHand);
+        }
         let in_hand = self.phase.is_betting() && self.seat(i).in_hand;
         if !in_hand {
             let s = self.seats[i].take().unwrap();
-            return Ok(s.stack);
+            return Ok(StandOutcome::Left(s.stack));
         }
-        let was_live = self.seat(i).live();
+        if self.seat(i).live() {
+            // On their turn this sets the clock to now, so the tick acts for them.
+            self.set_sitting_out(player, true, now)?;
+            self.seat_mut(i).leaving = Some(true);
+            self.log(Some(i), "Leaving after this hand", 0);
+            return Ok(StandOutcome::AfterHand);
+        }
+        // Already folded: nothing of theirs is still in play.
         let s = self.seat_mut(i);
         let chips = s.stack;
         s.stack = 0;
         s.left = true;
-        s.folded = true;
         s.last_action = Some("Left".into());
         self.log(Some(i), "Left the table", 0);
-        if was_live {
-            let from = if self.to_act == Some(i) { Some(i) } else { None };
-            self.progress(from, now);
+        Ok(StandOutcome::Left(chips))
+    }
+
+    /// Stands up the players who asked to leave during the hand, once it is
+    /// over. Returns each one's chips to credit back to their wallet.
+    pub fn take_leavers(&mut self) -> Vec<(Principal, u64)> {
+        if self.phase.is_betting() {
+            return vec![];
         }
-        Ok(chips)
+        let mut out = vec![];
+        for slot in self.seats.iter_mut() {
+            if slot.as_ref().is_some_and(|s| s.is_leaving() && !s.left) {
+                let s = slot.take().unwrap();
+                out.push((s.player, s.stack));
+            }
+        }
+        out
     }
 
     // ------------------------------------------------------------------ hands
@@ -1186,7 +1236,7 @@ impl Table {
             [w] if w.player == *player => w.seat as usize,
             _ => return Err("Only the winner can show their cards".into()),
         };
-        let cards = self.seat(w).hole.clone();
+        let cards = self.seats[w].as_ref().map(|s| s.hole.clone()).unwrap_or_default();
         if cards.is_empty() {
             return Err("No cards to show".into());
         }
@@ -1560,28 +1610,120 @@ mod tests {
     }
 
     #[test]
-    fn standing_mid_hand_folds_and_pays_out() {
+    fn standing_mid_hand_waits_for_the_hand_to_end() {
         let mut t = Table::new(1, config());
         for k in 0..3 {
             t.sit(p(k + 1), k, 200).unwrap();
         }
         t.start_hand([8; 32], 0).unwrap();
         let actor = t.to_act.unwrap();
-        // A player who is not to act stands up.
+        // A player who is not to act stands up: they stay in the hand.
         let leaver = (0..3).find(|&i| i != actor).unwrap();
         let lp = t.seat(leaver).player;
-        let committed = t.seat(leaver).committed;
-        let back = t.stand(&lp, 1).unwrap();
-        assert_eq!(back, 200 - committed);
+        assert_eq!(t.stand(&lp, 1).unwrap(), StandOutcome::AfterHand);
+        assert_eq!(t.stand(&lp, 1).unwrap(), StandOutcome::AfterHand, "asking twice changes nothing");
+        let s = t.seat(leaver);
+        assert!(!s.folded && s.sitting_out && s.leaving == Some(true));
+        assert_eq!(t.seat_of(&lp), Some(leaver));
+        assert!(t.take_leavers().is_empty(), "not while the hand is on");
+        while t.phase.is_betting() {
+            let pl = to_act_player(&t);
+            if t.seat(t.to_act.unwrap()).sitting_out {
+                t.handle_timeout(1).unwrap();
+            } else {
+                t.act(&pl, Action::Call, 1).unwrap();
+            }
+        }
+        let back = t.take_leavers();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].0, lp);
+        assert!(t.seat_of(&lp).is_none());
+        let stacks: u64 = t.seats.iter().flatten().map(|s| s.stack).sum();
+        assert_eq!(stacks + back[0].1, 600);
+        assert!(t.take_leavers().is_empty(), "taken once");
+        t.settle_after_hand();
+        assert_eq!(t.player_count(), 2);
+    }
+
+    #[test]
+    fn a_player_who_already_folded_leaves_at_once() {
+        let mut t = Table::new(1, config());
+        for k in 0..3 {
+            t.sit(p(k + 1), k, 200).unwrap();
+        }
+        t.start_hand([8; 32], 0).unwrap();
+        let lp = to_act_player(&t);
+        let committed = t.seat(t.to_act.unwrap()).committed;
+        t.act(&lp, Action::Fold, 1).unwrap();
+        assert_eq!(t.stand(&lp, 1).unwrap(), StandOutcome::Left(200 - committed));
         assert!(t.seat_of(&lp).is_none());
         while t.phase.is_betting() {
             let pl = to_act_player(&t);
             t.act(&pl, Action::Call, 1).unwrap();
         }
+        assert!(t.take_leavers().is_empty(), "already paid out");
+    }
+
+    #[test]
+    fn all_in_player_who_leaves_still_wins_the_showdown() {
+        let card = |r: u8, su: u8| r * 4 + su;
+        let mut t = Table::new(1, config());
+        t.sit(p(1), 0, 100).unwrap();
+        t.sit(p(2), 1, 500).unwrap();
+        t.sit(p(3), 2, 1000).unwrap();
+        t.start_hand([3; 32], 0).unwrap();
+        // p1 queens, p2 aces, p3 kings; a dry board (deck pops from the end).
+        t.seats[0].as_mut().unwrap().hole = vec![card(10, 0), card(10, 1)];
+        t.seats[1].as_mut().unwrap().hole = vec![card(12, 3), card(12, 2)];
+        t.seats[2].as_mut().unwrap().hole = vec![card(11, 0), card(11, 1)];
+        t.deck = vec![card(2, 0), card(6, 0), card(9, 3), card(4, 0), card(7, 2), card(5, 1), card(0, 0), card(3, 0)];
+        t.act(&p(1), Action::AllIn, 1).unwrap(); // 100
+        t.act(&p(2), Action::AllIn, 1).unwrap(); // 500
+        // p2 has nothing left behind and walks away before p3 decides.
+        assert_eq!(t.stand(&p(2), 2).unwrap(), StandOutcome::AfterHand);
+        assert!(!t.seat(1).folded, "leaving never folds");
+        t.act(&p(3), Action::Call, 3).unwrap();
+        assert_eq!(t.phase, Phase::HandOver);
+        // Main pot 300 and side pot 800, both to p2's aces.
+        let r = t.last_result.as_ref().unwrap();
+        let won: u64 = r.winners.iter().filter(|w| w.player == p(2)).map(|w| w.amount).sum();
+        assert_eq!(won, 1100);
+        assert!(r.winners.iter().all(|w| w.player == p(2)));
+        assert_eq!(t.take_leavers(), vec![(p(2), 1100)]);
+        assert!(t.seat_of(&p(2)).is_none());
         let stacks: u64 = t.seats.iter().flatten().map(|s| s.stack).sum();
-        assert_eq!(stacks + back, 600);
-        t.settle_after_hand();
-        assert_eq!(t.player_count(), 2);
+        assert_eq!(stacks + 1100, 1600);
+    }
+
+    #[test]
+    fn leaver_whose_turn_it_is_is_checked_or_folded() {
+        let mut t = Table::new(1, config());
+        for k in 0..3 {
+            t.sit(p(k + 1), k, 200).unwrap();
+        }
+        t.start_hand([8; 32], 0).unwrap();
+        // Preflop, facing the big blind: folded.
+        let first = to_act_player(&t);
+        let i = t.to_act.unwrap();
+        assert_eq!(t.stand(&first, 5).unwrap(), StandOutcome::AfterHand);
+        assert_eq!(t.action_deadline, 5, "acts at once");
+        assert!(t.set_sitting_out(&first, false, 5).is_err(), "no coming back while leaving");
+        assert_eq!(t.handle_timeout(5), Some(first));
+        assert!(t.seat(i).folded);
+        assert_eq!(t.take_leavers(), vec![], "the hand is still on");
+        // The others see a flop; whoever acts first there leaves and is checked.
+        while t.phase == Phase::PreFlop {
+            let pl = to_act_player(&t);
+            t.act(&pl, Action::Call, 6).unwrap();
+        }
+        assert_eq!(t.phase, Phase::Flop);
+        let second = to_act_player(&t);
+        let j = t.to_act.unwrap();
+        assert_eq!(t.stand(&second, 7).unwrap(), StandOutcome::AfterHand);
+        assert_eq!(t.handle_timeout(7), Some(second));
+        assert!(!t.seat(j).folded, "a free check keeps them in");
+        assert_eq!(t.seat(j).last_action.as_deref(), Some("Check"));
+        assert!(t.phase.is_betting());
     }
 
     #[test]
@@ -1790,6 +1932,7 @@ mod tests {
             let p = to_act_player(&t);
             t.act(&p, Action::Fold, 2).unwrap();
         }
+        t.take_leavers();
         t.settle_after_hand();
         t.sit(p(1), 3, 200).unwrap();
     }

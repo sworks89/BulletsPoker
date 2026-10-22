@@ -3,7 +3,7 @@
 //! caller and the current time are passed in) so it can be unit tested
 //! natively; `lib.rs` wraps it in canister endpoints.
 
-use crate::table::{Action, AutoSitEntry, Currency, HandResult, LogEntry, Phase, Table, TableConfig};
+use crate::table::{Action, AutoSitEntry, Currency, HandResult, LogEntry, Phase, StandOutcome, Table, TableConfig};
 use crate::jackpot::JackpotHit;
 use crate::store::{load_blob, save_blob, DmThread, Stores, UserMut, Users};
 use crate::moderation::{AuditEntry, Ban};
@@ -470,6 +470,14 @@ pub struct PublicProfile {
     pub medals: Vec<String>,
 }
 
+/// What `leave_table` did: stood up now with these chips (back in the wallet),
+/// or the player is in a live hand and leaves when it ends.
+#[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeaveResult {
+    Left(u64),
+    AfterHand,
+}
+
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct SeatView {
     pub seat: u8,
@@ -484,6 +492,8 @@ pub struct SeatView {
     pub folded: bool,
     pub all_in: bool,
     pub sitting_out: bool,
+    /// Leaving when the current hand ends.
+    pub leaving: bool,
     pub has_cards: bool,
     pub cards: Vec<u8>,
     pub last_action: Option<String>,
@@ -1758,6 +1768,7 @@ impl State {
         }
         let name = self.user(&caller)?.username.clone();
         let currency = self.table_currency(id)?;
+        self.check_not_leaving(&caller, self.game_of(id))?;
         if !self.can_watch(id, Some(caller)) {
             self.unlock_room(caller, id, password.unwrap_or_default())?;
         }
@@ -1778,6 +1789,18 @@ impl State {
         self.post(Channel::Table(id), None, String::new(), format!("{name} sat down"), MessageKind::System, now);
         // Sitting down yourself takes you out of this table's line.
         self.leave_auto_sit_at(&caller, id);
+        Ok(())
+    }
+
+    /// A player leaving a table of `game` when its hand ends can't sit down at
+    /// it (or another copy) until then: the buy-back minimum isn't known yet.
+    fn check_not_leaving(&self, p: &Principal, game: u64) -> R<()> {
+        let leaving = self.tables.values().any(|t| {
+            self.game_of(t.id) == game && t.seat_of(p).and_then(|i| t.seats[i].as_ref()).is_some_and(|s| s.is_leaving())
+        });
+        if leaving {
+            return Err(crate::table::LEAVING_MSG.into());
+        }
         Ok(())
     }
 
@@ -1934,6 +1957,7 @@ impl State {
         if !self.is_copyable_game(game) {
             return Err("Join this table directly".into());
         }
+        self.check_not_leaving(&caller, game)?;
         // Cheap checks first, so a caller who can't sit can't open copies either.
         if self.pause.joins {
             return Err(self.paused_msg("New seats"));
@@ -1980,9 +2004,22 @@ impl State {
         Ok(id)
     }
 
-    pub fn leave_table(&mut self, caller: Principal, id: u64, now: u64) -> R<u64> {
+    /// Stands the caller up. In a live hand they leave when it ends (see
+    /// `settle_leavers`), never forfeiting a pot they are in.
+    pub fn leave_table(&mut self, caller: Principal, id: u64, now: u64) -> R<LeaveResult> {
         let currency = self.table_currency(id)?;
-        let chips = self.table_mut(id)?.stand(&caller, now)?;
+        let StandOutcome::Left(chips) = self.table_mut(id)?.stand(&caller, now)? else {
+            // On their turn they're acted for at once by the next tick.
+            return Ok(LeaveResult::AfterHand);
+        };
+        self.pay_out_leaver(caller, id, currency, chips, now)?;
+        self.after_table_change(id, now);
+        Ok(LeaveResult::Left(chips))
+    }
+
+    /// The one place a cash player's stack goes back to their wallet when they
+    /// leave: credit, buy-back record and the table notice.
+    fn pay_out_leaver(&mut self, caller: Principal, id: u64, currency: Currency, chips: u64, now: u64) -> R<()> {
         self.credit_in(&caller, currency, chips)?;
         if !self.table_tournament.contains_key(&id) {
             // Per game: leaving another table of it can't lower what you must bring back.
@@ -1992,8 +2029,27 @@ impl State {
         }
         let name = self.user(&caller)?.username.clone();
         self.post(Channel::Table(id), None, String::new(), format!("{name} left the table"), MessageKind::System, now);
-        self.after_table_change(id, now);
-        Ok(chips)
+        Ok(())
+    }
+
+    /// Once the hand is over, stands up and pays out everyone who asked to
+    /// leave during it. Idempotent: each leaver is taken off the table once.
+    fn settle_leavers(&mut self, id: u64, now: u64) {
+        if self.table_tournament.contains_key(&id) {
+            return;
+        }
+        let Some(t) = self.tables.get_mut(&id) else { return };
+        if t.phase != Phase::HandOver {
+            return;
+        }
+        let currency = t.config.currency;
+        for (p, chips) in t.take_leavers() {
+            // Only fails for an unknown user, which a seated player never is.
+            // Keep the books whole even then: the chips go to the treasury.
+            if self.pay_out_leaver(p, id, currency, chips, now).is_err() && currency == Currency::Icp {
+                self.treasury += chips;
+            }
+        }
     }
 
     pub fn top_up(&mut self, caller: Principal, id: u64, amount: u64) -> R<()> {
@@ -2059,6 +2115,10 @@ impl State {
 
     pub fn act_for(&mut self, caller: Principal, id: u64, action: Action, now: u64, expected: Option<u64>) -> R<()> {
         self.check_not_banned(&caller, now)?;
+        let t = self.tables.get(&id).ok_or("No such table")?;
+        if t.seat_of(&caller).and_then(|i| t.seats[i].as_ref()).is_some_and(|s| s.is_leaving()) {
+            return Err(crate::table::LEAVING_MSG.into());
+        }
         self.table_mut(id)?.act_for(&caller, action, now, expected)?;
         self.after_table_change(id, now);
         Ok(())
@@ -2169,6 +2229,8 @@ impl State {
         if in_tournament {
             self.after_tournament_hand(id, now);
         } else {
+            // After the hand is recorded (it reads the seats), before top-ups.
+            self.settle_leavers(id, now);
             self.auto_top_up(id);
         }
     }
@@ -2349,10 +2411,15 @@ impl State {
         for id in ids {
             let t = self.tables.get_mut(&id).unwrap();
             if let Some(p) = t.handle_timeout(now) {
-                let name = self.users.get(&p).map(|u| u.username.clone()).unwrap_or_default();
-                self.post(Channel::Table(id), None, String::new(), format!("{name} timed out and is sitting out"), MessageKind::System, now);
+                let leaving = t.seat_of(&p).and_then(|i| t.seats[i].as_ref()).is_some_and(|s| s.is_leaving());
+                if !leaving {
+                    let name = self.users.get(&p).map(|u| u.username.clone()).unwrap_or_default();
+                    self.post(Channel::Table(id), None, String::new(), format!("{name} timed out and is sitting out"), MessageKind::System, now);
+                }
                 self.after_table_change(id, now);
             }
+            // Normally done by the hand-end hook already; never deal a leaver in.
+            self.settle_leavers(id, now);
             let t = self.tables.get_mut(&id).unwrap();
             if t.ready_for_next_hand(now) {
                 if t.eligible_count() >= 2 {
@@ -2474,6 +2541,7 @@ impl State {
                     folded: s.folded,
                     all_in: s.all_in,
                     sitting_out: s.sitting_out,
+                    leaving: s.is_leaving(),
                     has_cards: s.in_hand && !s.folded && !s.hole.is_empty(),
                     cards: t.visible_cards(i, viewer.as_ref()),
                     last_action: s.last_action.clone(),
@@ -3197,7 +3265,7 @@ pub(crate) mod tests {
         // p1 wins big, then leaves.
         let i = s.tables[&table].seat_of(&p(1)).unwrap();
         s.tables.get_mut(&table).unwrap().seats[i].as_mut().unwrap().stack = max * 3;
-        assert_eq!(s.leave_table(p(1), table, SEC).unwrap(), max * 3);
+        assert_eq!(s.leave_table(p(1), table, SEC).unwrap(), LeaveResult::Left(max * 3));
         // Coming back soon means bringing the stack back, even above the table max.
         assert!(s.join_table(p(1), table, 0, min, None, 2 * SEC).unwrap_err().contains("buy back in"));
         assert_eq!(s.table_view(table, Some(p(1)), 2 * SEC).unwrap().my_min_buy_in, max * 3);
@@ -4029,6 +4097,145 @@ pub(crate) mod tests {
         assert!(s.join_table(p(3), 1, 0, 1_000, None, u64::MAX / 2).is_err(), "permanent");
         s.unban(p(200), p(3), 0).unwrap();
         s.join_table(p(3), 1, 0, 1_000, None, 0).unwrap();
+    }
+
+    fn wallet(s: &State, k: u8) -> u64 {
+        s.users.get(&p(k)).unwrap().balance
+    }
+
+    /// Seats p1-p3 at Low Rollers (ICP, raked) and deals a hand.
+    fn leave_test_hand(s: &mut State, seed: u8) -> (u64, u64) {
+        let table = 7;
+        let buy = s.tables[&table].config.max_buy_in;
+        for k in 1..=3 {
+            s.join_table(p(k), table, k - 1, buy, None, 0).unwrap();
+        }
+        assert_eq!(s.tick(SEC), vec![table]);
+        s.start_hand(table, [seed; 32], SEC);
+        assert!(s.tables[&table].phase.is_betting());
+        (table, buy)
+    }
+
+    fn to_act(s: &State, table: u64) -> Principal {
+        let t = &s.tables[&table];
+        t.seats[t.to_act.unwrap()].as_ref().unwrap().player
+    }
+
+    /// Plays the hand out: players check or call, and the 1 s tick acts for
+    /// anyone sitting out.
+    fn finish_hand(s: &mut State, table: u64, mut now: u64) -> u64 {
+        while s.tables[&table].phase.is_betting() {
+            let t = &s.tables[&table];
+            if t.seats[t.to_act.unwrap()].as_ref().unwrap().sitting_out {
+                now += SEC;
+                s.tick(now);
+                continue;
+            }
+            let actor = to_act(s, table);
+            if s.act(actor, table, Action::Check, now).is_err() {
+                s.act(actor, table, Action::Call, now).unwrap();
+            }
+        }
+        now
+    }
+
+    #[test]
+    fn leaving_between_hands_is_immediate() {
+        let mut s = setup();
+        let table = 7;
+        let buy = s.tables[&table].config.max_buy_in;
+        let before = wallet(&s, 1);
+        s.join_table(p(1), table, 0, buy, None, 0).unwrap();
+        s.join_table(p(2), table, 1, buy, None, 0).unwrap();
+        assert_eq!(s.leave_table(p(1), table, SEC).unwrap(), LeaveResult::Left(buy));
+        assert_eq!(wallet(&s, 1), before);
+        assert!(s.tables[&table].seat_of(&p(1)).is_none());
+        assert!(s.chat_since(Channel::Table(table), 0).iter().any(|m| m.text == "player1 left the table"));
+    }
+
+    #[test]
+    fn leaver_is_credited_once_at_hand_end() {
+        let mut s = setup();
+        let before = total_value(&s);
+        let (table, buy) = leave_test_hand(&mut s, 5);
+        let actor = to_act(&s, table);
+        let k = (1..=3).find(|&k| p(k) != actor).unwrap();
+        let held = wallet(&s, k);
+        assert_eq!(s.leave_table(p(k), table, SEC).unwrap(), LeaveResult::AfterHand);
+        assert_eq!(wallet(&s, k), held, "nothing is paid out mid-hand");
+        assert!(s.tables[&table].seat_of(&p(k)).is_some(), "still in the hand");
+        let v = s.table_view(table, Some(p(k)), SEC).unwrap();
+        assert!(v.seats.iter().flatten().any(|x| x.player == p(k) && x.leaving));
+        let now = finish_hand(&mut s, table, SEC);
+        let r = s.tables[&table].last_result.clone().unwrap();
+        let pr = r.players.iter().find(|x| x.player == p(k)).unwrap();
+        assert_eq!(wallet(&s, k), held + buy - pr.committed + pr.won, "their whole stack, winnings included");
+        assert!(s.tables[&table].seat_of(&p(k)).is_none());
+        assert_eq!(s.min_return_buy_in(table, &p(k), now), buy - pr.committed + pr.won);
+        assert!(s.chat_since(Channel::Table(table), 0).iter().any(|m| m.text == format!("player{k} left the table")));
+        // Never again: more ticks, another hand, a repeated hand-end hook.
+        let credited = wallet(&s, k);
+        s.after_table_change(table, now);
+        let later = now + 6 * SEC;
+        assert_eq!(s.tick(later), vec![table]);
+        s.start_hand(table, [6; 32], later);
+        let end = finish_hand(&mut s, table, later);
+        s.tick(end + 6 * SEC);
+        assert_eq!(wallet(&s, k), credited);
+        assert_eq!(total_value(&s), before);
+        assert_eq!(s.wallet_total, s.recount_wallet_total());
+    }
+
+    #[test]
+    fn moderation_removal_keeps_all_in_entitlement() {
+        let card = |r: u8, su: u8| r * 4 + su;
+        let mut s = setup();
+        let before = total_value(&s);
+        let (table, buy) = leave_test_hand(&mut s, 3);
+        let shover = to_act(&s, table);
+        let k = (1..=3).find(|&k| p(k) == shover).unwrap();
+        let t = s.tables.get_mut(&table).unwrap();
+        // The shover holds aces against rags on a dry board (deck pops from the end).
+        let mut rags = vec![vec![card(1, 1), card(6, 2)], vec![card(3, 2), card(8, 1)]];
+        for seat in t.seats.iter_mut().flatten() {
+            seat.hole = if seat.player == shover { vec![card(12, 3), card(12, 2)] } else { rags.pop().unwrap() };
+        }
+        t.deck = vec![card(2, 0), card(6, 0), card(9, 3), card(4, 0), card(7, 2), card(5, 1), card(0, 0), card(3, 0)];
+        let held = wallet(&s, k);
+        s.act(shover, table, Action::AllIn, SEC).unwrap();
+        s.ban(p(200), shover, 24, "collusion", SEC).unwrap();
+        let i = s.tables[&table].seat_of(&shover).unwrap();
+        assert!(!s.tables[&table].seats[i].as_ref().unwrap().folded, "removal never folds an all-in");
+        assert_eq!(wallet(&s, k), held);
+        // The others call and check it down.
+        finish_hand(&mut s, table, SEC);
+        let r = s.tables[&table].last_result.clone().unwrap();
+        let pr = r.players.iter().find(|x| x.player == shover).unwrap();
+        assert!(pr.won > pr.committed, "the aces won the pot");
+        assert_eq!(wallet(&s, k), held + buy - pr.committed + pr.won);
+        assert!(s.tables[&table].seat_of(&shover).is_none());
+        assert_eq!(total_value(&s), before);
+    }
+
+    #[test]
+    fn leaver_cannot_rejoin_until_the_hand_ends() {
+        let mut s = setup();
+        let (table, buy) = leave_test_hand(&mut s, 5);
+        let actor = to_act(&s, table);
+        let k = (1..=3).find(|&k| p(k) == actor).unwrap();
+        assert_eq!(s.leave_table(p(k), table, SEC).unwrap(), LeaveResult::AfterHand);
+        assert!(s.sit_out(p(k), table, false, SEC).is_err(), "no coming back while leaving");
+        assert!(s.act(p(k), table, Action::Call, SEC).is_err(), "their turns are played for them");
+        s.tick(2 * SEC); // folded for them
+        assert!(s.tables[&table].phase.is_betting());
+        assert!(s.top_up(p(k), table, 1).is_err());
+        assert!(s.join_table(p(k), table, 5, buy, None, 2 * SEC).is_err());
+        assert!(s.join_game(p(k), table, buy, 2 * SEC).is_err(), "not another copy of the game either");
+        assert_eq!(s.leave_table(p(k), table, 2 * SEC).unwrap(), LeaveResult::AfterHand);
+        let now = finish_hand(&mut s, table, 2 * SEC);
+        assert!(s.tables[&table].seat_of(&p(k)).is_none());
+        let back = s.min_return_buy_in(table, &p(k), now);
+        s.join_table(p(k), table, 5, back, None, now).unwrap();
     }
 
     #[test]

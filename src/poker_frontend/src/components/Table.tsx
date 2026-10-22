@@ -16,6 +16,7 @@ import { handReactions } from '../fx/poker';
 import { giftArrivals } from '../fx/gifts';
 import { WatchBar } from './WatchBar';
 import { Burst, Mark } from '../fx/marks';
+import { LEAVE_CONFIRM, leaveLabel, leavesAfterHand } from '../leave';
 
 /** How long a thrown item flies, and how long its mark stays (spec: ~0.7s, ~4s plus the wipe). */
 const THROW_FLIGHT_MS = 700;
@@ -110,6 +111,15 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
   const settings = profile?.settings;
 
   const load = refresh;
+
+  // Leaving after the hand: the chips reach the wallet when it ends, so refresh then.
+  const leavingSeat = view?.my_seat[0];
+  const amLeaving = leavingSeat !== undefined && !!view?.seats[leavingSeat]?.[0]?.leaving;
+  const wasLeaving = useRef(false);
+  useEffect(() => {
+    if (wasLeaving.current && view && view.my_seat.length === 0) void refreshProfile();
+    wasLeaving.current = amLeaving;
+  }, [view, amLeaving, refreshProfile]);
 
   useEffect(() => {
     if (!visible) return;
@@ -334,17 +344,22 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
           <div className="row gap">
             {me && (
               <>
-                <button
-                  className="btn ghost"
-                  title={tourney ? undefined : me.sitting_out ? "You'll post a big blind to come back in" : 'Missed hands mean posting a big blind when you come back'}
-                  onClick={() => run(async () => unwrap(await backend.sit_out(id, !me.sitting_out)))}
-                >
-                  {me.sitting_out ? "I'm back" : 'Sit out'}
-                </button>
+                {!me.leaving && (
+                  <button
+                    className="btn ghost"
+                    title={tourney ? undefined : me.sitting_out ? "You'll post a big blind to come back in" : 'Missed hands mean posting a big blind when you come back'}
+                    onClick={() => run(async () => unwrap(await backend.sit_out(id, !me.sitting_out)))}
+                  >
+                    {me.sitting_out ? "I'm back" : 'Sit out'}
+                  </button>
+                )}
                 {!tourney && (
                   <button
                     className="btn ghost"
+                    disabled={me.leaving}
                     onClick={async () => {
+                      // In a hand, leaving waits for it to end: say so first.
+                      if (leavesAfterHand(phase, me) && !confirm(LEAVE_CONFIRM)) return;
                       const r = await run(async () => unwrap(await backend.leave_table(id)));
                       if (r !== undefined) {
                         await refreshProfile();
@@ -352,7 +367,7 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
                       }
                     }}
                   >
-                    Stand up
+                    {leaveLabel(me)}
                   </button>
                 )}
               </>
