@@ -18,6 +18,7 @@ import { AccountNotice } from './components/Safety';
 import { Admin } from './components/Admin';
 import { Avatar } from './art/Avatar';
 import { shouldOfferRegistration } from './startup';
+import { pauseBanner } from './pause';
 
 const NAV: { name: View['name']; label: string }[] = [
   { name: 'lobby', label: 'Lobby' },
@@ -164,16 +165,6 @@ function ConnectionBanner() {
   );
 }
 
-/** One accurate sentence per pause flag that is set. Balances are never described as simply "safe". */
-export function pauseNotes(p: { deposits: boolean; withdrawals: boolean; dealing: boolean; joins: boolean }): string[] {
-  const notes: string[] = [];
-  if (p.deposits) notes.push('Deposits are paused. Please do not send new funds until they reopen.');
-  if (p.withdrawals) notes.push('Withdrawals are paused while we check balances. Nothing is lost; withdrawals resume after the check.');
-  if (p.dealing) notes.push('No new hands are being dealt. Hands already in progress will finish.');
-  if (p.joins) notes.push('New tables, seats and tournament entries are paused. You can keep playing where you are seated.');
-  return notes;
-}
-
 /** Shows a banner while any part of the service is paused for maintenance. */
 function StatusBanner() {
   const { backend } = useApp();
@@ -181,12 +172,11 @@ function StatusBanner() {
   usePoll(async () => setStatus(await backend.get_status()), 30000, [backend]);
   const p = status?.pause;
   if (!p) return null;
-  const notes = pauseNotes(p);
-  if (notes.length === 0) return null;
+  const text = pauseBanner(p, p.reason[0]);
+  if (!text) return null;
   return (
     <div className="status-banner">
-      ⚠️ {notes.join(' ')}
-      {p.reason[0] ? ` Reason: ${p.reason[0]}` : ''}
+      ⚠️ {text}
     </div>
   );
 }

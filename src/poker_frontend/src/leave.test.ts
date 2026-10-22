@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LEAVE_CONFIRM, leaveLabel, leavesAfterHand } from './leave';
+import { LEAVE_CONFIRM, alreadyLeaving, leaveLabel, leavesAfterHand } from './leave';
 
 const me = (in_hand: boolean, folded = false, leaving = false) => ({ in_hand, folded, leaving });
 
@@ -25,5 +25,14 @@ describe('leave wording', () => {
   it('labels the button by state', () => {
     expect(leaveLabel(me(true))).toBe('Leave table');
     expect(leaveLabel(me(true, false, true))).toBe('Leaving after this hand…');
+  });
+});
+
+describe('alreadyLeaving', () => {
+  it('is true if either the seat ref or my view seat is leaving', () => {
+    expect(alreadyLeaving({ leaving: true }, undefined)).toBe(true);
+    expect(alreadyLeaving(undefined, { leaving: true })).toBe(true);
+    expect(alreadyLeaving({ leaving: false }, { leaving: false })).toBe(false);
+    expect(alreadyLeaving(undefined, undefined)).toBe(false);
   });
 });

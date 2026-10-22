@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Principal } from '@icp-sdk/core/principal';
-import { depositCost, parseDestination, sweepNet, unknownOpState, RETRY_WINDOW_MS, withdrawReview, icrcAccountText } from './walletMath';
+import { depositCost, parseDestination, sweepNet, unknownOpState, RETRY_WINDOW_MS, withdrawReview, icrcAccountText, subaccountHex } from './walletMath';
 import { prizeText, CHIPS, ICP } from './format';
 
 const P = 'rrkah-fqaaa-aaaaa-aaaaq-cai';
@@ -104,5 +104,20 @@ describe('prizeText', () => {
   it('uses the tournament currency, not chips', () => {
     expect(prizeText(250_000_000n, ICP)).toBe('2.5 ICP');
     expect(prizeText(1500n, CHIPS)).toBe(`${(1500).toLocaleString()} chips`);
+  });
+});
+
+describe('subaccountHex', () => {
+  it('prints all 32 bytes as 64 lowercase hex characters', () => {
+    const sub = new Uint8Array(32);
+    sub[31] = 1;
+    sub[0] = 0xab;
+    expect(subaccountHex(sub)).toBe('ab' + '00'.repeat(30) + '01');
+    expect(subaccountHex(Array.from(sub))).toHaveLength(64);
+  });
+  it('gives a deposit subaccount supplied as a plain number array a full ICRC-1 text', () => {
+    const arr = Array.from({ length: 32 }, (_, i) => i + 1);
+    const text = icrcAccountText(Principal.fromText(P), new Uint8Array(arr));
+    expect(text).toMatch(/^rrkah-fqaaa-aaaaa-aaaaq-cai-[a-z2-7]{7}\.102030405/);
   });
 });

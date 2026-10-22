@@ -24,3 +24,7 @@ export function trapTarget<T>(items: T[], active: T | null, shift: boolean, acti
   if (!shift && active === last) return first;
   return null;
 }
+
+/** A passive dialog (one that opens by itself) leaves focus where the user has it. */
+export const movesFocusIn = (passive: boolean, focusInside: boolean): boolean => !passive && !focusInside;
+export const restoresFocus = (passive: boolean): boolean => !passive;

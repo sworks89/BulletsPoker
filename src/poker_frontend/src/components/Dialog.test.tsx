@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Dialog } from './Dialog';
-import { trapTarget, isCloseKey } from './dialogKeys';
+import { trapTarget, isCloseKey, movesFocusIn, restoresFocus } from './dialogKeys';
 
 describe('Dialog markup', () => {
   const html = renderToStaticMarkup(
@@ -51,5 +51,17 @@ describe('activate key', () => {
     expect(isActivateKey('Enter')).toBe(true);
     expect(isActivateKey(' ')).toBe(true);
     expect(isActivateKey('a')).toBe(false);
+  });
+});
+
+describe('focus on open', () => {
+  it('moves focus in unless the dialog is passive or focus is already inside', () => {
+    expect(movesFocusIn(false, false)).toBe(true);
+    expect(movesFocusIn(false, true)).toBe(false);
+    expect(movesFocusIn(true, false)).toBe(false);
+  });
+  it('restores focus on close only for active dialogs', () => {
+    expect(restoresFocus(false)).toBe(true);
+    expect(restoresFocus(true)).toBe(false);
   });
 });

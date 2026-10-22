@@ -18,3 +18,7 @@ export const leavesAfterHand = (phase: string, me: Pick<LeaveSeat, 'in_hand' | '
   BETTING.has(phase) && me.in_hand && !me.folded;
 
 export const leaveLabel = (me: Pick<LeaveSeat, 'leaving'>): string => (me.leaving ? 'Leaving after this hand…' : 'Leave table');
+
+/** True when the server already has me leaving after this hand, so asking again would be pointless. */
+export const alreadyLeaving = (ref: { leaving: boolean } | undefined | null, me: { leaving: boolean } | undefined | null): boolean =>
+  !!ref?.leaving || !!me?.leaving;

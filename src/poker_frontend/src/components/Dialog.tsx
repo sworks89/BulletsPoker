@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from 'react';
-import { FOCUSABLE, isCloseKey, trapTarget } from './dialogKeys';
+import { FOCUSABLE, isCloseKey, movesFocusIn, restoresFocus, trapTarget } from './dialogKeys';
 
 /**
  * Accessible modal: dialog role, labelled by its title, focus moves in on
@@ -13,6 +13,7 @@ export function Dialog({
   hideTitle,
   bgClass = 'modal-bg',
   boxClass = 'modal',
+  passive = false,
 }: {
   title: string;
   onClose?: () => void;
@@ -20,6 +21,8 @@ export function Dialog({
   hideTitle?: boolean;
   bgClass?: string;
   boxClass?: string;
+  /** For dialogs that open on their own: don't move focus in on open or back on close. */
+  passive?: boolean;
 }) {
   const titleId = useId();
   const box = useRef<HTMLDivElement>(null);
@@ -28,10 +31,10 @@ export function Dialog({
 
   useEffect(() => {
     const el = box.current;
-    if (el && !el.contains(document.activeElement)) el.focus();
+    if (el && movesFocusIn(passive, el.contains(document.activeElement))) el.focus();
     const from = opener.current;
     return () => {
-      if (from instanceof HTMLElement && from.isConnected) from.focus();
+      if (restoresFocus(passive) && from instanceof HTMLElement && from.isConnected) from.focus();
     };
   }, []);
 

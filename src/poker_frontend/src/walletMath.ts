@@ -76,6 +76,11 @@ function hexToBytes(hex: string): Uint8Array {
   return out;
 }
 
+/** All 32 subaccount bytes as 64 lowercase hex characters. */
+export function subaccountHex(sub: Uint8Array | number[]): string {
+  return Array.from(sub, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 /** ICRC-1 textual account: `<principal>` when the subaccount is default, else `<principal>-<checksum>.<hex without leading zeros>`. */
 export function icrcAccountText(owner: Principal, subaccount: Uint8Array | null): string {
   if (!subaccount || isZero(subaccount)) return owner.toText();

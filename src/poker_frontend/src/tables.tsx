@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useApp, usePoll } from './context';
 import { unwrap } from './ic';
-import { LEAVE_CONFIRM, leavesAfterHand } from './leave';
+import { LEAVE_CONFIRM, alreadyLeaving, leavesAfterHand } from './leave';
 import type { TableView } from './ic';
 import { isMyTurn } from './turn';
 import { afterClosing, defersToSeatSync, isSeated, reconcileSeats } from './tablesNav';
@@ -98,6 +98,7 @@ export function TablesProvider({ children }: { children: ReactNode }) {
 
   // The tables I hold a seat at, as the server last said (table id -> tournament id).
   const seats = useRef<Map<string, bigint | null>>(new Map());
+  const leavingSeats = useRef<Set<string>>(new Set()); // seats the server already has leaving after the hand
   const seatIds = () => [...seats.current.keys()].map((s) => BigInt(s));
   const openRef = useRef(open);
   openRef.current = open;
@@ -146,17 +147,23 @@ export function TablesProvider({ children }: { children: ReactNode }) {
     async (id: bigint) => {
       const v = views.get(String(id));
       const me = v && v.my_seat.length ? v.seats[v.my_seat[0]][0] : undefined;
+      if (alreadyLeaving({ leaving: leavingSeats.current.has(String(id)) }, me)) {
+        notify("You're leaving after this hand.");
+        return;
+      }
       if (me && leavesAfterHand(Object.keys(v!.phase)[0], me) && !confirm(LEAVE_CONFIRM)) return;
       try {
         const r = unwrap(await backend.leave_table(id));
         if ('Left' in r) {
           seats.current.delete(String(id));
+          leavingSeats.current.delete(String(id));
           seatReq.current += 1; // a seat list requested before this would bring the table back
           const next = afterClosing(openRef.current, active, [id]);
           updateOpen(next.open);
           if (next.goTo !== null) goNext(next.goTo);
           await refreshProfile();
         } else {
+          leavingSeats.current.add(String(id));
           notify("You'll leave when this hand ends.");
         }
       } catch (e) {
@@ -214,6 +221,7 @@ export function TablesProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     synced.current = false;
     seats.current = new Map();
+    leavingSeats.current = new Set();
     seatReq.current += 1;
   }, [principal]);
   syncRef.current = async () => {
@@ -224,6 +232,7 @@ export function TablesProvider({ children }: { children: ReactNode }) {
     const now = new Map<string, bigint | null>(refs.map((r) => [String(r.table), r.tournament[0] ?? null]));
     const before = seats.current;
     seats.current = now;
+    leavingSeats.current = new Set(refs.filter((r) => r.leaving).map((r) => String(r.table)));
     const { open: next } = reconcileSeats(
       openRef.current,
       refs.map((r) => r.table),

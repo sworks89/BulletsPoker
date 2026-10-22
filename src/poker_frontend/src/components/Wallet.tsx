@@ -2,10 +2,10 @@ import { useEffect, useState } from 'react';
 import { useApp } from '../context';
 import { Principal, backendId, unwrap, type DepositInfo, type LedgerOp } from '../ic';
 import { usePoll } from '../context';
-import { icp, parseIcp, timeAgo } from '../format';
+import { agoText, icp, parseIcp, timeAgo } from '../format';
 import { prizeIcp } from '../rewards';
 import { SUPPORT_CONTACT } from '../support';
-import { depositCost, icrcAccountText, parseDestination, sweepNet, unknownOpState, withdrawReview } from '../walletMath';
+import { depositCost, icrcAccountText, parseDestination, subaccountHex, sweepNet, unknownOpState, withdrawReview } from '../walletMath';
 import { WelcomeBanner, WelcomeCard, useWelcome } from './WelcomeBonus';
 import { lastAnnounced, markAnnounced, toastFor, welcomeStatus } from '../welcome';
 
@@ -147,6 +147,7 @@ export function Wallet() {
   }
   const quote = depositAmount === null ? null : depositCost(depositAmount, fee);
 
+  const depositAccount = info ? icrcAccountText(info.account.owner, info.account.subaccount[0] ? new Uint8Array(info.account.subaccount[0]) : null) : '';
   return (
     <div className="page-grid">
       <div className="panel">
@@ -191,9 +192,10 @@ export function Wallet() {
           <>
             <p className="small">Send ICP to your personal deposit address:</p>
             <code className="addr">{info.account_id}</code>
-            <p className="small">
-              ICRC-1 account: owner <code>{info.account.owner.toText()}</code> with your deposit subaccount.
-            </p>
+            <CopyButton text={info.account_id} label="Copy account ID" what="Account ID" />
+            <p className="small">ICRC-1 account (complete, for wallets that support it):</p>
+            <code className="addr">{depositAccount}</code>
+            <CopyButton text={depositAccount} label="Copy ICRC-1 account" what="ICRC-1 account" />
             <p className="muted small">
               One ledger fee of {icp(fee)} ICP is taken when your deposit is moved in, so you are credited what you sent minus {icp(fee)} ICP (sending 10 ICP
               credits {icp(sweepNet(1_000_000_000n, fee))} ICP). Amounts of {icp(fee)} ICP or less are not credited.
@@ -239,7 +241,14 @@ export function Wallet() {
           <>
             <p className="small">Check the details. A withdrawal cannot be undone.</p>
             <div className="small">
-              To: <code className="addr">{icrcAccountText(review.owner, review.subaccount)}</code>
+              To: <code className="addr">{icrcAccountText(review.owner, review.subaccount)}</code>{' '}
+              <CopyButton text={icrcAccountText(review.owner, review.subaccount)} label="Copy destination" what="Destination" />
+              {review.subaccount && (
+                <>
+                  <br />
+                  Subaccount: <code className="addr">{subaccountHex(review.subaccount)}</code>
+                </>
+              )}
               <br />
               Network: ICP ledger
               <br />
@@ -273,8 +282,25 @@ export function Wallet() {
 
 const KIND_LABEL: Record<string, string> = { Deposit: 'Deposit', Sweep: 'Deposit (transfer)', Withdraw: 'Withdrawal', Treasury: 'Treasury' };
 
-function OpRow({ op }: { op: LedgerOp }) {
+/** Copies text to the clipboard; if that is blocked, shows the text so it can be selected by hand. */
+function CopyButton({ text, label, what }: { text: string; label: string; what: string }) {
   const { notify } = useApp();
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      notify(`${what} copied`);
+    } catch {
+      notify(`${what}: ${text}`);
+    }
+  };
+  return (
+    <button className="btn ghost small" onClick={copy}>
+      {label}
+    </button>
+  );
+}
+
+function OpRow({ op }: { op: LedgerOp }) {
   const kind = Object.keys(op.kind)[0];
   const status = Object.keys(op.status)[0];
   const incoming = kind === 'Deposit' || kind === 'Sweep';
@@ -295,14 +321,6 @@ function OpRow({ op }: { op: LedgerOp }) {
             ? `Needs support review — contact ${SUPPORT_CONTACT} with operation #${String(op.id)}`
             : 'Confirming with the ledger — usually within minutes. Your balance stays reserved until then.'
           : '';
-  const copyId = async () => {
-    try {
-      await navigator.clipboard.writeText(String(op.id));
-      notify('Operation ID copied');
-    } catch {
-      notify(`Operation ID: ${String(op.id)}`);
-    }
-  };
   return (
     <div className="op-row">
       <div className="grow">
@@ -313,10 +331,8 @@ function OpRow({ op }: { op: LedgerOp }) {
         {'Unknown' in op.status && (
           <div className="muted small">
             Operation #{String(op.id)}{' '}
-            <button className="btn ghost small" onClick={copyId}>
-              Copy ID
-            </button>{' '}
-            · started {timeAgo(op.created_at_time)} ago · last attempt {timeAgo(op.updated_at)} ago · {op.status.Unknown.attempts}{' '}
+            <CopyButton text={String(op.id)} label="Copy ID" what="Operation ID" />{' '}
+            · started {agoText(op.created_at_time)} · last attempt {agoText(op.updated_at)} · {op.status.Unknown.attempts}{' '}
             {op.status.Unknown.attempts === 1 ? 'attempt' : 'attempts'}
           </div>
         )}

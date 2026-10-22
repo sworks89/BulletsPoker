@@ -64,7 +64,7 @@ export function JackpotCelebration({ hit, onClose }: { hit: JackpotHit; onClose:
   const { profile } = useApp();
   const mine = hit.payouts.find((p) => p.player.toText() === profile?.id.toText());
   return (
-    <Dialog title="Bad beat jackpot" onClose={onClose} hideTitle bgClass="jp-celebrate" boxClass="jp-card">
+    <Dialog title="Bad beat jackpot" onClose={onClose} hideTitle passive bgClass="jp-celebrate" boxClass="jp-card">
         <div className="jp-title">💥 BAD BEAT JACKPOT 💥</div>
         <div className="jp-total">{amountWithUnit(hit.total, hit.currency)}</div>
         <div className="jp-hands">

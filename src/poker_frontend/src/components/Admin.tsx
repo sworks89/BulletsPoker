@@ -14,7 +14,7 @@ import {
   type Report,
   type Roles,
 } from '../ic';
-import { countdown, icp, parseIcp, shortPrincipal, timeAgo } from '../format';
+import { agoText, countdown, icp, parseIcp, shortPrincipal, timeAgo } from '../format';
 
 /** Matches the backend's RESOLVE_AFTER_NS: the ledger's 24h dedup window plus margin. */
 const SETTLE_AFTER_MS = (24 * 60 + 10) * 60_000;
@@ -113,7 +113,7 @@ function Overview() {
           </span>
           {m.last_solvency_at[0] !== undefined && (
             <span className="muted small">
-              checked {timeAgo(m.last_solvency_at[0])} ago · surplus {icp(m.last_solvency_surplus_e8s[0] ?? 0n, 4)} ICP
+              checked {agoText(m.last_solvency_at[0])} · surplus {icp(m.last_solvency_surplus_e8s[0] ?? 0n, 4)} ICP
             </span>
           )}
           <button className="btn small" onClick={() => run(async () => { unwrap(await backend.admin_check_solvency()); await load(); }, 'Solvency checked')}>
@@ -264,7 +264,7 @@ function ReportCard({ report: r, onLookUp, onDone }: { report: Report; onLookUp:
           {r.target_name}
         </button>
         <span className="muted small">
-          reported by {r.reporter_name} · {timeAgo(r.created_at)} ago{r.channel[0] ? ` · ${'Lobby' in r.channel[0] ? 'lobby chat' : `table #${r.channel[0].Table}`}` : ''}
+          reported by {r.reporter_name} · {agoText(r.created_at)}{r.channel[0] ? ` · ${'Lobby' in r.channel[0] ? 'lobby chat' : `table #${r.channel[0].Table}`}` : ''}
         </span>
       </div>
       {r.details && <p className="report-details">“{r.details}”</p>}
@@ -307,7 +307,7 @@ function ReportCard({ report: r, onLookUp, onDone }: { report: Report; onLookUp:
       ) : (
         'Resolved' in r.status && (
           <div className="muted small">
-            {actionLabel(r.status.Resolved.action)} {timeAgo(r.status.Resolved.at)} ago by {shortPrincipal(r.status.Resolved.by)}
+            {actionLabel(r.status.Resolved.action)} {agoText(r.status.Resolved.at)} by {shortPrincipal(r.status.Resolved.by)}
             {r.status.Resolved.note && ` · “${r.status.Resolved.note}”`}
           </div>
         )
@@ -390,7 +390,7 @@ function Players({ roles, initial }: { roles: Roles; initial: Principal | null }
             <div className="kv">
               <span>Level</span> <b>{player.level}</b>
               <span>Joined</span> <b>{new Date(Number(player.created_at / 1_000_000n)).toLocaleDateString()}</b>
-              <span>Last seen</span> <b>{timeAgo(player.last_seen)} ago</b>
+              <span>Last seen</span> <b>{agoText(player.last_seen)}</b>
               <span>ICP balance</span> <b>{icp(player.balance, 4)}</b>
               <span>Play chips</span> <b>{player.chips.toLocaleString()}</b>
               <span>Hands</span> <b>{player.hands_played.toLocaleString()}</b>
@@ -563,7 +563,7 @@ function Money() {
             <div key={String(op.id)} className="op-row">
               <div className="grow small">
                 <b>#{String(op.id)} {variant(op.kind)}</b> · {icp(op.amount)} ICP · {shortPrincipal(op.user)} → {shortPrincipal(op.to.owner)} ·{' '}
-                <span className="muted">{timeAgo(op.created_at_time)} ago</span>
+                <span className="muted">{agoText(op.created_at_time)}</span>
               </div>
               <button className="btn ghost small" onClick={() => run(async () => { unwrap(await backend.admin_retry_op(op.id)); await load(); }, 'Re-sent')}>
                 Retry now

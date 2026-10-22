@@ -47,6 +47,12 @@ export function timeAgo(ns: bigint): string {
   return `${Math.floor(secs / 3600)}h`;
 }
 
+/** Like timeAgo but a complete phrase: "just now", "5m ago". */
+export function agoText(ns: bigint): string {
+  const t = timeAgo(ns);
+  return t === 'now' ? 'just now' : `${t} ago`;
+}
+
 export function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
