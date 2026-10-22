@@ -4,8 +4,12 @@ import { Principal, backendId, unwrap, type DepositInfo, type LedgerOp } from '.
 import { usePoll } from '../context';
 import { icp, parseIcp, timeAgo } from '../format';
 import { prizeIcp } from '../rewards';
+import { SUPPORT_CONTACT } from '../support';
+import { depositCost, icrcAccountText, parseDestination, sweepNet, unknownOpState, withdrawReview } from '../walletMath';
 import { WelcomeBanner, WelcomeCard, useWelcome } from './WelcomeBonus';
 import { lastAnnounced, markAnnounced, toastFor, welcomeStatus } from '../welcome';
+
+type Review = { owner: Principal; subaccount: Uint8Array | null; amount: bigint; total: bigint };
 
 export function Wallet() {
   const { backend, ledger, principal, profile, run, refreshProfile, notify } = useApp();
@@ -16,6 +20,8 @@ export function Wallet() {
   const [withdrawAmt, setWithdrawAmt] = useState('');
   const [withdrawTo, setWithdrawTo] = useState('');
   const [busy, setBusy] = useState(false);
+  const [review, setReview] = useState<Review | null>(null);
+  const [formError, setFormError] = useState('');
   const [ops, setOps] = useState<LedgerOp[]>([]);
   usePoll(async () => setOps(await backend.get_my_ledger_ops()), 10000, [backend, principal?.toText()]);
 
@@ -47,50 +53,99 @@ export function Wallet() {
   if (!profile || !principal) return <div className="panel">Sign in to manage your wallet.</div>;
   const fee = info?.fee ?? 10_000n;
 
+  // The transfer already happened; a failed refresh must not look like a failed transfer.
+  const refreshAfterChange = async (f: () => Promise<unknown>) => {
+    try {
+      await f();
+    } catch {
+      notify('Done, but the screen could not refresh. Reload the page to see your latest balance.');
+    }
+  };
+
   const deposit = async () => {
     setBusy(true);
-    await run(async () => {
-      const amount = parseIcp(depositAmt);
-      // ICRC-2: allow the poker canister to pull `amount` (+ the transfer_from fee).
-      const approve = await ledger.icrc2_approve({
-        spender: { owner: Principal.fromText(backendId), subaccount: [] },
-        amount: amount + fee,
-        fee: [],
-        memo: [],
-        from_subaccount: [],
-        created_at_time: [],
-        expected_allowance: [],
-        expires_at: [BigInt(Date.now() + 10 * 60_000) * 1_000_000n],
-      });
-      if ('Err' in approve) throw new Error(`Approve failed: ${Object.keys(approve.Err)[0]}`);
-      unwrap(await backend.deposit(amount));
-      setDepositAmt('');
-    }, 'Deposit complete');
-    await Promise.all([refreshProfile(), loadWallet(), reloadWelcome()]).catch(() => {});
-    setBusy(false);
+    try {
+      const done = await run(async () => {
+        const amount = parseIcp(depositAmt);
+        const cost = depositCost(amount, fee);
+        if (walletBalance !== null && cost.total > walletBalance) {
+          throw new Error(`Your wallet needs ${icp(cost.total)} ICP (the amount plus two ledger fees) but holds ${icp(walletBalance)} ICP`);
+        }
+        // ICRC-2: allow the poker canister to pull `amount` (+ the transfer_from fee).
+        const approve = await ledger.icrc2_approve({
+          spender: { owner: Principal.fromText(backendId), subaccount: [] },
+          amount: amount + fee,
+          fee: [],
+          memo: [],
+          from_subaccount: [],
+          created_at_time: [],
+          expected_allowance: [],
+          expires_at: [BigInt(Date.now() + 10 * 60_000) * 1_000_000n],
+        });
+        if ('Err' in approve) throw new Error(`Approve failed: ${Object.keys(approve.Err)[0]}`);
+        unwrap(await backend.deposit(amount));
+        return true;
+      }, 'Deposit complete');
+      if (done) {
+        setDepositAmt('');
+        await refreshAfterChange(() => Promise.all([refreshProfile(), loadWallet(), reloadWelcome()]));
+      }
+    } finally {
+      setBusy(false);
+    }
   };
 
   const claim = async () => {
     setBusy(true);
-    await run(async () => {
-      const amt = unwrap(await backend.claim_deposit());
-      return amt;
-    }, 'Deposit credited');
-    await Promise.all([refreshProfile(), reloadWelcome()]).catch(() => {});
-    setBusy(false);
+    try {
+      const credited = await run(async () => unwrap(await backend.claim_deposit()), 'Deposit credited');
+      if (credited !== undefined) await refreshAfterChange(() => Promise.all([refreshProfile(), reloadWelcome()]));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Validates the form and opens the review step (nothing is sent yet). */
+  const startReview = () => {
+    setFormError('');
+    const dest = parseDestination(withdrawTo);
+    if ('error' in dest) return setFormError(dest.error);
+    let amount: bigint;
+    try {
+      amount = parseIcp(withdrawAmt);
+    } catch (e) {
+      return setFormError(e instanceof Error ? e.message : String(e));
+    }
+    const check = withdrawReview(amount, fee, profile.balance);
+    if (!check.ok) return setFormError(check.error);
+    setReview({ owner: dest.owner, subaccount: dest.subaccount, amount, total: check.total });
   };
 
   const withdraw = async () => {
+    if (!review) return;
     setBusy(true);
-    await run(async () => {
-      const amount = parseIcp(withdrawAmt);
-      const owner = Principal.fromText(withdrawTo.trim());
-      unwrap(await backend.withdraw({ owner, subaccount: [] }, amount));
-      setWithdrawAmt('');
-    }, 'Withdrawal sent');
-    await Promise.all([refreshProfile(), loadWallet()]);
-    setBusy(false);
+    try {
+      const done = await run(async () => {
+        unwrap(await backend.withdraw({ owner: review.owner, subaccount: review.subaccount ? [review.subaccount] : [] }, review.amount));
+        return true;
+      }, 'Withdrawal sent');
+      if (done) {
+        setReview(null);
+        setWithdrawAmt('');
+        await refreshAfterChange(() => Promise.all([refreshProfile(), loadWallet()]));
+      }
+    } finally {
+      setBusy(false);
+    }
   };
+
+  let depositAmount: bigint | null = null;
+  try {
+    if (depositAmt) depositAmount = parseIcp(depositAmt);
+  } catch {
+    depositAmount = null;
+  }
+  const quote = depositAmount === null ? null : depositCost(depositAmount, fee);
 
   return (
     <div className="page-grid">
@@ -115,7 +170,16 @@ export function Wallet() {
             Deposit
           </button>
         </div>
-        <p className="muted small">Approves the poker canister for the amount, then pulls it in (ICRC-2). Ledger fees of {icp(fee)} ICP apply.</p>
+        <p className="muted small">
+          Approves the poker canister for the amount, then pulls it in (ICRC-2). Two ledger fees of {icp(fee)} ICP each (approve and transfer) are paid from
+          your wallet on top of the amount.
+        </p>
+        {quote && depositAmount !== null && (
+          <p className="small">
+            You deposit <b>{icp(depositAmount)} ICP</b> · fees {icp(quote.approveFee)} + {icp(quote.pullFee)} ICP · your wallet needs{' '}
+            <b>{icp(quote.total)} ICP</b>.
+          </p>
+        )}
       </div>
 
       <div className="panel">
@@ -127,6 +191,10 @@ export function Wallet() {
             <p className="small">
               ICRC-1 account: owner <code>{info.account.owner.toText()}</code> with your deposit subaccount.
             </p>
+            <p className="muted small">
+              One ledger fee of {icp(fee)} ICP is taken when your deposit is moved in, so you are credited what you sent minus {icp(fee)} ICP (sending 10 ICP
+              credits {icp(sweepNet(1_000_000_000n, fee))} ICP). Amounts of {icp(fee)} ICP or less are not credited.
+            </p>
             <button className="btn" disabled={busy} onClick={claim}>
               I've sent it — credit my balance
             </button>
@@ -136,17 +204,52 @@ export function Wallet() {
 
       <div className="panel">
         <div className="panel-title">Withdraw</div>
-        <input value={withdrawTo} onChange={(e) => setWithdrawTo(e.target.value)} placeholder="Destination principal" />
-        <div className="row gap">
-          <input value={withdrawAmt} onChange={(e) => setWithdrawAmt(e.target.value)} placeholder="Amount in ICP" />
-          <button className="btn ghost" onClick={() => setWithdrawTo(principal.toText())}>
-            My wallet
-          </button>
-          <button className="btn" disabled={busy || !withdrawAmt || !withdrawTo} onClick={withdraw}>
-            Withdraw
-          </button>
-        </div>
-        <p className="muted small">A ledger fee of {icp(fee)} ICP is deducted from your poker balance on top of the amount.</p>
+        {!review ? (
+          <>
+            <input
+              value={withdrawTo}
+              onChange={(e) => setWithdrawTo(e.target.value)}
+              placeholder="Destination principal (optionally with subaccount)"
+            />
+            <div className="row gap">
+              <input value={withdrawAmt} onChange={(e) => setWithdrawAmt(e.target.value)} placeholder="Amount in ICP" />
+              <button className="btn ghost" onClick={() => setWithdrawTo(principal.toText())}>
+                My wallet
+              </button>
+              <button className="btn" disabled={busy || !withdrawAmt || !withdrawTo} onClick={startReview}>
+                Review
+              </button>
+            </div>
+            {formError && <p className="small neg">{formError}</p>}
+            <p className="muted small">
+              Send to a principal, a principal plus a 64-character hex subaccount, or an ICRC-1 account. Old-style ICP account IDs are not supported. A ledger
+              fee of {icp(fee)} ICP is deducted from your poker balance on top of the amount.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="small">Check the details. A withdrawal cannot be undone.</p>
+            <div className="small">
+              To: <code className="addr">{icrcAccountText(review.owner, review.subaccount)}</code>
+              <br />
+              Network: ICP ledger
+              <br />
+              Amount: <b>{icp(review.amount)} ICP</b>
+              <br />
+              Ledger fee: {icp(fee)} ICP
+              <br />
+              Total debited from your poker balance: <b>{icp(review.total)} ICP</b>
+            </div>
+            <div className="row gap">
+              <button className="btn ghost" disabled={busy} onClick={() => setReview(null)}>
+                Back
+              </button>
+              <button className="btn" disabled={busy} onClick={withdraw}>
+                Confirm withdrawal
+              </button>
+            </div>
+          </>
+        )}
       </div>
       <div className="panel">
         <div className="panel-title">Transactions</div>
@@ -162,14 +265,16 @@ export function Wallet() {
 const KIND_LABEL: Record<string, string> = { Deposit: 'Deposit', Sweep: 'Deposit (transfer)', Withdraw: 'Withdrawal', Treasury: 'Treasury' };
 
 function OpRow({ op }: { op: LedgerOp }) {
+  const { notify } = useApp();
   const kind = Object.keys(op.kind)[0];
   const status = Object.keys(op.status)[0];
   const incoming = kind === 'Deposit' || kind === 'Sweep';
+  const needsSupport = 'Unknown' in op.status && unknownOpState(op, Date.now()) === 'needs_support';
   const label: Record<string, string> = {
     Completed: 'Done',
     Failed: 'Failed',
     Pending: 'Sending…',
-    Unknown: 'Confirming with the ledger',
+    Unknown: needsSupport ? 'Needs support' : 'Confirming with the ledger',
   };
   const detail =
     'Completed' in op.status
@@ -177,8 +282,18 @@ function OpRow({ op }: { op: LedgerOp }) {
       : 'Failed' in op.status
         ? op.status.Failed.reason
         : 'Unknown' in op.status
-          ? 'Your balance is reserved until the ledger confirms. This settles automatically.'
+          ? needsSupport
+            ? `Needs support review — contact ${SUPPORT_CONTACT} with operation #${String(op.id)}`
+            : 'Confirming with the ledger — usually within minutes. Your balance stays reserved until then.'
           : '';
+  const copyId = async () => {
+    try {
+      await navigator.clipboard.writeText(String(op.id));
+      notify('Operation ID copied');
+    } catch {
+      notify(`Operation ID: ${String(op.id)}`);
+    }
+  };
   return (
     <div className="op-row">
       <div className="grow">
@@ -186,6 +301,16 @@ function OpRow({ op }: { op: LedgerOp }) {
           <b>{KIND_LABEL[kind] ?? kind}</b> <span className="muted">· {timeAgo(op.created_at_time)}</span>
         </div>
         <div className="muted small">{detail}</div>
+        {'Unknown' in op.status && (
+          <div className="muted small">
+            Operation #{String(op.id)}{' '}
+            <button className="btn ghost small" onClick={copyId}>
+              Copy ID
+            </button>{' '}
+            · started {timeAgo(op.created_at_time)} ago · last attempt {timeAgo(op.updated_at)} ago · {op.status.Unknown.attempts}{' '}
+            {op.status.Unknown.attempts === 1 ? 'attempt' : 'attempts'}
+          </div>
+        )}
       </div>
       <div className={status === 'Failed' ? 'muted strike' : incoming ? 'pos' : ''}>
         {incoming ? '+' : '−'}

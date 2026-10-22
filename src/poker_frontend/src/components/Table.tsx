@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useApp } from '../context';
 import { isMyTurn, useTables } from '../tables';
 import { unwrap, type PublicProfile, type SeatView, type StoreItem, type TableView, type ThrowEvent } from '../ic';
-import { amount, amountWithUnit, bytes, cardRank, cardSuit, CHIPS, countdown, ICP, icp, isChips, suitClass, type CurrencyV } from '../format';
+import { amount, amountWithUnit, bytes, cardRank, cardSuit, CHIPS, countdown, ICP, icp, isChips, prizeText, suitClass, type CurrencyV } from '../format';
 import { sounds } from '../sound';
 import { Chat } from './Chat';
 import { NoteEditor } from './Notes';
@@ -277,9 +277,12 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
   const act = async (action: Parameters<typeof backend.act>[1]) => {
     setBusy(true);
     if (settings?.sound && !('Fold' in action) && !('Check' in action)) sounds.chips();
-    await run(async () => unwrap(await backend.act(id, action, [view.action_seq])));
-    await load();
-    setBusy(false);
+    try {
+      await run(async () => unwrap(await backend.act(id, action, [view.action_seq])));
+      await load();
+    } finally {
+      setBusy(false);
+    }
   };
 
   const potRaise = (fraction: number) => {
@@ -299,9 +302,12 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
     !!result && result.shown.length === 0 && result.winners.length === 1 && mySeat !== undefined && result.winners[0].seat === mySeat;
   const showCards = async () => {
     setBusy(true);
-    await run(async () => unwrap(await backend.show_cards(id)));
-    await load();
-    setBusy(false);
+    try {
+      await run(async () => unwrap(await backend.show_cards(id)));
+      await load();
+    } finally {
+      setBusy(false);
+    }
   };
   const step = isChips(currency) ? 1 : Number(view.config.small_blind);
 
@@ -427,7 +433,7 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
             {tourney.my_place[0] !== undefined && (
               <span className="tag live">
                 You finished #{tourney.my_place[0]}
-                {tourney.my_prize > 0n ? ` · won ${amountWithUnit(tourney.my_prize, CHIPS)}` : ''}
+                {tourney.my_prize > 0n ? ` · won ${prizeText(tourney.my_prize, tourney.currency)}` : ''}
               </span>
             )}
           </div>

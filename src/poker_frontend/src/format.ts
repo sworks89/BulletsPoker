@@ -79,3 +79,8 @@ export function countdown(targetNs: bigint): string {
   const m = Math.floor((ms % 3_600_000) / 60_000);
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
+
+/** A tournament prize in the tournament's own currency (ICP prizes are e8s, not chips). */
+export function prizeText(prize: bigint | number, currency: CurrencyV): string {
+  return amountWithUnit(prize, currency);
+}

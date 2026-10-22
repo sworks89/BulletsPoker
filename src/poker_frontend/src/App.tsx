@@ -153,6 +153,16 @@ function ConnectionBanner() {
   );
 }
 
+/** One accurate sentence per pause flag that is set. Balances are never described as simply "safe". */
+export function pauseNotes(p: { deposits: boolean; withdrawals: boolean; dealing: boolean; joins: boolean }): string[] {
+  const notes: string[] = [];
+  if (p.deposits) notes.push('Deposits are paused. Please do not send new funds until they reopen.');
+  if (p.withdrawals) notes.push('Withdrawals are paused while we check balances. Nothing is lost; withdrawals resume after the check.');
+  if (p.dealing) notes.push('No new hands are being dealt. Hands already in progress will finish.');
+  if (p.joins) notes.push('New tables, seats and tournament entries are paused. You can keep playing where you are seated.');
+  return notes;
+}
+
 /** Shows a banner while any part of the service is paused for maintenance. */
 function StatusBanner() {
   const { backend } = useApp();
@@ -160,11 +170,12 @@ function StatusBanner() {
   usePoll(async () => setStatus(await backend.get_status()), 30000, [backend]);
   const p = status?.pause;
   if (!p) return null;
-  const paused = [p.deposits && 'deposits', p.withdrawals && 'withdrawals', p.dealing && 'new hands', p.joins && 'new seats'].filter(Boolean);
-  if (paused.length === 0) return null;
+  const notes = pauseNotes(p);
+  if (notes.length === 0) return null;
   return (
     <div className="status-banner">
-      ⚠️ Temporarily paused: {paused.join(', ')}.{p.reason[0] ? ` ${p.reason[0]}` : ''} Your balance is safe.
+      ⚠️ {notes.join(' ')}
+      {p.reason[0] ? ` Reason: ${p.reason[0]}` : ''}
     </div>
   );
 }
