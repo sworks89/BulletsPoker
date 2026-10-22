@@ -1,9 +1,10 @@
 # Provably fair poker: requirements
 
-The feature brief as given by the owner on 2026-10-23. The implementation plan
-(`docs/superpowers/plans/2026-10-23-provably-fair.md`) maps it onto this
-codebase. That codebase uses a Rust canister, not Motoko, so read "Motoko" below
-as the Rust backend.
+The feature brief as given by the owner on 2026-10-23, corrected for this
+codebase: the backend is a Rust canister (`src/poker_backend`), so randomness,
+shuffling and commitments are implemented in Rust, and the cross-language test
+vectors are shared between Rust and TypeScript. The implementation plan is
+`docs/superpowers/plans/2026-10-23-provably-fair.md`.
 
 ## Task
 

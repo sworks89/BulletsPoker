@@ -25,7 +25,7 @@
 
 ### Where the brief doesn't match this codebase
 
-1. **Motoko → Rust.** The backend is a Rust canister (`src/poker_backend`). Wherever the brief says Motoko, read Rust. "Motoko and TypeScript test vectors" become shared Rust and TypeScript vectors from one JSON file.
+1. **Rust backend.** The backend is a Rust canister (`src/poker_backend`), and the requirements are written for it. The cross-language test vectors are shared between Rust and TypeScript from one JSON file.
 2. **The randomness already exists.** `lib.rs tick()` calls `raw_rand` once per tick for all tables that are ready.
    - Each table's seed is `SHA256(rand ‖ table_id ‖ hand_no)`.
    - `cards::shuffled_deck` already runs Fisher–Yates with rejection sampling over a SHA-256 counter stream.
