@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { afterClosing, reconcileSeats } from './tablesNav';
+import { afterClosing, defersToSeatSync, isSeated, reconcileSeats } from './tablesNav';
 
 describe('afterClosing', () => {
   it('moves off the table you were looking at to the last one still open', () => {
@@ -33,5 +33,27 @@ describe('reconcileSeats', () => {
   it('does not count seated tables toward the watch limit', () => {
     const r = reconcileSeats([1n, 2n, 3n, 4n], [1n, 2n, 3n, 4n, 8n], 4);
     expect(r.open).toEqual([1n, 2n, 3n, 4n, 8n]);
+  });
+});
+
+describe('isSeated', () => {
+  it('trusts the seat list', () => {
+    expect(isSeated(1n, new Map([['1', null]]), undefined)).toBe(true);
+  });
+  it('trusts the table view before the seat list catches up', () => {
+    expect(isSeated(2n, new Map(), { my_seat: [3] })).toBe(true);
+  });
+  it('is false for a watched table', () => {
+    expect(isSeated(2n, new Map([['1', null]]), { my_seat: [] })).toBe(false);
+  });
+});
+
+describe('defersToSeatSync', () => {
+  it('defers a vanished tournament table', () => {
+    expect(defersToSeatSync(5n, new Map([['5', 9n]]))).toBe(true);
+  });
+  it('does not defer a cash or watched table', () => {
+    expect(defersToSeatSync(5n, new Map([['5', null]]))).toBe(false);
+    expect(defersToSeatSync(6n, new Map())).toBe(false);
   });
 });

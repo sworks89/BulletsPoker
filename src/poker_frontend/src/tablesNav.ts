@@ -35,3 +35,24 @@ export function reconcileSeats(
   });
   return { open: kept, added };
 }
+
+/**
+ * Whether I hold a seat at a table: the server's seat list says so, or the
+ * table's own view does (which is fresher than the seat list for a few seconds).
+ */
+export function isSeated(
+  id: bigint,
+  seats: ReadonlyMap<string, bigint | null>,
+  view: { my_seat: unknown[] } | undefined,
+): boolean {
+  return seats.has(String(id)) || (view?.my_seat.length ?? 0) > 0;
+}
+
+/**
+ * Whether a table missing from the poll should be left to the seat sync: I
+ * hold (or held) a tournament seat there, so it may have been merged away and
+ * the sync knows where I went.
+ */
+export function defersToSeatSync(id: bigint, seats: ReadonlyMap<string, bigint | null>): boolean {
+  return (seats.get(String(id)) ?? null) !== null;
+}

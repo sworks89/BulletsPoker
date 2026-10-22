@@ -99,8 +99,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const signOut = useCallback(async (idle = false) => {
     // Seats stay live on the server while you're away: say so before leaving them.
     if (!idle && actors) {
-      const seats = await actors.backend.get_my_seats().catch(() => []);
-      const n = seats.length;
+      const seats = await actors.backend.get_my_seats().catch(() => null);
+      if (seats === null) {
+        if (!confirm("Couldn't check your seats — sign out anyway?")) return;
+      }
+      const n = seats?.length ?? 0;
       if (
         n > 0 &&
         !confirm(
