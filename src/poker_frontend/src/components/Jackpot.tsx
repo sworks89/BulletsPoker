@@ -3,6 +3,7 @@ import { useApp, usePoll } from '../context';
 import type { JackpotHit, JackpotInfo } from '../ic';
 import { amountWithUnit, bytes, CHIPS, ICP, timeAgo, type CurrencyV } from '../format';
 import { Card } from './Table';
+import { Dialog } from './Dialog';
 
 /** Lobby banner: both jackpots, the rules, and recent hits. */
 export function JackpotBanner({ currency }: { currency: CurrencyV }) {
@@ -63,8 +64,7 @@ export function JackpotCelebration({ hit, onClose }: { hit: JackpotHit; onClose:
   const { profile } = useApp();
   const mine = hit.payouts.find((p) => p.player.toText() === profile?.id.toText());
   return (
-    <div className="jp-celebrate" onClick={onClose}>
-      <div className="jp-card" onClick={(e) => e.stopPropagation()}>
+    <Dialog title="Bad beat jackpot" onClose={onClose} hideTitle bgClass="jp-celebrate" boxClass="jp-card">
         <div className="jp-title">💥 BAD BEAT JACKPOT 💥</div>
         <div className="jp-total">{amountWithUnit(hit.total, hit.currency)}</div>
         <div className="jp-hands">
@@ -92,7 +92,6 @@ export function JackpotCelebration({ hit, onClose }: { hit: JackpotHit; onClose:
         <button className="btn" onClick={onClose}>
           Nice!
         </button>
-      </div>
-    </div>
+    </Dialog>
   );
 }

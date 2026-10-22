@@ -165,7 +165,10 @@ export function Wallet() {
           ICP in wallet: <b>{walletBalance === null ? '…' : icp(walletBalance)}</b>
         </p>
         <div className="row gap">
-          <input value={depositAmt} onChange={(e) => setDepositAmt(e.target.value)} placeholder="Amount in ICP" />
+          <label className="field">
+            <span className="small muted">Deposit amount (ICP)</span>
+            <input value={depositAmt} onChange={(e) => setDepositAmt(e.target.value)} placeholder="Amount in ICP" inputMode="decimal" />
+          </label>
           <button className="btn" disabled={busy || !depositAmt} onClick={deposit}>
             Deposit
           </button>
@@ -206,13 +209,19 @@ export function Wallet() {
         <div className="panel-title">Withdraw</div>
         {!review ? (
           <>
-            <input
+            <label className="field">
+              <span className="small muted">Destination</span>
+              <input
               value={withdrawTo}
               onChange={(e) => setWithdrawTo(e.target.value)}
               placeholder="Destination principal (optionally with subaccount)"
-            />
+              />
+            </label>
             <div className="row gap">
-              <input value={withdrawAmt} onChange={(e) => setWithdrawAmt(e.target.value)} placeholder="Amount in ICP" />
+              <label className="field">
+                <span className="small muted">Withdraw amount (ICP)</span>
+                <input value={withdrawAmt} onChange={(e) => setWithdrawAmt(e.target.value)} placeholder="Amount in ICP" inputMode="decimal" />
+              </label>
               <button className="btn ghost" onClick={() => setWithdrawTo(principal.toText())}>
                 My wallet
               </button>
@@ -220,7 +229,7 @@ export function Wallet() {
                 Review
               </button>
             </div>
-            {formError && <p className="small neg">{formError}</p>}
+            {formError && <p className="small neg" role="alert">{formError}</p>}
             <p className="muted small">
               Send to a principal, a principal plus a 64-character hex subaccount, or an ICRC-1 account. Old-style ICP account IDs are not supported. A ledger
               fee of {icp(fee)} ICP is deducted from your poker balance on top of the amount.

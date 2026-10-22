@@ -4,6 +4,7 @@ import { useApp, usePoll } from '../context';
 import { unwrap, type LeaderboardEntry, type RewardsView, type Settings } from '../ic';
 import { icp } from '../format';
 import { Avatar } from '../art/Avatar';
+import { Dialog } from './Dialog';
 import { leaderboardMedal } from '../rewards';
 import { clearRememberedRef, peekRememberedRef, rememberRef, takeRememberedRef } from '../referrals';
 
@@ -269,9 +270,9 @@ export function Register() {
   };
 
   return (
-    <div className="modal-bg">
+    <Dialog title="Pick your table name">
       <form
-        className="modal"
+        className="dialog-form"
         onSubmit={async (e) => {
           e.preventDefault();
           setBusy(true);
@@ -280,9 +281,8 @@ export function Register() {
           if (r !== undefined) await refreshProfile();
         }}
       >
-        <h3>Pick your table name</h3>
         <p className="muted small">3–16 letters, digits or underscores. This is how other players see you.</p>
-        <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Username" />
+        <input autoFocus aria-label="Username" value={name} onChange={(e) => setName(e.target.value)} placeholder="Username" />
         {ref && (
           <p className="muted small">
             Referred by <strong>{ref}</strong>{' '}
@@ -302,6 +302,6 @@ export function Register() {
           {busy ? 'Setting up your account…' : 'Create profile'}
         </button>
       </form>
-    </div>
+    </Dialog>
   );
 }

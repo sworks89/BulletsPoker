@@ -242,9 +242,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [actors, principal, profile, profileLoad, retryProfile, items, medals, view, connect, notify, signOut]);
 
   const toastBox = (
-    <div className="toasts">
+    <div className="toasts" aria-live="polite" aria-relevant="additions text">
       {toasts.map((t) => (
-        <div key={t.id} className={`toast ${t.kind}`}>
+        <div key={t.id} className={`toast ${t.kind}`} role={t.kind === 'err' ? 'alert' : 'status'}>
           {t.text}
         </div>
       ))}

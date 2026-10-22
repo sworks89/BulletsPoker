@@ -170,7 +170,8 @@ function Replay({ id }: { id: bigint }) {
 
       <ul className="hand-log">
         {log.map((e, i) => (
-          <li key={i} className={`${i < step ? '' : 'future'} ${i === step - 1 ? 'current' : ''} ${e.seat.length ? '' : 'street'}`} onClick={() => { setPlaying(false); setStep(i + 1); }}>
+          <li key={i} className={`${i < step ? '' : 'future'} ${i === step - 1 ? 'current' : ''} ${e.seat.length ? '' : 'street'}`} >
+            <button className="btn-reset log-btn" aria-current={i === step - 1 ? 'step' : undefined} onClick={() => { setPlaying(false); setStep(i + 1); }}>
             {e.seat.length ? (
               <>
                 <b>{seatName(e.seat[0])}</b> {e.text.toLowerCase()}
@@ -179,6 +180,7 @@ function Replay({ id }: { id: bigint }) {
             ) : (
               <b>— {e.text} —</b>
             )}
+            </button>
           </li>
         ))}
       </ul>

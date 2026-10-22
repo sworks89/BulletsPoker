@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useId, useRef, useState, type CSSProperties } from 'react';
 import { useApp } from '../context';
 import { isMyTurn, useTables } from '../tables';
 import { unwrap, type PublicProfile, type SeatView, type StoreItem, type TableView, type ThrowEvent } from '../ic';
 import { amount, amountWithUnit, bytes, cardRank, cardSuit, CHIPS, countdown, ICP, icp, isChips, prizeText, suitClass, type CurrencyV } from '../format';
 import { sounds } from '../sound';
 import { Chat } from './Chat';
+import { Dialog } from './Dialog';
+import { isActivateKey } from './dialogKeys';
 import { NoteEditor } from './Notes';
 import { SafetyActions } from './Safety';
 import { JackpotCelebration } from './Jackpot';
@@ -502,7 +504,20 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
                 key={i}
                 className={`seat ${acting ? 'acting' : ''} ${s.folded ? 'folded' : ''} ${winnerSeats.has(i) ? 'winner' : ''} ${s.sitting_out ? 'away' : ''}`}
                 style={pos}
-                onClick={() => s.player.toText() !== profile?.id.toText() && setSelected(s)}
+                {...(s.player.toText() !== profile?.id.toText()
+                  ? {
+                      role: 'button',
+                      tabIndex: 0,
+                      'aria-label': `${s.username}, open player card`,
+                      onClick: () => setSelected(s),
+                      onKeyDown: (e: React.KeyboardEvent) => {
+                        if (e.target === e.currentTarget && isActivateKey(e.key)) {
+                          e.preventDefault();
+                          setSelected(s);
+                        }
+                      },
+                    }
+                  : {})}
               >
                 <div className="hole">
                   {cards.length > 0
@@ -618,6 +633,8 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
                   </div>
                   <input
                     type="range"
+                    aria-label={view.current_bet === 0n ? 'Bet amount' : 'Raise to'}
+                    aria-valuetext={amount(raiseTo, currency)}
                     min={Number(view.min_raise_to)}
                     max={Number(view.max_raise_to)}
                     step={step}
@@ -707,14 +724,13 @@ function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number;
   const max = balance < tableMax ? balance : tableMax;
   const [value, setValue] = useState<bigint>(max);
   const [password, setPassword] = useState('');
+  const sliderId = useId();
   // Hosts, seated players and anyone who already entered the password aren't asked again.
   const needsPassword = view.restricted;
   const short = balance < minBuyIn;
 
   return (
-    <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>Buy in · Seat {seat + 1}</h3>
+    <Dialog title={`Buy in · Seat ${seat + 1}`} onClose={onClose}>
         <p className="muted">
           {chips ? 'Play chips' : 'Wallet balance'}: <b>{amountWithUnit(balance, currency)}</b>
         </p>
@@ -734,7 +750,12 @@ function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number;
             {returning && (
               <p className="muted small">You left this table less than 30 minutes ago, so you buy back in with at least the {amountWithUnit(view.my_min_buy_in, currency)} you left with.</p>
             )}
+            <label htmlFor={sliderId} className="small muted">
+              Buy-in amount
+            </label>
             <input
+              id={sliderId}
+              aria-valuetext={amountWithUnit(value, currency)}
               type="range"
               min={Number(minBuyIn)}
               max={Number(max)}
@@ -743,7 +764,7 @@ function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number;
               onChange={(e) => setValue(BigInt(e.target.value))}
             />
             <div className="big">{amountWithUnit(value, currency)}</div>
-            {needsPassword && <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Table password" />}
+            {needsPassword && <input type="password" aria-label="Table password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Table password" />}
             <div className="row gap">
               <button className="btn ghost" onClick={onClose}>
                 Cancel
@@ -763,8 +784,7 @@ function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number;
             </div>
           </>
         )}
-      </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -812,12 +832,11 @@ function PlayerCard({ seat, view, canThrow, onClose }: { seat: SeatView; view: T
   );
 
   return (
-    <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <Dialog title={`${seat.username}, player card`} onClose={onClose} hideTitle>
         <div className="row gap">
           <Avatar icon={seat.avatar} size="lg" />
           <div>
-            <h3>{seat.username}</h3>
+            <h3 aria-hidden="true">{seat.username}</h3>
             <div className="muted">Level {seat.level}</div>
             {pub && (
               <div className="muted small">
@@ -858,8 +877,7 @@ function PlayerCard({ seat, view, canThrow, onClose }: { seat: SeatView; view: T
             {grid(gifts, 'gift')}
           </>
         )}
-      </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -878,7 +896,7 @@ function UnlockRoom({ id, onDone }: { id: bigint; onDone: () => Promise<void> })
       }}
     >
       <span>🔒 Private table. Enter the password to watch and chat, or pick a seat to join.</span>
-      <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} maxLength={32} placeholder="Password" />
+      <input type="password" aria-label="Table password" value={password} onChange={(e) => setPassword(e.target.value)} maxLength={32} placeholder="Password" />
       <button className="btn small" disabled={!password}>
         Unlock
       </button>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useApp } from '../context';
 import { unwrap, type Channel, type Principal, type PublicProfile, type ReportReason } from '../ic';
 import { countdown } from '../format';
+import { Dialog } from './Dialog';
 
 const REASONS: { key: string; label: string }[] = [
   { key: 'AbusiveChat', label: 'Abusive chat' },
@@ -58,9 +59,7 @@ function ReportModal({ player, username, channel, onClose }: { player: Principal
   };
 
   return (
-    <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>Report {username}</h3>
+    <Dialog title={`Report ${username}`} onClose={onClose}>
         <div className="report-reasons">
           {REASONS.map((r) => (
             <label key={r.key} className="small">
@@ -69,7 +68,7 @@ function ReportModal({ player, username, channel, onClose }: { player: Principal
             </label>
           ))}
         </div>
-        <textarea value={details} onChange={(e) => setDetails(e.target.value)} maxLength={1000} rows={4} placeholder="What happened? (optional)" />
+        <textarea aria-label="Details (optional)" value={details} onChange={(e) => setDetails(e.target.value)} maxLength={1000} rows={4} placeholder="What happened? (optional)" />
         {channel && <p className="muted small">Their recent messages in this chat are attached to the report.</p>}
         <div className="row gap">
           <button className="btn" disabled={busy} onClick={submit}>
@@ -79,8 +78,7 @@ function ReportModal({ player, username, channel, onClose }: { player: Principal
             Cancel
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }
 

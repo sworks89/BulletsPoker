@@ -46,14 +46,16 @@ export function TableStrip() {
           <div
             key={String(id)}
             className={`strip-tab ${onTables && active === id ? 'active' : ''} ${turn ? 'turn' : ''}`}
-            onClick={() => focus(id)}
           >
-            <span className="strip-name">{v?.tournament[0] ? '🏆 ' : ''}{v?.config.name ?? 'Table'}</span>
-            <span className="strip-info">
-              {turn ? `Your turn · ${secs}s${v!.time_bank_active ? ' ⏳' : ''}` : me ? amount(me.stack, v!.config.currency) : 'watching'}
-            </span>
+            <button className="strip-main btn-reset" onClick={() => focus(id)} aria-current={onTables && active === id ? 'true' : undefined}>
+              <span className="strip-name">{v?.tournament[0] ? '🏆 ' : ''}{v?.config.name ?? 'Table'}</span>
+              <span className="strip-info">
+                {turn ? `Your turn · ${secs}s${v!.time_bank_active ? ' ⏳' : ''}` : me ? amount(me.stack, v!.config.currency) : 'watching'}
+              </span>
+            </button>
             <button
               className="strip-close"
+              aria-label={`${v?.my_seat.length ? (v.tournament[0] ? 'Tournament seat' : 'Leave table') : 'Close table'}: ${v?.config.name ?? 'Table'}`}
               title={v?.my_seat.length ? (v.tournament[0] ? 'Tournament seat' : 'Leave table') : 'Close table'}
               onClick={(e) => {
                 e.stopPropagation();
@@ -71,10 +73,10 @@ export function TableStrip() {
         </button>
       )}
       <div className="strip-controls">
-        <button className={`chip ${layout === 'tabs' ? 'active' : ''}`} onClick={() => setLayout('tabs')} title="One table at a time">
+        <button aria-pressed={layout === 'tabs'} className={`chip ${layout === 'tabs' ? 'active' : ''}`} onClick={() => setLayout('tabs')} title="One table at a time">
           ▭ Tabs
         </button>
-        <button className={`chip ${layout === 'tile' ? 'active' : ''}`} onClick={() => setLayout('tile')} title="All tables side by side">
+        <button aria-pressed={layout === 'tile'} className={`chip ${layout === 'tile' ? 'active' : ''}`} onClick={() => setLayout('tile')} title="All tables side by side">
           ⊞ Tile
         </button>
         {layout === 'tabs' && (

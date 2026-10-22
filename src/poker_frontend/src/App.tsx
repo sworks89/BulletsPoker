@@ -54,10 +54,10 @@ function Shell() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand" onClick={() => go({ name: 'lobby' })}>
+        <button className="brand btn-reset" onClick={() => go({ name: 'lobby' })} aria-label="Bullets Poker, go to lobby">
           <span className="logo">♠</span> Bullets Poker
           <span className="tag">on ICP</span>
-        </div>
+        </button>
         <nav>
           {NAV.map((n) => (
             <button key={n.name} className={`nav ${view.name === n.name || (n.name === 'rewards' && view.name === 'leaderboard') ? 'active' : ''}`} onClick={() => go({ name: n.name } as View)}>

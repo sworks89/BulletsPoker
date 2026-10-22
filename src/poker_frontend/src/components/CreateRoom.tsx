@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useApp } from '../context';
 import { unwrap } from '../ic';
+import { Dialog } from './Dialog';
 import { CHIPS, ICP, amountWithUnit, isChips, parseIcp, type CurrencyV } from '../format';
 
 const CHIP_BLINDS = [2n, 10n, 50n, 100n, 500n, 1_000n, 5_000n];
@@ -44,10 +45,8 @@ export function CreateRoom({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>Host your own table</h3>
-        <input value={name} maxLength={40} onChange={(e) => setName(e.target.value)} placeholder="Table name" />
+    <Dialog title="Host your own table" onClose={onClose}>
+        <input aria-label="Table name" value={name} maxLength={40} onChange={(e) => setName(e.target.value)} placeholder="Table name" />
         <div className="row gap">
           <button className={`chip ${isChips(currency) ? 'active' : ''}`} onClick={() => pickCurrency(CHIPS)}>
             🎲 Play chips
@@ -56,15 +55,16 @@ export function CreateRoom({ onClose }: { onClose: () => void }) {
             ∞ ICP
           </button>
         </div>
-        <label className="small muted">Big blind</label>
-        <div className="row gap wrap">
+        <span className="small muted" id="cr-bb">Big blind</span>
+        <div className="row gap wrap" role="group" aria-labelledby="cr-bb">
           {blinds.map((b) => (
-            <button key={String(b)} className={`chip ${bb === b ? 'active' : ''}`} onClick={() => setBb(b)}>
+            <button key={String(b)} aria-pressed={bb === b} className={`chip ${bb === b ? 'active' : ''}`} onClick={() => setBb(b)}>
               {amountWithUnit(b, currency)}
             </button>
           ))}
           {!isChips(currency) && (
             <input
+              aria-label="Custom big blind in ICP"
               style={{ width: 110 }}
               placeholder="custom ICP"
               onChange={(e) => {
@@ -82,20 +82,20 @@ export function CreateRoom({ onClose }: { onClose: () => void }) {
           {isChips(currency) ? ' Chip tables are rake free.' : ' Standard 2.5% rake; you earn 20% of it as the host.'}
         </p>
         <div className="row gap">
-          <label className="small muted">Seats</label>
+          <span className="small muted">Seats</span>
           {[2, 6, 9].map((n) => (
-            <button key={n} className={`chip ${seats === n ? 'active' : ''}`} onClick={() => setSeats(n)}>
+            <button key={n} aria-pressed={seats === n} className={`chip ${seats === n ? 'active' : ''}`} onClick={() => setSeats(n)}>
               {n}
             </button>
           ))}
-          <label className="small muted">Clock</label>
+          <span className="small muted">Clock</span>
           {[15, 25, 45].map((n) => (
-            <button key={n} className={`chip ${timeout === n ? 'active' : ''}`} onClick={() => setTimeoutSecs(n)}>
+            <button key={n} aria-pressed={timeout === n} className={`chip ${timeout === n ? 'active' : ''}`} onClick={() => setTimeoutSecs(n)}>
               {n}s
             </button>
           ))}
         </div>
-        <input value={password} maxLength={32} onChange={(e) => setPassword(e.target.value)} placeholder="Password (optional, for private games)" />
+        <input aria-label="Password (optional)" value={password} maxLength={32} onChange={(e) => setPassword(e.target.value)} placeholder="Password (optional, for private games)" />
         <div className="row gap">
           <button className="btn ghost" onClick={onClose}>
             Cancel
@@ -105,7 +105,6 @@ export function CreateRoom({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <p className="muted small">Empty tables close automatically after 30 minutes.</p>
-      </div>
-    </div>
+    </Dialog>
   );
 }
