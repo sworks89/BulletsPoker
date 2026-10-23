@@ -52,16 +52,14 @@
 
    The tests are cross-checked against the Rust engine through shared JSON vectors.
 
-### Owner decisions needed before execution
+### Owner decisions (all decided 2026-10-23)
 
-- **D1 (privacy, required):** revealing the seed exposes every folded and mucked hole card, to everyone who can open that hand's history (today, its participants). That's standard for provably-fair poker, but it changes current behaviour, including auto-muck.
-  - Accept: the reveal is published to the hand's participants through `get_hand`.
-  - Decline: reveal only for hands that went to showdown, so far fewer hands can be verified.
-- **D2 (randomness source):** the brief asks for 32 bytes of `raw_rand` per hand. Two options:
-  - **(a)** one `raw_rand` call per hand. Simplest to explain, and exactly what the brief says. Costs one management call per hand, which needs a cycle measurement.
-  - **(b)** one call per tick, with per-hand seeds derived by HKDF using the hand ID as context. Cheaper, cryptographically independent per hand, but not literally "32 bytes per hand".
-
-  The plan assumes **(a)**.
+- **D1 (privacy) — DECIDED: reveal to the hand's players after a 24-hour delay.**
+  - The seed (and so every card dealt in the hand, including folded and mucked ones) is returned through `get_hand` to that hand's players only, and only once `REVEAL_DELAY_NS = 24 h` has passed since settlement. Before that, `get_hand` returns the commitment, the parameters and `reveal_at`, but no seed.
+  - Why: players can't study opponents' folded cards during the same session. Later review stays possible, which is normal.
+  - The rules page and the auto-muck setting get one line: "24 hours after a hand, the players in it can verify the shuffle, which reveals every card dealt in that hand."
+  - **Retention:** hands with fair evidence are kept until at least `reveal_at + 7 days`, even if that exceeds `HISTORY_MAX`. Pruning skips them until then, and there's a separate hard cap so storage stays bounded. Once pruned, the exported evidence JSON is the permanent copy. The replay states the verification window.
+- **D2 (randomness source) — DECIDED: (a) one `raw_rand` call per hand.** Calls for tables that are ready in the same tick run concurrently. Task 9 measures the cycle cost. If it turns out to matter, the fallback is (b): one call per tick with per-hand seeds derived by HKDF using the hand ID as context.
 - **D3 (who can verify) — DECIDED by the owner (2026-10-23):** participants only. Evidence is served through the existing replay (`get_hand`, which already returns a hand only to its players). Spectators and other players get nothing. A participant can still export and share the evidence JSON themselves.
 
 ## Global Constraints
@@ -98,7 +96,7 @@ The exact bytes are specified in `docs/provably-fair.md`. Rust and TypeScript mu
 
 ## Review Focus
 
-1. **No early leak:** no code path (query, `TableView`, log, error, admin endpoint, a `Debug` print reaching a query) exposes the seed or the undealt deck before the reveal.
+1. **No early leak:** no code path (query, `TableView`, `get_hand` before `reveal_at`, log, error, admin endpoint, a `Debug` print reaching a query) exposes the seed or the undealt deck before the reveal, which is 24 h after settlement.
 2. **Exactly one seed per hand:** two ticks racing, a `raw_rand` reply arriving after the table changed, a table removed during the await, or a deal that fails after committing must never give a hand two seeds, reuse a seed, or deal without a commitment.
 3. **Byte compatibility:** the encoding (lengths, endianness, field order) is identical in Rust and TypeScript and in the docs. Any mismatch makes every hand fail verification.
 4. **Independent settlement:** the verifier's pot, side-pot, rake and jackpot arithmetic must match the engine for every shared vector: a split pot, three-way all-in side pots, everyone folding, no flop dealt (no rake), and the rake cap.
@@ -222,21 +220,28 @@ The exact bytes are specified in `docs/provably-fair.md`. Rust and TypeScript mu
   - `HandRecord.fair: Option<FairEvidence>`, where `FairEvidence` is:
     - `version: u16`, `scheme: String`;
     - `canister: Principal`, `table_id: u64`, `hand_no: u64`;
-    - `commitment: Vec<u8>`, `seed: Vec<u8>`, `params: Vec<u8>`;
+    - `commitment: Vec<u8>`, `seed: Option<Vec<u8>>` (filled in only in the reply, once revealed), `params: Vec<u8>`;
     - `outcome: String` (`"settled"` or `"voided: …"`);
     - `dealt_order: Vec<u8>`: seat indices in the order hole cards were dealt;
-    - `burns: u8`.
-  - `record_hand` copies the seed into the record only after settlement, then appends the `ShuffleRevealed` and `HandVerificationAvailable` log entries.
-  - `hand(caller, id)`:
-    - **D1 accepted:** returns `fair` with the seed to participants.
-    - **D1 declined:** returns the seed only when the hand reached showdown.
-    - Hole-card blanking stays as it is. A participant who has the seed can rebuild the cards themselves; that is the accepted trade-off.
-  - Voided hands get a `HandRecord` with `fair` and an empty settlement, so they show in history as "Voided".
+    - `burns: u8`;
+    - `settled_at: u64`, `reveal_at: u64` (`settled_at + REVEAL_DELAY_NS`, where `REVEAL_DELAY_NS = 24 * 3600 * 10^9`).
+  - `record_hand` stores the seed in the stored record (it's private canister state, as the table's seed already is). It appends `ShuffleRevealed`, with `amount = reveal_at` to say when, and `HandVerificationAvailable` log entries.
+  - `hand(caller, id, now)`:
+    - Participants only, as today (D3).
+    - The reply's `fair.seed` is `Some` only when `now >= reveal_at`. Before that it's `None`, with the commitment, parameters and `reveal_at` still included.
+    - Hole-card blanking stays as it is. After the reveal, a participant can rebuild every card (D1).
+  - Voided hands get a `HandRecord` with `fair` and an empty settlement, so they show in history as "Voided". The same 24-hour delay applies.
   - No backend field claims a hand is verified.
-- **Retention:** records stay subject to `HISTORY_MAX`, and the docs say so. Evidence export (Task 6) is the durable copy.
+- **Retention (D1):**
+  - `HISTORY_MAX` pruning must not delete a record with `fair` until `now >= reveal_at + 7 days`.
+  - A separate hard cap, `FAIR_HISTORY_HARD_MAX`, with a stated value of, e.g., 200,000 records, keeps storage bounded. If even that is reached, the oldest records go, and the docs say so.
+  - Pruning stays bounded per call.
+  - The docs and the replay state the verification window. Evidence export (Task 6) is the durable copy.
 
 - [ ] **Step 1: Write the failing tests:**
+  - `seed_is_hidden_until_24h_after_settlement`: the seed is `None` at `reveal_at - 1` and `Some` at `reveal_at`.
   - `seed_is_published_only_after_settlement`
+  - `fair_hands_survive_history_pruning_until_the_window_ends`
   - `published_evidence_rebuilds_the_dealt_cards`: in Rust, shuffle from the evidence and compare against the record's hole cards and board.
   - `legacy_records_decode_without_fair`
   - `voided_hand_evidence`
@@ -272,6 +277,7 @@ The exact bytes are specified in `docs/provably-fair.md`. Rust and TypeScript mu
   - `fair == null` gives `LEGACY`.
   - An unknown version gives `UNSUPPORTED`.
   - Missing log events or fields give `INCOMPLETE`.
+  - A seed not yet revealed (`now < reveal_at`) gives `INCOMPLETE` with the reason "pending reveal" and `reveal_at`, never `FAILED`.
   - Any `fail` gives `FAILED`.
   - Otherwise `VERIFIED`.
 - **Report wording:** commitment, shuffle and dealing are `cryptographic`. Replay and settlement are `consistency`. The seed's origin and the confidentiality of cards during play are listed as `trusts-canister`, and are never claimed as passed.
@@ -323,7 +329,10 @@ The exact bytes are specified in `docs/provably-fair.md`. Rust and TypeScript mu
 
 **Interfaces:**
 - **Behaviour:**
-  - A "Verify hand" button on completed hands that have `fair`. Legacy hands show a "Legacy / Not verifiable" badge, never a failure.
+  - A "Verify hand" button on completed hands that have `fair` and a revealed seed.
+  - Before `reveal_at`, the replay shows "Verification available in 23 h 41 m" with the commitment already visible. After the retention window, it shows "Verification window ended — use exported evidence".
+  - Legacy hands show a "Legacy / Not verifiable" badge, never a failure.
+  - The rules page and the auto-muck setting carry the D1 line: "24 hours after a hand, the players in it can verify the shuffle, which reveals every card dealt in that hand."
   - Progress, then one row per check with its basis: Seed commitment, Deterministic shuffle, Dealt cards, Replay consistency, Pot settlement, and Overall.
   - The commitment, the seed (after the reveal), the shuffle version and the scheme are shown with copy buttons, along with "Export evidence".
   - Use the existing `Dialog` and panel styles.
