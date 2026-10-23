@@ -62,7 +62,7 @@
   - **(b)** one call per tick, with per-hand seeds derived by HKDF using the hand ID as context. Cheaper, cryptographically independent per hand, but not literally "32 bytes per hand".
 
   The plan assumes **(a)**.
-- **D3 (who can verify):** today only participants can open a hand. Should verification evidence also be published for spectators, or kept participant-only? The plan assumes participant-only, plus the exported evidence JSON, which a participant can share.
+- **D3 (who can verify) — DECIDED by the owner (2026-10-23):** participants only. Evidence is served through the existing replay (`get_hand`, which already returns a hand only to its players). Spectators and other players get nothing. A participant can still export and share the evidence JSON themselves.
 
 ## Global Constraints
 
