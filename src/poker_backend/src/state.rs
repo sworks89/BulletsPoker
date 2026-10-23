@@ -403,6 +403,9 @@ heap_state! {
 pub const FAIR_VOIDED_MAX: usize = 64;
 
 /// A committed hand that never settled, and who was dealt into it.
+///
+/// **Never return from an endpoint: contains the secret seed** (in `fair`).
+/// `CandidType` is derived only for the heap snapshot.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct VoidedHand {
     pub fair: FairHand,
@@ -5993,8 +5996,24 @@ pub(crate) mod tests {
                 assert!(!contains(&candid::encode_one(&v).unwrap(), &seed), "seed in TableView at {:?}", v.phase);
             }
             assert!(!contains(&candid::encode_one(s.list_tables()).unwrap(), &seed));
-            let dbg = format!("{:?}", s.tables[&table]);
+            let t = &s.tables[&table];
+            let dbg = format!("{t:?}");
             assert!(!dbg.contains(&format!("{seed:?}")) && !dbg.contains(&hex));
+            // The undealt deck is as secret as the seed while the hand runs.
+            if t.phase.is_betting() {
+                let next: Vec<u8> = t.deck.iter().rev().take(8).copied().collect();
+                assert!(!dbg.contains(&format!("{:?}", t.deck)), "deck in Table Debug");
+                for viewer in [None, Some(p(1)), Some(p(9))] {
+                    let bytes = candid::encode_one(s.table_view(table, viewer, now).unwrap()).unwrap();
+                    assert!(!contains(&bytes, &t.deck) && !contains(&bytes, &next), "undealt cards in TableView");
+                }
+                let bytes = candid::encode_one(s.list_tables()).unwrap();
+                assert!(!contains(&bytes, &t.deck) && !contains(&bytes, &next));
+                // Nor anyone's hole cards in the Debug output.
+                for seat in t.seats.iter().flatten().filter(|x| !x.hole.is_empty()) {
+                    assert!(!dbg.contains(&format!("hole: {:?}", seat.hole)), "hole cards in Table Debug");
+                }
+            }
         };
         check(&s, 1);
         s.deal_with_seed(table, 0, seed, test_canister(), 1).unwrap();

@@ -88,7 +88,7 @@ impl Phase {
     }
 }
 
-#[derive(CandidType, Deserialize, Clone, Debug)]
+#[derive(CandidType, Deserialize, Clone)]
 pub struct Seat {
     pub player: Principal,
     pub stack: u64,
@@ -241,6 +241,11 @@ pub enum FairOutcome {
 /// The `BP-FAIR-v1` record of one hand. The seed stays secret until the
 /// reveal: it is never returned by a query, logged or formatted (`Debug`
 /// leaves it out).
+///
+/// **Never return from an endpoint: contains the secret seed.** `CandidType`
+/// is derived only so the heap snapshot can persist it; publish evidence
+/// through a separate type built at reveal time (`candid_tests` fails if this
+/// type reaches the public interface).
 #[derive(CandidType, Deserialize, Clone)]
 pub struct FairHand {
     pub hand: HandId,
@@ -297,7 +302,7 @@ pub struct HandResult {
     pub jackpot_drop: u64,
 }
 
-#[derive(CandidType, Deserialize, Clone, Debug)]
+#[derive(CandidType, Deserialize, Clone)]
 pub struct Table {
     pub id: u64,
     pub config: TableConfig,
@@ -348,6 +353,129 @@ pub struct Table {
     pub fair: Option<FairHand>,
     /// SHA-256 of the last seed dealt here, so a seed is never used twice in a row.
     pub last_seed_hash: Option<[u8; 32]>,
+}
+
+/// Shows how many cards a hidden list holds, never which.
+struct HiddenCards(usize);
+
+impl std::fmt::Debug for HiddenCards {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<{} cards hidden>", self.0)
+    }
+}
+
+/// Like a derived `Debug`, but the undealt deck and hole cards are hidden:
+/// during a hand they are as secret as the seed.
+impl std::fmt::Debug for Table {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Exhaustive, so a new field has to be placed here deliberately.
+        let Table {
+            id,
+            config,
+            seats,
+            button,
+            phase,
+            deck,
+            board,
+            to_act,
+            current_bet,
+            min_raise,
+            hand_no,
+            action_deadline,
+            phase_changed_at,
+            last_result,
+            rake_accrued,
+            jackpot_accrued,
+            log,
+            tournament_mode,
+            time_bank_active,
+            bank_started_at,
+            turn_deadline,
+            action_seq,
+            bank_deadline,
+            game,
+            copy_number,
+            empty_since,
+            auto_sit,
+            fair,
+            last_seed_hash,
+        } = self;
+        f.debug_struct("Table")
+            .field("id", id)
+            .field("config", config)
+            .field("seats", seats)
+            .field("button", button)
+            .field("phase", phase)
+            .field("deck", &HiddenCards(deck.len()))
+            .field("board", board)
+            .field("to_act", to_act)
+            .field("current_bet", current_bet)
+            .field("min_raise", min_raise)
+            .field("hand_no", hand_no)
+            .field("action_deadline", action_deadline)
+            .field("phase_changed_at", phase_changed_at)
+            .field("last_result", last_result)
+            .field("rake_accrued", rake_accrued)
+            .field("jackpot_accrued", jackpot_accrued)
+            .field("log", log)
+            .field("tournament_mode", tournament_mode)
+            .field("time_bank_active", time_bank_active)
+            .field("bank_started_at", bank_started_at)
+            .field("turn_deadline", turn_deadline)
+            .field("action_seq", action_seq)
+            .field("bank_deadline", bank_deadline)
+            .field("game", game)
+            .field("copy_number", copy_number)
+            .field("empty_since", empty_since)
+            .field("auto_sit", auto_sit)
+            .field("fair", fair)
+            .field("last_seed_hash", &last_seed_hash.map(|_| "<hash>"))
+            .finish()
+    }
+}
+
+/// Like a derived `Debug`, but hole cards are hidden.
+impl std::fmt::Debug for Seat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Seat {
+            player,
+            stack,
+            hole,
+            in_hand,
+            folded,
+            all_in,
+            bet,
+            committed,
+            acted,
+            sitting_out,
+            sitting_out_since,
+            left,
+            last_action,
+            time_bank,
+            last_faced,
+            owes_bb,
+            leaving,
+        } = self;
+        f.debug_struct("Seat")
+            .field("player", player)
+            .field("stack", stack)
+            .field("hole", &HiddenCards(hole.len()))
+            .field("in_hand", in_hand)
+            .field("folded", folded)
+            .field("all_in", all_in)
+            .field("bet", bet)
+            .field("committed", committed)
+            .field("acted", acted)
+            .field("sitting_out", sitting_out)
+            .field("sitting_out_since", sitting_out_since)
+            .field("left", left)
+            .field("last_action", last_action)
+            .field("time_bank", time_bank)
+            .field("last_faced", last_faced)
+            .field("owes_bb", owes_bb)
+            .field("leaving", leaving)
+            .finish()
+    }
 }
 
 /// A watcher waiting for a seat at a table.

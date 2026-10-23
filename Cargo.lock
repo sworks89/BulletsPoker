@@ -1770,7 +1770,6 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "candid_parser",
- "futures-util",
  "hkdf",
  "hmac",
  "ic-cdk",

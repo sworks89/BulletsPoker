@@ -287,18 +287,21 @@ async fn check_solvency() -> R<SolvencyReport> {
 async fn tick() {
     LIMITER.with(|l| l.borrow_mut().prune(now()));
     let ready = with_mut(|s| s.tick(now()));
-    // One fresh `raw_rand` per hand (owner decision D2a), requested
-    // concurrently; a table with a request already in flight is skipped.
-    let requests: Vec<_> = ready
-        .into_iter()
-        .filter_map(|id| {
-            let hand_no = with(|s| s.tables.get(&id).map(|t| t.hand_no))?;
-            Some(seed_and_deal(SeedRequest::claim(id)?, hand_no))
-        })
-        .collect();
-    if !requests.is_empty() {
-        futures_util::future::join_all(requests).await;
+    // One fresh `raw_rand` per hand (owner decision D2a). Each runs as its own
+    // detached task so the tick returns at once: a slow `raw_rand` must never
+    // hold a tick open (the timer skips runs past 5 concurrent ones, which
+    // would stop action clocks everywhere).
+    for (request, hand_no) in claim_seed_requests(ready, |id| with(|s| s.tables.get(&id).map(|t| t.hand_no))) {
+        // The request guard moves into the task and is released when it ends,
+        // however it ends (including a trap's cleanup or cancellation).
+        ic_cdk::futures::spawn_migratory(seed_and_deal(request, hand_no));
     }
+}
+
+/// The seed requests to send for `ready` tables: one per table that still
+/// exists (with the hand number it is at now) and has none in flight.
+fn claim_seed_requests(ready: Vec<u64>, hand_no: impl Fn(u64) -> Option<u64>) -> Vec<(SeedRequest, u64)> {
+    ready.into_iter().filter_map(|id| Some((SeedRequest::claim(id)?, hand_no(id)?))).collect()
 }
 
 /// Fetches a seed for one table's next hand and deals it. A failed or
@@ -325,7 +328,7 @@ struct SeedRequest(u64);
 
 impl SeedRequest {
     fn claim(table: u64) -> Option<Self> {
-        PENDING_SEEDS.with(|p| p.borrow_mut().insert(table)).then_some(SeedRequest(table))
+        PENDING_SEEDS.with(|p| p.borrow_mut().insert(table)).then(|| SeedRequest(table)) // lazily: a dropped guard releases the table
     }
 }
 
@@ -1189,6 +1192,22 @@ mod seed_request_tests {
         drop((b, again));
         assert!(PENDING_SEEDS.with(|p| p.borrow().is_empty()));
     }
+
+    #[test]
+    fn requests_go_to_ready_tables_without_one_pending() {
+        let held = SeedRequest::claim(2).unwrap();
+        let hand_no = |id: u64| (id != 4).then_some(id * 10); // table 4 is gone
+        let reqs = claim_seed_requests(vec![1, 2, 3, 4], hand_no);
+        let got: Vec<(u64, u64)> = reqs.iter().map(|(r, h)| (r.0, *h)).collect();
+        assert_eq!(got, vec![(1, 10), (3, 30)], "2 is pending, 4 is gone");
+        // A second tick while those requests are in flight asks for nothing new.
+        let again = claim_seed_requests(vec![1, 2, 3], hand_no);
+        assert!(again.is_empty(), "{:?}", again.iter().map(|(r, h)| (r.0, *h)).collect::<Vec<_>>());
+        drop(reqs);
+        assert_eq!(claim_seed_requests(vec![1], hand_no).len(), 1, "released once a request ends");
+        drop(held);
+        assert!(PENDING_SEEDS.with(|p| p.borrow().is_empty()));
+    }
 }
 
 #[cfg(test)]
@@ -1201,6 +1220,10 @@ mod candid_tests {
         let generated = super::__export_service();
         if std::env::var("UPDATE_CANDID").is_ok() {
             std::fs::write(path, &generated).unwrap();
+        }
+        // No endpoint may return the stored fair-shuffle records (they hold secret seeds).
+        for secret in ["FairHand", "VoidedHand", "seed :", "last_seed_hash", "fair_voided"] {
+            assert!(!generated.contains(secret), "the public interface exposes `{secret}`");
         }
         let on_disk = std::fs::read_to_string(path).unwrap_or_default();
         assert_eq!(on_disk, generated, "run `UPDATE_CANDID=1 cargo test` to regenerate the .did file");
