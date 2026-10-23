@@ -254,6 +254,64 @@ pub struct FairHand {
     pub commitment: [u8; 32],
     pub committed_at: u64,
     pub outcome: FairOutcome,
+    /// Seat of each hole card in the order it was popped from the deck: both
+    /// rounds, so `2 × players` entries. `None` until dealt, and for hands
+    /// committed before this field existed.
+    pub dealt_order: Option<Vec<u8>>,
+}
+
+/// How long after a hand ends its seed stays hidden from the hand's players
+/// (owner decision D1): long enough that nobody studies an opponent's folded
+/// cards during the same session.
+pub const REVEAL_DELAY_NS: u64 = 24 * 3600 * 1_000_000_000;
+
+/// The `BP-FAIR-v1` evidence published with a recorded hand.
+///
+/// The stored copy (private stable state) holds the seed in `revealed_seed`;
+/// `get_hand` returns it only from `reveal_at` on, and only to the hand's
+/// players. Nothing here says whether the hand verifies: that is the
+/// verifier's job.
+#[derive(CandidType, Deserialize, Clone, PartialEq, Eq)]
+pub struct FairEvidence {
+    pub version: u16,
+    /// Where the seed came from (`fair::RANDOMNESS_SCHEME`).
+    pub scheme: String,
+    pub canister: Principal,
+    pub table_id: u64,
+    pub hand_no: u64,
+    pub commitment: Vec<u8>,
+    /// The 32-byte seed, in a reply only once `now >= reveal_at`.
+    pub revealed_seed: Option<Vec<u8>>,
+    /// `fair::params_bytes(version)`.
+    pub params: Vec<u8>,
+    /// `"settled"` or `"voided: <reason>"`.
+    pub outcome: String,
+    /// Seat of each hole card in the order it was dealt (both rounds).
+    pub dealt_order: Vec<u8>,
+    /// Burn cards used: one before each street dealt.
+    pub burns: u8,
+    pub settled_at: u64,
+    pub reveal_at: u64,
+}
+
+impl std::fmt::Debug for FairEvidence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hex: String = self.commitment.iter().map(|b| format!("{b:02x}")).collect();
+        f.debug_struct("FairEvidence")
+            .field("version", &self.version)
+            .field("scheme", &self.scheme)
+            .field("canister", &self.canister)
+            .field("table_id", &self.table_id)
+            .field("hand_no", &self.hand_no)
+            .field("commitment", &hex)
+            .field("revealed_seed", &self.revealed_seed.as_ref().map(|_| "<secret>"))
+            .field("outcome", &self.outcome)
+            .field("dealt_order", &self.dealt_order)
+            .field("burns", &self.burns)
+            .field("settled_at", &self.settled_at)
+            .field("reveal_at", &self.reveal_at)
+            .finish()
+    }
 }
 
 impl FairHand {
@@ -261,7 +319,41 @@ impl FairHand {
     pub fn new(seed: [u8; 32], hand: HandId, now: u64) -> Self {
         let version = fair::SHUFFLE_VERSION;
         let commitment = fair::commitment(&seed, &hand, version);
-        FairHand { hand, version, seed, commitment, committed_at: now, outcome: FairOutcome::Committed }
+        FairHand { hand, version, seed, commitment, committed_at: now, outcome: FairOutcome::Committed, dealt_order: None }
+    }
+
+    /// The evidence to store with the record of this hand, which ended at
+    /// `settled_at` with `board_len` board cards. Holds the seed: the caller
+    /// stores it privately and `get_hand` hides it until `reveal_at`.
+    /// `None` while the hand is still live.
+    pub fn evidence(&self, board_len: usize, settled_at: u64) -> Option<FairEvidence> {
+        let outcome = match &self.outcome {
+            FairOutcome::Settled => "settled".to_string(),
+            FairOutcome::Voided(reason) => format!("voided: {reason}"),
+            FairOutcome::Committed | FairOutcome::Dealt => return None,
+        };
+        // `deal_board` burns once per street: flop (3 cards), turn, river.
+        let burns = match board_len {
+            0 => 0,
+            1..=3 => 1,
+            4 => 2,
+            _ => 3,
+        };
+        Some(FairEvidence {
+            version: self.version,
+            scheme: fair::RANDOMNESS_SCHEME.to_string(),
+            canister: self.hand.canister,
+            table_id: self.hand.table_id,
+            hand_no: self.hand.hand_no,
+            commitment: self.commitment.to_vec(),
+            revealed_seed: Some(self.seed.to_vec()),
+            params: fair::params_bytes(self.version),
+            outcome,
+            dealt_order: self.dealt_order.clone().unwrap_or_default(),
+            burns,
+            settled_at,
+            reveal_at: settled_at.saturating_add(REVEAL_DELAY_NS),
+        })
     }
 
     pub(crate) fn seed_hash(&self) -> [u8; 32] {
@@ -279,6 +371,7 @@ impl std::fmt::Debug for FairHand {
             .field("commitment", &hex)
             .field("committed_at", &self.committed_at)
             .field("outcome", &self.outcome)
+            .field("dealt_order", &self.dealt_order)
             .finish()
     }
 }
@@ -918,12 +1011,14 @@ impl Table {
         }
 
         // Deal two cards to each player, one at a time, starting left of the button.
+        let mut dealt_order = vec![];
         for _ in 0..2 {
             let mut i = self.button;
             loop {
                 i = self.next_where(i, in_hand).unwrap();
                 let c = self.deck.pop().unwrap();
                 self.seat_mut(i).hole.push(c);
+                dealt_order.push(i as u8);
                 if i == self.button {
                     break;
                 }
@@ -931,6 +1026,7 @@ impl Table {
         }
         if let Some(f) = self.fair.as_mut() {
             f.outcome = FairOutcome::Dealt;
+            f.dealt_order = Some(dealt_order);
         }
 
         self.set_phase(Phase::PreFlop, now);

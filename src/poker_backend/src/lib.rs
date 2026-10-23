@@ -608,11 +608,13 @@ fn get_hand_history(limit: u32) -> Vec<HandSummary> {
     with(|s| s.hand_history(p, limit.min(50) as usize))
 }
 
-/// Full replay of a hand you played in.
+/// Full replay of a hand you played in. Its shuffle seed (which reveals every
+/// card dealt) is included from 24 hours after the hand ended.
 #[query]
 fn get_hand(id: u64) -> Option<HandRecord> {
     let p = ic_cdk::api::msg_caller();
-    with(|s| s.hand(p, id))
+    let now = ic_cdk::api::time();
+    with(|s| s.hand(p, id, now))
 }
 
 // ------------------------------------------------------------------ tables
@@ -1222,9 +1224,9 @@ mod candid_tests {
             std::fs::write(path, &generated).unwrap();
         }
         // No endpoint may return the stored fair-shuffle records (they hold secret seeds).
-        for secret in ["FairHand", "VoidedHand", "seed :", "last_seed_hash", "fair_voided"] {
-            assert!(!generated.contains(secret), "the public interface exposes `{secret}`");
-        }
+        assert_eq!(exposed_secrets(&generated), Vec::<&str>::new(), "the public interface exposes these");
+        // The one seed field allowed out, filled in only after the reveal delay.
+        assert!(generated.contains("revealed_seed : opt blob"));
         let on_disk = std::fs::read_to_string(path).unwrap_or_default();
         assert_eq!(on_disk, generated, "run `UPDATE_CANDID=1 cargo test` to regenerate the .did file");
 
@@ -1240,5 +1242,38 @@ mod candid_tests {
         }
         assert_eq!(std::fs::read_to_string(format!("{out}/poker_backend.did.js")).unwrap_or_default(), js);
         assert_eq!(std::fs::read_to_string(format!("{out}/poker_backend.did.d.ts")).unwrap_or_default(), ts);
+    }
+
+    /// Names in a candid interface that must never be public. A seed field is
+    /// allowed only as `FairEvidence.revealed_seed`, which `hand()` fills in
+    /// once the reveal delay has passed; no field may claim a hand is verified.
+    fn exposed_secrets(did: &str) -> Vec<&'static str> {
+        let mut found: Vec<&'static str> = ["FairHand", "VoidedHand", "last_seed_hash", "fair_voided"]
+            .into_iter()
+            .filter(|name| did.contains(name))
+            .collect();
+        if did.matches("seed :").count() > did.matches("revealed_seed :").count()
+            || did.matches("revealed_seed :").count() > did.matches("type FairEvidence").count()
+        {
+            found.push("seed :");
+        }
+        if did.to_lowercase().contains("verified") {
+            found.push("verified");
+        }
+        found
+    }
+
+    #[test]
+    fn secret_guard_allows_only_the_revealed_seed() {
+        let ok = "type FairEvidence = record { revealed_seed : opt blob; commitment : blob };";
+        assert_eq!(exposed_secrets(ok), Vec::<&str>::new());
+        assert_eq!(exposed_secrets("type X = record { seed : blob };"), vec!["seed :"]);
+        assert_eq!(exposed_secrets("type X = record { hole_seed : blob };"), vec!["seed :"]);
+        assert_eq!(exposed_secrets(&format!("{ok} type Y = record {{ revealed_seed : opt blob }};")), vec!["seed :"]);
+        assert_eq!(exposed_secrets("type FairHand = record {};"), vec!["FairHand"]);
+        assert_eq!(exposed_secrets("type VoidedHand = record {};"), vec!["VoidedHand"]);
+        assert_eq!(exposed_secrets("record { last_seed_hash : opt blob }"), vec!["last_seed_hash"]);
+        assert_eq!(exposed_secrets("record { fair_voided : vec blob }"), vec!["fair_voided"]);
+        assert_eq!(exposed_secrets("record { verified : bool }"), vec!["verified"]);
     }
 }

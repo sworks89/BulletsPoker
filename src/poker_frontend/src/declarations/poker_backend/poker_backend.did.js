@@ -264,6 +264,21 @@ export const idlFactory = ({ IDL }) => {
     'phase' : Phase,
     'amount' : IDL.Nat64,
   });
+  const FairEvidence = IDL.Record({
+    'reveal_at' : IDL.Nat64,
+    'scheme' : IDL.Text,
+    'hand_no' : IDL.Nat64,
+    'dealt_order' : IDL.Vec(IDL.Nat8),
+    'table_id' : IDL.Nat64,
+    'version' : IDL.Nat16,
+    'canister' : IDL.Principal,
+    'revealed_seed' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+    'burns' : IDL.Nat8,
+    'outcome' : IDL.Text,
+    'params' : IDL.Vec(IDL.Nat8),
+    'commitment' : IDL.Vec(IDL.Nat8),
+    'settled_at' : IDL.Nat64,
+  });
   const HandPlayer = IDL.Record({
     'won' : IDL.Nat64,
     'username' : IDL.Text,
@@ -278,6 +293,7 @@ export const idlFactory = ({ IDL }) => {
     'log' : IDL.Vec(LogEntry),
     'pot' : IDL.Nat64,
     'small_blind' : IDL.Nat64,
+    'fair' : IDL.Opt(FairEvidence),
     'hand_no' : IDL.Nat64,
     'rake' : IDL.Nat64,
     'time' : IDL.Nat64,

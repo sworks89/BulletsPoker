@@ -89,6 +89,33 @@ type DepositInfo = record {
   account : Account;
 };
 type EarnedMedal = record { id : text; earned_at : nat64 };
+// The `BP-FAIR-v1` evidence published with a recorded hand.
+// 
+// The stored copy (private stable state) holds the seed in `revealed_seed`;
+// `get_hand` returns it only from `reveal_at` on, and only to the hand's
+// players. Nothing here says whether the hand verifies: that is the
+// verifier's job.
+type FairEvidence = record {
+  reveal_at : nat64;
+  // Where the seed came from (`fair::RANDOMNESS_SCHEME`).
+  scheme : text;
+  hand_no : nat64;
+  // Seat of each hole card in the order it was dealt (both rounds).
+  dealt_order : blob;
+  table_id : nat64;
+  version : nat16;
+  canister : principal;
+  // The 32-byte seed, in a reply only once `now >= reveal_at`.
+  revealed_seed : opt blob;
+  // Burn cards used: one before each street dealt.
+  burns : nat8;
+  // `"settled"` or `"voided: <reason>"`.
+  outcome : text;
+  // `fair::params_bytes(version)`.
+  params : blob;
+  commitment : blob;
+  settled_at : nat64;
+};
 type FriendInfo = record {
   id : principal;
   username : text;
@@ -123,6 +150,10 @@ type HandRecord = record {
   log : vec LogEntry;
   pot : nat64;
   small_blind : nat64;
+  // The `BP-FAIR-v1` evidence: `None` for hands dealt before the fair
+  // shuffle. Stored with the seed; `get_hand` hides the seed until
+  // `reveal_at`.
+  fair : opt FairEvidence;
   hand_no : nat64;
   rake : nat64;
   time : nat64;
@@ -904,7 +935,8 @@ service : (opt InitArgs) -> {
   get_deposit_info : () -> (DepositInfo) query;
   get_dms : (principal, nat64) -> (vec ChatMessage) query;
   get_friends : () -> (vec FriendInfo) query;
-  // Full replay of a hand you played in.
+  // Full replay of a hand you played in. Its shuffle seed (which reveals every
+  // card dealt) is included from 24 hours after the hand ended.
   get_hand : (nat64) -> (opt HandRecord) query;
   // Your most recent hands, newest first.
   get_hand_history : (nat32) -> (vec HandSummary) query;

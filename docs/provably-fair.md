@@ -149,6 +149,33 @@ card dealt. Hole cards go one at a time, starting with the seat left of the
 button, for two rounds. One card is burned (popped and not shown) before the
 flop, before the turn and before the river.
 
+## Published evidence
+
+Each recorded hand carries a `fair` record (`FairEvidence` in the candid
+interface), returned by `get_hand` to the players dealt into that hand and to
+nobody else:
+
+| Field | Meaning |
+|---|---|
+| `version`, `scheme` | shuffle version and randomness source (`icp-raw_rand/v1`) |
+| `canister`, `table_id`, `hand_no` | the hand id used in the encodings above |
+| `commitment`, `params` | the commitment and `params_bytes(version)` |
+| `revealed_seed` | the 32-byte seed; empty until `reveal_at` |
+| `outcome` | `settled`, or `voided: <reason>` for a hand that never finished |
+| `dealt_order` | the seat of each hole card in the order it was popped (both rounds, `2 × players` entries) |
+| `burns` | burn cards used: one before each street that was dealt |
+| `settled_at`, `reveal_at` | when the hand ended; `reveal_at = settled_at + 24 h` |
+
+The seed is withheld for 24 hours after the hand ends, because it reveals every
+card dealt, including folded and mucked ones. Hands that were dealt but never
+finished (their table closed) are published the same way, with an empty
+settlement.
+
+The hand record, and so the evidence, is kept for at least 7 days after
+`reveal_at`, beyond the usual history limit. Storage has a hard limit of
+200,000 hand records; if even that is reached, the oldest records are removed
+early. Once a record is gone, the evidence a player exported is the only copy.
+
 ## Worked example
 
 This is case 2 of `vectors.json`.

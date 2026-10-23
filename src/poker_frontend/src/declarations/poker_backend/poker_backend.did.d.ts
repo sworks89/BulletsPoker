@@ -158,6 +158,47 @@ export interface DepositInfo {
   'account' : Account,
 }
 export interface EarnedMedal { 'id' : string, 'earned_at' : bigint }
+/**
+ * The `BP-FAIR-v1` evidence published with a recorded hand.
+ * 
+ * The stored copy (private stable state) holds the seed in `revealed_seed`;
+ * `get_hand` returns it only from `reveal_at` on, and only to the hand's
+ * players. Nothing here says whether the hand verifies: that is the
+ * verifier's job.
+ */
+export interface FairEvidence {
+  'reveal_at' : bigint,
+  /**
+   * Where the seed came from (`fair::RANDOMNESS_SCHEME`).
+   */
+  'scheme' : string,
+  'hand_no' : bigint,
+  /**
+   * Seat of each hole card in the order it was dealt (both rounds).
+   */
+  'dealt_order' : Uint8Array | number[],
+  'table_id' : bigint,
+  'version' : number,
+  'canister' : Principal,
+  /**
+   * The 32-byte seed, in a reply only once `now >= reveal_at`.
+   */
+  'revealed_seed' : [] | [Uint8Array | number[]],
+  /**
+   * Burn cards used: one before each street dealt.
+   */
+  'burns' : number,
+  /**
+   * `"settled"` or `"voided: <reason>"`.
+   */
+  'outcome' : string,
+  /**
+   * `fair::params_bytes(version)`.
+   */
+  'params' : Uint8Array | number[],
+  'commitment' : Uint8Array | number[],
+  'settled_at' : bigint,
+}
 export interface FriendInfo {
   'id' : Principal,
   'username' : string,
@@ -202,6 +243,12 @@ export interface HandRecord {
   'log' : Array<LogEntry>,
   'pot' : bigint,
   'small_blind' : bigint,
+  /**
+   * The `BP-FAIR-v1` evidence: `None` for hands dealt before the fair
+   * shuffle. Stored with the seed; `get_hand` hides the seed until
+   * `reveal_at`.
+   */
+  'fair' : [] | [FairEvidence],
   'hand_no' : bigint,
   'rake' : bigint,
   'time' : bigint,
@@ -1291,7 +1338,8 @@ export interface _SERVICE {
   'get_dms' : ActorMethod<[Principal, bigint], Array<ChatMessage>>,
   'get_friends' : ActorMethod<[], Array<FriendInfo>>,
   /**
-   * Full replay of a hand you played in.
+   * Full replay of a hand you played in. Its shuffle seed (which reveals every
+   * card dealt) is included from 24 hours after the hand ended.
    */
   'get_hand' : ActorMethod<[bigint], [] | [HandRecord]>,
   /**
