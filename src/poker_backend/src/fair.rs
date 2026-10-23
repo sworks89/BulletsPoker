@@ -175,6 +175,26 @@ fn vector_cases() -> Vec<([u8; 32], HandId)> {
     ]
 }
 
+/// Cases for the `uniform` section: a fixed word list drives `uniform`, so the
+/// rejection path is cross-checked in both languages.
+#[cfg(test)]
+fn uniform_cases() -> Vec<(u32, Vec<u32>)> {
+    let limit52 = ((1u64 << 32) - ((1u64 << 32) % 52)) as u32;
+    vec![
+        (52, vec![5]),
+        (52, vec![u32::MAX, 5]),
+        (52, vec![limit52, limit52 - 1]),
+        (52, vec![limit52 - 1]),
+        (52, vec![u32::MAX, limit52 + 7, 1_000_003]),
+        (3, vec![u32::MAX, u32::MAX, 7]),
+        (3, vec![u32::MAX - 1]),
+        (4, vec![u32::MAX]),
+        (1, vec![123]),
+        (2, vec![u32::MAX]),
+        (51, vec![0, 1]),
+    ]
+}
+
 /// The shared test vectors as stable, pretty-printed JSON (fields in a fixed
 /// order, u64 values as decimal strings, bytes as lowercase hex).
 #[cfg(test)]
@@ -201,6 +221,24 @@ fn vectors_json() -> String {
         out.push_str(&format!("      \"key_hex\": \"{}\",\n", hex(&shuffle_key(seed, hand, v))));
         out.push_str(&format!("      \"deck\": [{}]\n", deck_txt.join(", ")));
         out.push_str(if n + 1 == cases.len() { "    }\n" } else { "    },\n" });
+    }
+    out.push_str("  ],\n");
+    out.push_str("  \"uniform\": [\n");
+    let ucases = uniform_cases();
+    for (k, (n, words)) in ucases.iter().enumerate() {
+        let mut used = 0usize;
+        let mut next = || {
+            let w = words[used];
+            used += 1;
+            w
+        };
+        let result = uniform(*n, &mut next);
+        let ws: Vec<String> = words.iter().map(|w| format!("\"{w}\"")).collect();
+        out.push_str(&format!(
+            "    {{ \"n\": {n}, \"words\": [{}], \"result\": {result}, \"consumed\": {used} }}{}\n",
+            ws.join(", "),
+            if k + 1 == ucases.len() { "" } else { "," }
+        ));
     }
     out.push_str("  ]\n}\n");
     out
