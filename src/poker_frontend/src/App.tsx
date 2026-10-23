@@ -16,6 +16,7 @@ import { Rewards, TierWatch } from './components/Rewards';
 import { Referrals } from './components/Referrals';
 import { AccountNotice } from './components/Safety';
 import { Admin } from './components/Admin';
+import { VerifyEvidence } from './components/VerifyEvidence';
 import { Avatar } from './art/Avatar';
 import { shouldOfferRegistration } from './startup';
 import { pauseBanner } from './pause';
@@ -143,10 +144,15 @@ function Shell() {
         {view.name === 'tournaments' && <Tournaments key={String(view.id ?? '')} initial={view.id} />}
         {view.name === 'profile' && <ProfilePage />}
         {view.name === 'admin' && <Admin roles={roles} />}
+        {view.name === 'verify' && <VerifyEvidence />}
       </main>
 
       <footer className="footer muted small">
         Real-money play may be restricted where you live. Play responsibly. 18+.
+        {' '}
+        <button className="btn-reset link" onClick={() => go({ name: 'verify' })}>
+          Verify a hand file
+        </button>
       </footer>
 
       {principal && !profile && shouldOfferRegistration(profileLoad) && <Register />}
