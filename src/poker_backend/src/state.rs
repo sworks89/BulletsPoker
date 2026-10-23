@@ -6656,3 +6656,6 @@ pub(crate) mod tests {
         assert!(s.hand_history(p(3), 50).is_empty());
     }
 }
+
+#[cfg(test)]
+mod settlement_vectors;
