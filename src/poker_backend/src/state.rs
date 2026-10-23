@@ -297,6 +297,9 @@ pub struct HandSummary {
     pub pot: u64,
     /// What the viewer won minus what they put in.
     pub net: i64,
+    /// The shuffle evidence outcome: `"settled"` or `"voided: <reason>"`;
+    /// `None` for hands dealt before the fair shuffle.
+    pub outcome: Option<String>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -2415,7 +2418,7 @@ impl State {
             record.log.push(LogEntry {
                 phase,
                 seat: None,
-                text: "Shuffle seed revealed to the players".into(),
+                text: "Shuffle seed reveal for the players".into(),
                 amount: f.reveal_at,
                 kind: Some(LogKind::ShuffleRevealed),
             });
@@ -2511,6 +2514,7 @@ impl State {
                     my_cards: me.map(|p| p.cards.clone()).unwrap_or_default(),
                     pot: h.pot,
                     net: me.map_or(0, |p| p.won as i64 - p.committed as i64),
+                    outcome: h.fair.as_ref().map(|f| f.outcome.clone()),
                 }
             })
             .collect()
@@ -6362,6 +6366,7 @@ pub(crate) mod tests {
         let rec = s.stores.hands.get(&id).unwrap();
         let f = rec.fair.clone().unwrap();
         assert_eq!(f.outcome, "settled");
+        assert_eq!(s.hand_history(p(1), 1)[0].outcome.as_deref(), Some("settled"));
         assert_eq!((f.version, f.scheme.as_str()), (1, crate::fair::RANDOMNESS_SCHEME));
         assert_eq!((f.canister, f.table_id, f.hand_no), (test_canister(), table, 1));
         assert_eq!((f.settled_at, f.reveal_at, f.burns), (3, 3 + REVEAL_DELAY_NS, 0));
@@ -6455,11 +6460,33 @@ pub(crate) mod tests {
         s.prune_hands(2 * r, 3, 5, 10);
         assert_eq!(ids(&s), (11..16).collect::<Vec<_>>());
 
-        // Wired into record_hand: a fresh hand inside its window is kept.
+    }
+
+    #[test]
+    fn record_hand_keeps_fair_hands_past_history_max() {
         let (mut s, table) = heads_up_cash();
-        s.deal_with_seed(table, 0, odd_seed(47), test_canister(), 1).unwrap();
-        fold_out(&mut s, table, 2);
-        assert_eq!(s.stores.hands.len(), 1);
+        let max = HISTORY_MAX as u64;
+        let r = 10 * DAY_NS;
+        // A full history, every record inside its window at the time of the next hand.
+        for id in 0..max {
+            s.stores.hands.insert(id, bare_record(id, Some(r)));
+        }
+        s.next_hand_id = max;
+        let now = r + FAIR_RETENTION_NS - 1;
+        s.deal_with_seed(table, 0, odd_seed(47), test_canister(), now - 10).unwrap();
+        fold_out(&mut s, table, now);
+        assert_eq!(s.stores.hands.len(), max + 1, "nothing inside its window is pruned");
+        assert!(s.stores.hands.get(&0).is_some());
+
+        // Once the window has ended, the next hand prunes a bounded number of them.
+        let now = r + FAIR_RETENTION_NS + 60 * SEC;
+        s.tick(now);
+        s.deal_with_seed(table, 1, odd_seed(48), test_canister(), now).unwrap();
+        fold_out(&mut s, table, now);
+        let excess = 2u64;
+        assert_eq!(s.stores.hands.len(), max + 2 - excess.min(PRUNE_PER_CALL as u64));
+        assert!(s.stores.hands.get(&0).is_none() && s.stores.hands.get(&1).is_none());
+        assert!(s.stores.hands.get(&2).is_some());
     }
 
     #[test]
@@ -6540,6 +6567,8 @@ pub(crate) mod tests {
         s.stores.hands.insert(5, rec);
         let got = s.hand(p(1), 5, u64::MAX).unwrap();
         assert!(got.fair.is_none());
+        s.users.get_mut(&p(1)).unwrap().history.push_back(5);
+        assert_eq!(s.hand_history(p(1), 1)[0].outcome, None, "legacy hands have no outcome");
         assert_eq!(got.players[0].cards, vec![4, 5]);
 
         // A FairHand saved (in a table, in the heap snapshot) before dealt_order existed.
@@ -6574,6 +6603,7 @@ pub(crate) mod tests {
             let hist = s.hand_history(p(k), 5);
             assert_eq!(hist.len(), 1);
             assert_eq!(hist[0].net, 0);
+            assert_eq!(hist[0].outcome.as_deref(), Some("voided: table closed"), "the list can mark it voided");
             ids.insert(hist[0].id);
             let rec = s.hand(p(k), hist[0].id, now).unwrap();
             assert_eq!((rec.table_id, rec.hand_no, rec.pot, rec.rake), (table, 1, 0, 0));

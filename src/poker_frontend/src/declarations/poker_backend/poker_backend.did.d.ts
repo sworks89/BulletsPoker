@@ -284,6 +284,11 @@ export interface HandSummary {
   'time' : bigint,
   'currency' : Currency,
   'board' : Uint8Array | number[],
+  /**
+   * The shuffle evidence outcome: `"settled"` or `"voided: <reason>"`;
+   * `None` for hands dealt before the fair shuffle.
+   */
+  'outcome' : [] | [string],
   'table_name' : string,
 }
 export interface HouseStats {

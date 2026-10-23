@@ -313,6 +313,7 @@ export const idlFactory = ({ IDL }) => {
     'time' : IDL.Nat64,
     'currency' : Currency,
     'board' : IDL.Vec(IDL.Nat8),
+    'outcome' : IDL.Opt(IDL.Text),
     'table_name' : IDL.Text,
   });
   const JackpotPayout = IDL.Record({

@@ -185,6 +185,9 @@ type HandSummary = record {
   time : nat64;
   currency : Currency;
   board : blob;
+  // The shuffle evidence outcome: `"settled"` or `"voided: <reason>"`;
+  // `None` for hands dealt before the fair shuffle.
+  outcome : opt text;
   table_name : text;
 };
 type HouseStats = record {
