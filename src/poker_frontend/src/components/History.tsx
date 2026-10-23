@@ -1,33 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useApp, usePoll } from '../context';
-import type { HandRecord, HandSummary, LogEntry } from '../ic';
+import type { HandRecord, HandSummary } from '../ic';
 import { amount, amountWithUnit, bytes, timeAgo } from '../format';
 import { Card } from './Table';
+import { HandVerification } from './HandVerification';
+import { logStepLabel, potAt } from '../replay';
 
 const BOARD_AT: Record<string, number> = { Waiting: 0, PreFlop: 0, Flop: 3, Turn: 4, River: 5, HandOver: 5 };
-const STREETS = new Set(['Flop', 'Turn', 'River']);
-
-/** Pot size after the first `step` log entries. */
-function potAt(log: LogEntry[], step: number): bigint {
-  let banked = 0n;
-  const street = new Map<number, bigint>();
-  for (const e of log.slice(0, step)) {
-    const seat = e.seat[0];
-    if (seat === undefined) {
-      if (STREETS.has(e.text)) {
-        for (const v of street.values()) banked += v;
-        street.clear();
-      }
-    } else if (e.text === 'Uncalled bet returned') {
-      street.set(seat, (street.get(seat) ?? 0n) - e.amount);
-    } else if (!e.text.startsWith('Wins') && !e.text.startsWith('Shows') && e.amount > 0n) {
-      street.set(seat, e.amount);
-    }
-  }
-  for (const v of street.values()) banked += v;
-  return banked;
-}
-
 export function History() {
   const { backend, profile } = useApp();
   const [hands, setHands] = useState<HandSummary[]>([]);
@@ -61,7 +40,10 @@ export function History() {
               <div className="small">
                 <b>{h.table_name}</b> <span className="muted">· {timeAgo(h.time)}</span>
               </div>
-              <div className="muted small">Pot {amountWithUnit(h.pot, h.currency)}</div>
+              <div className="muted small">
+                Pot {amountWithUnit(h.pot, h.currency)}
+                {h.outcome[0]?.startsWith('voided') && <span className="tag">Voided</span>}
+              </div>
             </div>
             <div className={h.net > 0n ? 'pos' : h.net < 0n ? 'neg' : 'muted'}>
               {h.net > 0n ? '+' : ''}
@@ -168,21 +150,28 @@ function Replay({ id }: { id: bigint }) {
         </span>
       </div>
 
+      <HandVerification hand={hand} />
+
       <ul className="hand-log">
-        {log.map((e, i) => (
-          <li key={i} className={`${i < step ? '' : 'future'} ${i === step - 1 ? 'current' : ''} ${e.seat.length ? '' : 'street'}`} >
-            <button className="btn-reset log-btn" aria-current={i === step - 1 ? 'step' : undefined} onClick={() => { setPlaying(false); setStep(i + 1); }}>
-            {e.seat.length ? (
-              <>
-                <b>{seatName(e.seat[0])}</b> {e.text.toLowerCase()}
-                {e.amount > 0n && <span className="muted"> {amount(e.amount, hand.currency)}</span>}
-              </>
-            ) : (
-              <b>— {e.text} —</b>
-            )}
-            </button>
-          </li>
-        ))}
+        {log.map((e, i) => {
+          const st = logStepLabel(e);
+          return (
+            <li key={i} className={`${i < step ? '' : 'future'} ${i === step - 1 ? 'current' : ''} ${st.type === 'action' ? '' : 'street'}`}>
+              <button className="btn-reset log-btn" aria-current={i === step - 1 ? 'step' : undefined} onClick={() => { setPlaying(false); setStep(i + 1); }}>
+                {st.type === 'action' ? (
+                  <>
+                    <b>{seatName(st.seat)}</b> {st.text}
+                    {st.amount > 0n && <span className="muted"> {amount(st.amount, hand.currency)}</span>}
+                  </>
+                ) : st.type === 'protocol' ? (
+                  <span className="protocol-step">{st.text}</span>
+                ) : (
+                  <b>— {st.text} —</b>
+                )}
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

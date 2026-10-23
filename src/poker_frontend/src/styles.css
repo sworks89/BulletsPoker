@@ -672,3 +672,16 @@ input.narrow { width: 80px; flex: none; }
 .dialog-form { display: flex; flex-direction: column; gap: 12px; }
 .modal:focus, .jp-card:focus { outline: none; }
 .btn-reset:focus-visible, .seat[role="button"]:focus-visible, .strip-close:focus-visible, .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Verify hand */
+.verify-panel { border-top: 1px solid var(--panel-2); margin-top: 10px; padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.verify-field { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.verify-value { overflow-wrap: anywhere; font-size: 12px; flex: 1 1 200px; }
+.verify-rows { width: 100%; border-collapse: collapse; font-size: 14px; }
+.verify-rows th { text-align: left; font-weight: 600; padding: 3px 6px 3px 0; }
+.verify-rows td { padding: 3px 6px; }
+.verify-rows tr.verify-pass td:nth-child(2) { color: var(--green); }
+.verify-rows tr.verify-fail td:nth-child(2) { color: var(--red); }
+.verify-rows tr.verify-warn td:nth-child(2) { color: #fbbf24; }
+.verify-voided { color: #fbbf24; }
+.protocol-step { color: var(--muted); font-style: italic; }

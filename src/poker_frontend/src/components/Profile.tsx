@@ -108,7 +108,7 @@ export function ProfilePage() {
 
 const SETTINGS: { key: keyof Settings; label: string; hint: string }[] = [
   { key: 'four_color_deck', label: 'Four-color deck', hint: 'Clubs green, diamonds blue — no more mixing up flushes.' },
-  { key: 'auto_muck', label: 'Auto-muck losing hands', hint: "Don't reveal your cards when you lose at showdown." },
+  { key: 'auto_muck', label: 'Auto-muck losing hands', hint: "Don't reveal your cards when you lose at showdown. 24 hours after a hand, the players in it can verify the shuffle, which reveals every card dealt in that hand." },
   { key: 'auto_top_up', label: 'Auto top-up', hint: 'Refill your stack to the table max when it drops below half.' },
   { key: 'sound', label: 'Sounds', hint: 'Chime on your turn, deals, wins and throws.' },
   { key: 'show_throwables', label: 'Show throwables', hint: 'Animate tomatoes, pies and friends flying across the table.' },
