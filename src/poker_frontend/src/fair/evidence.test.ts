@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CANISTER, caseNamed, recordOf, withoutRates } from './fixtures';
-import { EVIDENCE_FORMAT, fromEvidenceJson, toEvidenceJson } from './evidence';
+import { EVIDENCE_FORMAT, MAX_EVIDENCE_CHARS, fromEvidenceJson, toEvidenceJson } from './evidence';
 import { verifyHand } from './verify';
 
 const NAMES = ['everyone_folds_preflop', 'rake_cap', 'uncontested_after_flop', 'showdown_default_rates'];
@@ -79,6 +79,13 @@ describe('evidence JSON', () => {
     expect(r.trusted.some((t) => t.what.includes('rake'))).toBe(true);
   });
 
+  it('encodes number[] and Uint8Array blobs identically', () => {
+    const { record, evidence } = make('showdown_default_rates');
+    const plain = { ...record, board: Array.from(record.board), players: record.players.map((p) => ({ ...p, cards: Array.from(p.cards) })) };
+    const fair = { ...evidence, params: Array.from(evidence.params), commitment: Array.from(evidence.commitment), dealt_order: Array.from(evidence.dealt_order) };
+    expect(toEvidenceJson(plain, fair)).toBe(toEvidenceJson(record, evidence));
+  });
+
   it('keeps a tampered file failing, not erroring', async () => {
     const { record, evidence } = make('showdown_default_rates');
     const j = JSON.parse(toEvidenceJson(record, evidence));
@@ -102,6 +109,29 @@ describe('evidence JSON', () => {
       expect(err('[]')).toMatch(/must be an object/);
       expect(err('{}')).toMatch(/format is missing/);
       expect(err('{"format":"other/v9"}')).toMatch(/Unsupported evidence format "other\/v9"/);
+    });
+    it('refuses oversized text quickly', () => {
+      const t0 = Date.now();
+      expect(err('x'.repeat(MAX_EVIDENCE_CHARS + 1))).toMatch(/too large/);
+      expect(Date.now() - t0).toBeLessThan(200);
+    });
+    it('refuses a huge hex string, huge arrays and nat64 overflow', () => {
+      const { record, evidence } = make('showdown_default_rates');
+      const edit = (f: (j: any) => void) => {
+        const j = JSON.parse(toEvidenceJson(record, evidence));
+        f(j);
+        return err(JSON.stringify(j));
+      };
+      expect(edit((j) => (j.record.board = 'ab'.repeat(1_000_000)))).toMatch(/longer than/);
+      expect(edit((j) => (j.record.board = 'abc'))).toMatch(/lowercase hex/);
+      expect(edit((j) => (j.record.log = new Array(5001).fill(j.record.log[0])))).toMatch(/more than 5000/);
+      expect(edit((j) => (j.record.pot = '18446744073709551616'))).toMatch(/below 2[^]64/);
+      expect(edit((j) => (j.record.pot = '9'.repeat(5000)))).toMatch(/below 2[^]64/);
+    });
+    it('turns any thrown exception into an error', () => {
+      const evil = { toString() { throw new Error('boom'); } };
+      expect(err(evil as unknown as string)).toMatch(/must be text|boom/);
+      expect(err('{"format":"bulletspoker-hand-evidence/v1","evidence":{"get burns"')).toMatch(/not valid JSON/);
     });
     it('names the bad field', () => {
       const { record, evidence } = make('showdown_default_rates');

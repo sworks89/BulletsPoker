@@ -1,5 +1,5 @@
 import { useId, useState } from 'react';
-import { fromEvidenceJson } from '../fair/evidence';
+import { MAX_EVIDENCE_CHARS, fromEvidenceJson } from '../fair/evidence';
 import { verifyHand, type VerificationReport } from '../fair/verify';
 import { VerificationReportView } from './VerificationReportView';
 
@@ -18,13 +18,13 @@ export function VerifyEvidence() {
   const check = async (source: string) => {
     setReport(null);
     setError(null);
-    const parsed = fromEvidenceJson(source);
-    if ('error' in parsed) {
-      setError(parsed.error);
-      return;
-    }
     setBusy(true);
     try {
+      const parsed = fromEvidenceJson(source);
+      if ('error' in parsed) {
+        setError(parsed.error);
+        return;
+      }
       setReport(await verifyHand(parsed.record, parsed.evidence, parsed.canister, { now: BigInt(Date.now()) * 1_000_000n }));
     } catch (e) {
       setError(`Verification failed to run: ${e instanceof Error ? e.message : String(e)}`);
@@ -35,7 +35,18 @@ export function VerifyEvidence() {
 
   const load = async (file: File | undefined) => {
     if (!file) return;
-    const content = await file.text();
+    setReport(null);
+    if (file.size > MAX_EVIDENCE_CHARS) {
+      setError(`That file is too large to be a hand evidence file (over ${MAX_EVIDENCE_CHARS.toLocaleString('en-US')} bytes).`);
+      return;
+    }
+    let content: string;
+    try {
+      content = await file.text();
+    } catch (e) {
+      setError(`Could not read the file: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
     setText(content);
     await check(content);
   };
@@ -50,7 +61,8 @@ export function VerifyEvidence() {
       <label htmlFor={fileId}>Evidence file (.json)</label>
       <input id={fileId} type="file" accept=".json,application/json" onChange={(e) => void load(e.target.files?.[0])} />
       <label htmlFor={textId}>Or paste the evidence JSON</label>
-      <textarea id={textId} rows={8} value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} />
+      <textarea id={textId} rows={8} value={text} maxLength={MAX_EVIDENCE_CHARS}
+        onChange={(e) => setText(e.target.value)} spellCheck={false} />
       <div>
         <button className="btn" disabled={busy || !text.trim()} onClick={() => void check(text)}>
           {busy ? 'Verifying…' : 'Verify'}

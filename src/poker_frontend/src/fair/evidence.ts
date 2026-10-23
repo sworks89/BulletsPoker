@@ -116,6 +116,12 @@ export function toEvidenceJson(record: HandRecord, evidence: FairEvidence): stri
 
 // ---------------------------------------------------------------- decode
 
+/** Longest evidence text read (characters). A real hand file is a few tens of KB. */
+export const MAX_EVIDENCE_CHARS = 4_000_000;
+const MAX_BLOB_BYTES = 65_536;
+const MAX_LOG_ENTRIES = 5_000;
+const MAX_PLAYERS = 256;
+
 class Bad extends Error {}
 
 type Obj = { [k: string]: unknown };
@@ -132,8 +138,10 @@ const str = (v: unknown, at: string): string => {
   return v;
 };
 const big = (v: unknown, at: string): bigint => {
-  if (typeof v !== 'string' || !/^(0|[1-9][0-9]*)$/.test(v)) throw new Bad(`${at} must be a decimal integer string`);
-  return BigInt(v);
+  if (typeof v !== 'string' || v.length > 20 || !/^(0|[1-9][0-9]*)$/.test(v)) throw new Bad(`${at} must be a decimal integer string below 2^64`);
+  const n = BigInt(v);
+  if (n >= 2n ** 64n) throw new Bad(`${at} must be a decimal integer string below 2^64`);
+  return n;
 };
 const small = (v: unknown, at: string, max: number): number => {
   const n = big(v, at);
@@ -141,15 +149,19 @@ const small = (v: unknown, at: string, max: number): number => {
   return Number(n);
 };
 const bytes = (v: unknown, at: string): Uint8Array => {
-  if (typeof v !== 'string' || !/^([0-9a-f]{2})*$/.test(v)) throw new Bad(`${at} must be lowercase hex`);
-  return Uint8Array.from((v.match(/../g) ?? []).map((x) => parseInt(x, 16)));
+  if (typeof v !== 'string' || v.length % 2 !== 0 || !/^[0-9a-f]*$/.test(v)) throw new Bad(`${at} must be lowercase hex`);
+  if (v.length > MAX_BLOB_BYTES * 2) throw new Bad(`${at} is longer than ${MAX_BLOB_BYTES} bytes`);
+  const out = new Uint8Array(v.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(v.slice(2 * i, 2 * i + 2), 16);
+  return out;
 };
 const bool = (v: unknown, at: string): boolean => {
   if (typeof v !== 'boolean') throw new Bad(`${at} must be true or false`);
   return v;
 };
-const arr = (v: unknown, at: string): unknown[] => {
+const arr = (v: unknown, at: string, max: number): unknown[] => {
   if (!Array.isArray(v)) throw new Bad(`${at} must be an array`);
+  if (v.length > max) throw new Bad(`${at} has more than ${max} entries`);
   return v;
 };
 const optional = <T>(v: unknown, f: (x: unknown) => T): [] | [T] => (v === null ? [] : [f(v)]);
@@ -241,8 +253,8 @@ function decodeRecord(v: unknown, evidence: FairEvidence): HandRecord {
     fair: [evidence],
     hand_no: big(f('hand_no'), `${at}.hand_no`),
     id: big(f('id'), `${at}.id`),
-    log: arr(f('log'), `${at}.log`).map(decodeLog),
-    players: arr(f('players'), `${at}.players`).map(decodePlayer),
+    log: arr(f('log'), `${at}.log`, MAX_LOG_ENTRIES).map(decodeLog),
+    players: arr(f('players'), `${at}.players`, MAX_PLAYERS).map(decodePlayer),
     pot: big(f('pot'), `${at}.pot`),
     rake: big(f('rake'), `${at}.rake`),
     small_blind: big(f('small_blind'), `${at}.small_blind`),
@@ -256,6 +268,8 @@ export type EvidenceFile = { record: HandRecord; evidence: FairEvidence; caniste
 
 /** Reads an evidence file. Never throws: a bad file gives `{ error }`. */
 export function fromEvidenceJson(text: string): EvidenceFile | { error: string } {
+  if (typeof text !== 'string') return { error: 'The evidence must be text.' };
+  if (text.length > MAX_EVIDENCE_CHARS) return { error: `The evidence is too large (over ${MAX_EVIDENCE_CHARS.toLocaleString('en-US')} characters).` };
   let raw: unknown;
   try {
     raw = JSON.parse(text);
@@ -276,7 +290,6 @@ export function fromEvidenceJson(text: string): EvidenceFile | { error: string }
     }
     return { record, evidence, canister };
   } catch (e) {
-    if (e instanceof Bad) return { error: `Invalid evidence file: ${e.message}.` };
-    throw e;
+    return { error: `Invalid evidence file: ${e instanceof Bad ? e.message : e instanceof Error ? e.message : String(e)}.` };
   }
 }
