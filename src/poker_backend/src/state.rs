@@ -6080,6 +6080,9 @@ pub(crate) mod tests {
         let r = State::restore(mem);
         assert_eq!(format!("{:?}", r.tables[&table].fair), fair);
         assert_eq!(r.tables[&table].last_seed_hash, hash);
+        // The secret seed itself survived (Debug hides it, so compare its hash).
+        assert_eq!(Some(r.tables[&table].fair.as_ref().unwrap().seed_hash()), hash);
+        assert_eq!(hash, Some(Sha256::digest(odd_seed(12)).into()));
         assert_eq!(r.fair_voided.as_ref().unwrap().len(), 1);
     }
 }

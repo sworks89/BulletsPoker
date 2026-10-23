@@ -259,7 +259,7 @@ impl FairHand {
         FairHand { hand, version, seed, commitment, committed_at: now, outcome: FairOutcome::Committed }
     }
 
-    fn seed_hash(&self) -> [u8; 32] {
+    pub(crate) fn seed_hash(&self) -> [u8; 32] {
         Sha256::digest(self.seed).into()
     }
 }
