@@ -890,6 +890,7 @@ impl State {
                 TournamentStatus::Finished if t.finished_at + CLOSE_AFTER_NS <= now && !t.tables.is_empty() => {
                     let tables = std::mem::take(&mut self.tournaments.get_mut(&id).unwrap().tables);
                     for tid in tables {
+                        self.void_unsettled_hand(tid, "tournament closed");
                         self.tables.remove(&tid);
                         self.table_tournament.remove(&tid);
                         self.applied_hand.remove(&tid);
@@ -1050,6 +1051,7 @@ impl State {
                 if !self.tables[&min_t].between_hands() {
                     return;
                 }
+                self.void_unsettled_hand(min_t, "table merged");
                 let movers: Vec<Principal> = self.tables[&min_t]
                     .seats
                     .iter()

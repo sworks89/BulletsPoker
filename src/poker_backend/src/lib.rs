@@ -45,7 +45,8 @@ const ENTROPY_EVERY_SECS: u64 = 300;
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
-    static DEALING: Cell<bool> = const { Cell::new(false) };
+    /// Tables with a seed request (`raw_rand`) in flight; one per table at most.
+    static PENDING_SEEDS: RefCell<BTreeSet<u64>> = const { RefCell::new(BTreeSet::new()) };
     static RETRYING: Cell<bool> = const { Cell::new(false) };
     /// Users with a wallet operation in flight.
     static WALLET_LOCKS: RefCell<BTreeSet<Principal>> = const { RefCell::new(BTreeSet::new()) };
@@ -286,23 +287,51 @@ async fn check_solvency() -> R<SolvencyReport> {
 async fn tick() {
     LIMITER.with(|l| l.borrow_mut().prune(now()));
     let ready = with_mut(|s| s.tick(now()));
-    if ready.is_empty() || DEALING.get() {
-        return;
+    // One fresh `raw_rand` per hand (owner decision D2a), requested
+    // concurrently; a table with a request already in flight is skipped.
+    let requests: Vec<_> = ready
+        .into_iter()
+        .filter_map(|id| {
+            let hand_no = with(|s| s.tables.get(&id).map(|t| t.hand_no))?;
+            Some(seed_and_deal(SeedRequest::claim(id)?, hand_no))
+        })
+        .collect();
+    if !requests.is_empty() {
+        futures_util::future::join_all(requests).await;
     }
-    DEALING.set(true);
-    let rand = ledger::raw_rand().await;
-    DEALING.set(false);
-    let Ok(rand) = rand else { return };
-    with_mut(|s| s.mix_entropy(&rand));
-    for id in ready {
-        // Fresh, unpredictable deck per table and hand.
-        let hand_no = with(|s| s.tables.get(&id).map_or(0, |t| t.hand_no));
-        let mut h = Sha256::new();
-        h.update(&rand);
-        h.update(id.to_le_bytes());
-        h.update(hand_no.to_le_bytes());
-        let seed: [u8; 32] = h.finalize().into();
-        with_mut(|s| s.start_hand(id, seed, now()));
+}
+
+/// Fetches a seed for one table's next hand and deals it. A failed or
+/// malformed `raw_rand` means no hand this tick: there is no fallback.
+async fn seed_and_deal(request: SeedRequest, hand_no: u64) {
+    let Ok(rand) = ledger::raw_rand().await else { return };
+    let Ok(seed) = <[u8; 32]>::try_from(rand.as_slice()) else { return };
+    // The secret entropy gets fresh randomness too, domain-separated from the
+    // seed (which is revealed after the hand).
+    let mut h = Sha256::new();
+    h.update(b"BulletsPoker/entropy/v1");
+    h.update(seed);
+    let fresh = h.finalize();
+    with_mut(|s| {
+        s.mix_entropy(&fresh);
+        // Refused when the table changed during the await: the seed is dropped unseen.
+        let _ = s.deal_with_seed(request.0, hand_no, seed, ic_cdk::api::canister_self(), now());
+    });
+}
+
+/// A table's place in `PENDING_SEEDS`, released on drop (also when a trapped
+/// call is cleaned up), so a table can't have two seed requests in flight.
+struct SeedRequest(u64);
+
+impl SeedRequest {
+    fn claim(table: u64) -> Option<Self> {
+        PENDING_SEEDS.with(|p| p.borrow_mut().insert(table)).then_some(SeedRequest(table))
+    }
+}
+
+impl Drop for SeedRequest {
+    fn drop(&mut self) {
+        PENDING_SEEDS.with(|p| p.borrow_mut().remove(&self.0));
     }
 }
 
@@ -1145,6 +1174,22 @@ fn http_request(req: metrics::HttpRequest) -> metrics::HttpResponse {
 }
 
 ic_cdk::export_candid!();
+
+#[cfg(test)]
+mod seed_request_tests {
+    use super::*;
+
+    #[test]
+    fn a_table_has_one_seed_request_in_flight() {
+        let a = SeedRequest::claim(7).expect("first request");
+        assert!(SeedRequest::claim(7).is_none(), "second request while the first is pending");
+        let b = SeedRequest::claim(8).expect("other tables are independent");
+        drop(a);
+        let again = SeedRequest::claim(7).expect("released when the request ends");
+        drop((b, again));
+        assert!(PENDING_SEEDS.with(|p| p.borrow().is_empty()));
+    }
+}
 
 #[cfg(test)]
 mod candid_tests {

@@ -9,7 +9,7 @@
 //! Never log the seed and never put it in an error message.
 
 use crate::cards::Card;
-use candid::Principal;
+use candid::{CandidType, Deserialize, Principal};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
@@ -26,7 +26,7 @@ const COMMIT_DOMAIN: &str = "BulletsPoker/commit/v1";
 const SHUFFLE_SALT: &str = "BulletsPoker/shuffle/v1";
 
 /// Identifies one hand: the canister that dealt it, the table and the hand number.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct HandId {
     pub canister: Principal,
     pub table_id: u64,

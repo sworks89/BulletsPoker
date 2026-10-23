@@ -244,6 +244,11 @@ export const idlFactory = ({ IDL }) => {
     'avatar' : IDL.Text,
     'online' : IDL.Bool,
   });
+  const LogKind = IDL.Variant({
+    'ShuffleCommitted' : IDL.Record({ 'commitment' : IDL.Vec(IDL.Nat8) }),
+    'ShuffleRevealed' : IDL.Null,
+    'HandVerificationAvailable' : IDL.Null,
+  });
   const Phase = IDL.Variant({
     'Flop' : IDL.Null,
     'Turn' : IDL.Null,
@@ -253,6 +258,7 @@ export const idlFactory = ({ IDL }) => {
     'PreFlop' : IDL.Null,
   });
   const LogEntry = IDL.Record({
+    'kind' : IDL.Opt(LogKind),
     'seat' : IDL.Opt(IDL.Nat8),
     'text' : IDL.Text,
     'phase' : Phase,

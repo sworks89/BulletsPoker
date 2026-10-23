@@ -354,6 +354,11 @@ export interface LedgerOp {
  * One line of a hand's action log, used for hand histories and replays.
  */
 export interface LogEntry {
+  /**
+   * Set on protocol events (see `crate::fair`); `None` for ordinary actions
+   * and for every entry recorded before the fair shuffle shipped.
+   */
+  'kind' : [] | [LogKind],
   'seat' : [] | [number],
   'text' : string,
   'phase' : Phase,
@@ -362,6 +367,17 @@ export interface LogEntry {
    */
   'amount' : bigint,
 }
+/**
+ * Typed protocol events in a hand's log.
+ */
+export type LogKind = {
+    /**
+     * Event 0 of every fair hand, written before any card is dealt.
+     */
+    'ShuffleCommitted' : { 'commitment' : Uint8Array | number[] }
+  } |
+  { 'ShuffleRevealed' : null } |
+  { 'HandVerificationAvailable' : null };
 export interface MedalDef {
   'id' : string,
   'icon' : string,

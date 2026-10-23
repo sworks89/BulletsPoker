@@ -246,11 +246,21 @@ type LedgerOp = record {
 };
 // One line of a hand's action log, used for hand histories and replays.
 type LogEntry = record {
+  // Set on protocol events (see `crate::fair`); `None` for ordinary actions
+  // and for every entry recorded before the fair shuffle shipped.
+  kind : opt LogKind;
   seat : opt nat8;
   "text" : text;
   phase : Phase;
   // The player's total bet on this street after the action, or the amount won/returned.
   amount : nat64;
+};
+// Typed protocol events in a hand's log.
+type LogKind = variant {
+  // Event 0 of every fair hand, written before any card is dealt.
+  ShuffleCommitted : record { commitment : blob };
+  ShuffleRevealed;
+  HandVerificationAvailable;
 };
 type MedalDef = record {
   id : text;
