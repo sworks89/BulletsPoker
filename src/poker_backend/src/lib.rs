@@ -2,6 +2,7 @@
 //! item store, table gifts, chat and friends.
 
 pub mod cards;
+pub mod fair;
 pub mod jackpot;
 pub mod leaderboards;
 pub mod ledger;

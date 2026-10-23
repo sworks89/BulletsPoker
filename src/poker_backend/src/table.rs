@@ -5,7 +5,7 @@
 //! canister moves chips between a player's wallet balance and their stack on
 //! `sit`/`stand`/`top_up`, and sweeps `rake_accrued` into the house treasury.
 
-use crate::cards::{best_hand, category, shuffled_deck, Card, HandScore};
+use crate::cards::{best_hand, category, shuffle_legacy, Card, HandScore};
 use candid::{CandidType, Deserialize, Principal};
 
 /// What a table plays for: real ICP (1 chip = 1 e8s) or free play chips.
@@ -633,7 +633,7 @@ impl Table {
             }
         }
         self.hand_no += 1;
-        self.deck = shuffled_deck(seed);
+        self.deck = shuffle_legacy(seed);
         self.board.clear();
         self.last_result = None;
         self.log.clear();

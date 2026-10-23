@@ -67,8 +67,9 @@ impl SeededRng {
     }
 }
 
-/// Returns a freshly shuffled 52-card deck (Fisher-Yates).
-pub fn shuffled_deck(seed: [u8; 32]) -> Vec<Card> {
+/// Pre-`BP-FAIR-v1` shuffle (Fisher-Yates over `SeededRng`). Kept only for
+/// legacy hands and tests; new hands use `fair::shuffle_deck`.
+pub fn shuffle_legacy(seed: [u8; 32]) -> Vec<Card> {
     let mut rng = SeededRng::new(seed);
     let mut deck: Vec<Card> = (0..52).collect();
     for i in (1..deck.len()).rev() {
@@ -193,11 +194,11 @@ mod tests {
 
     #[test]
     fn deck_is_a_permutation() {
-        let mut d = shuffled_deck([7; 32]);
+        let mut d = shuffle_legacy([7; 32]);
         assert_ne!(d, (0..52).collect::<Vec<_>>());
         d.sort();
         assert_eq!(d, (0..52).collect::<Vec<_>>());
-        assert_ne!(shuffled_deck([1; 32]), shuffled_deck([2; 32]));
+        assert_ne!(shuffle_legacy([1; 32]), shuffle_legacy([2; 32]));
     }
 
     #[test]
