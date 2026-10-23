@@ -178,6 +178,17 @@ export interface FairEvidence {
    */
   'dealt_order' : Uint8Array | number[],
   'table_id' : bigint,
+  /**
+   * The table's jackpot drop rate when the hand was dealt (basis points).
+   */
+  'jackpot_bps' : [] | [number],
+  'jackpot_cap' : [] | [bigint],
+  /**
+   * The table's rake rate when the hand was dealt (basis points); `None`
+   * for hands dealt before the rates were recorded.
+   */
+  'rake_bps' : [] | [number],
+  'rake_cap' : [] | [bigint],
   'version' : number,
   'canister' : Principal,
   /**

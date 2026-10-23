@@ -148,6 +148,41 @@ fn cases() -> Vec<Case> {
     play(&mut s, &[Call, Call, Check, Raise(BB), Fold, Fold]);
     out.push(Case { name: "uncontested_after_flop", rigged: false, fees, s });
 
+    // Dead money between live levels: p1 (short) is all-in pre-flop. On the
+    // flop p2 bets, p3 raises, p4 calls and p2 folds. p2's 280M sits between
+    // the live levels 230M (p1) and 380M (p3, p4). (Strictly above every live
+    // level is not reachable: `return_uncalled` cuts the largest commitment
+    // down to the second largest, and a folded player can only be top by
+    // leaving, which needs a later bet he cannot face.)
+    let fees = Fees { rake_bps: 250, rake_cap: 3 * BB, jackpot_bps: 100, jackpot_cap: BB };
+    let mut s = setup();
+    s.register(p(4), "player4".into(), 0).unwrap();
+    s.credit(&p(4), 10 * E8S).unwrap();
+    {
+        let c = &mut s.tables.get_mut(&TABLE).unwrap().config;
+        c.rake_bps = fees.rake_bps;
+        c.rake_cap = fees.rake_cap;
+        c.jackpot_bps = fees.jackpot_bps;
+        c.jackpot_cap = fees.jackpot_cap;
+    }
+    for (k, seat, buy) in [(1u8, 0u8, 230_000_000u64), (2, 2, 5 * E8S), (3, 4, 5 * E8S), (4, 6, 5 * E8S)] {
+        s.join_table(p(k), TABLE, seat, buy, None, 0).unwrap();
+    }
+    assert_eq!(s.tick(1), vec![TABLE]);
+    s.deal_with_seed(TABLE, 0, seed(8), test_canister(), 1).unwrap();
+    {
+        let t = s.tables.get_mut(&TABLE).unwrap();
+        for (seat, h) in [(0usize, "As Ah"), (2, "7s 2h"), (4, "Ks Kh"), (6, "Qs Qh")] {
+            t.seats[seat].as_mut().unwrap().hole = h.split_whitespace().map(card).collect();
+        }
+        let b: Vec<u8> = "3c 8d 9c 4d Jc".split_whitespace().map(card).collect();
+        let (b1, b2, b3) = (card("5s"), card("6s"), card("Ts"));
+        t.deck = vec![b[4], b3, b[3], b2, b[2], b[1], b[0], b1];
+    }
+    // Pre-flop order: p4 (seat 6), p1, p2, p3. After the flop: p2, p3, p4.
+    play(&mut s, &[Call, AllIn, Call, Call, Call, Raise(50_000_000), Raise(150_000_000), Call, Fold]);
+    out.push(Case { name: "dead_money_between_levels", rigged: true, fees, s });
+
     // A three-way showdown at the table's own (default) rates.
     let mut s = setup();
     for (k, seat) in [(1u8, 0u8), (2, 2), (3, 4)] {
@@ -252,6 +287,10 @@ fn record_json(r: &HandRecord, ind: &str) -> String {
             o.push_str(&g("dealt_order", format!("[{}]", nums(&fe.dealt_order))));
             o.push_str(&g("burns", fe.burns.to_string()));
             o.push_str(&g("settled_at", js(&fe.settled_at.to_string())));
+            o.push_str(&g("rake_bps", fe.rake_bps.map_or("null".to_string(), |x| x.to_string())));
+            o.push_str(&g("rake_cap", fe.rake_cap.map_or("null".to_string(), |x| js(&x.to_string()))));
+            o.push_str(&g("jackpot_bps", fe.jackpot_bps.map_or("null".to_string(), |x| x.to_string())));
+            o.push_str(&g("jackpot_cap", fe.jackpot_cap.map_or("null".to_string(), |x| js(&x.to_string()))));
             o.push_str(&format!("{ind}    \"reveal_at\": {}\n", js(&fe.reveal_at.to_string())));
             o.push_str(&format!("{ind}  }}\n"));
         }
@@ -334,6 +373,37 @@ fn cases_cover_what_they_claim() {
     assert!(r.rake > 0);
     let r = get("showdown_default_rates");
     assert_eq!(r.board.len(), 5);
+    let c = all.iter().find(|c| c.name == "dead_money_between_levels").unwrap();
+    let r = c.s.tables[&TABLE].last_result.clone().unwrap();
+    let committed = |k: u8| r.players.iter().find(|x| x.player == p(k)).unwrap().committed;
+    assert_eq!((committed(1), committed(2), committed(3), committed(4)), (230_000_000, 280_000_000, 380_000_000, 380_000_000));
+    assert_eq!(r.winners.len(), 2, "p1 the main pot, p3 the side pot");
+}
+
+/// The evidence publishes the rates the hand was dealt at, not the table's
+/// config at the time someone reads the record.
+#[test]
+fn evidence_carries_the_rates_from_the_deal() {
+    let fees = Fees { rake_bps: 500, rake_cap: 3 * BB, jackpot_bps: 100, jackpot_cap: BB };
+    let mut s = table_with(&fees, [5 * E8S, 5 * E8S, 5 * E8S]);
+    s.deal_with_seed(TABLE, 0, seed(9), test_canister(), 1).unwrap();
+    {
+        // Changed mid-hand: the engine settles at the new rates (it reads the
+        // config at settlement), but the evidence states the dealt rates.
+        let c = &mut s.tables.get_mut(&TABLE).unwrap().config;
+        c.rake_bps = 1000;
+        c.jackpot_cap = 1;
+    }
+    play(&mut s, &[Action::Fold, Action::Fold]);
+    let id = s.hand_history(p(1), 1)[0].id;
+    let f = s.stores.hands.get(&id).unwrap().fair.unwrap();
+    assert_eq!(
+        (f.rake_bps, f.rake_cap, f.jackpot_bps, f.jackpot_cap),
+        (Some(fees.rake_bps), Some(fees.rake_cap), Some(fees.jackpot_bps), Some(fees.jackpot_cap))
+    );
+    // And the public reply carries them too.
+    let reply = s.hand(p(1), id, u64::MAX).unwrap().fair.unwrap();
+    assert_eq!(reply.rake_bps, Some(500));
 }
 
 #[test]

@@ -11,7 +11,7 @@
 //   during play. Listed in `trusted`, never reported as passed.
 import { cardName } from './evaluate';
 import { SHUFFLE_VERSION, commitment as commit, handIdBytes, paramsBytes, shuffleDeck } from './protocol';
-import { ACTION_TEXTS, STREETS, feesFor, leftOfButton, readLog, settle, type Fees, type LogLike } from './settle';
+import { ACTION_TEXTS, STREETS, feesFor, leftOfButton, readLog, settle, unreturnedBet, type Fees, type LogLike } from './settle';
 
 type Bytes = Uint8Array | number[];
 
@@ -29,6 +29,11 @@ export interface FairEvidenceLike {
   burns: number;
   settled_at: bigint;
   reveal_at: bigint;
+  /** The table's rates when the hand was dealt; absent on older evidence. */
+  rake_bps?: [] | [number];
+  rake_cap?: [] | [bigint];
+  jackpot_bps?: [] | [number];
+  jackpot_cap?: [] | [bigint];
 }
 
 export interface HandRecordLike {
@@ -64,12 +69,16 @@ export interface VerificationReport {
 }
 
 export interface VerifyOptions {
-  /**
-   * The table's rake and jackpot rates. They are not part of the hand record.
-   * With them, the rake and the drop are recomputed. Without them, the rake is
-   * taken from the record and the drop is inferred.
-   */
-  fees?: Fees;
+  /** The current time in ns since the epoch (default: the browser clock). */
+  now?: bigint;
+}
+
+/** The rates published with the evidence, if this build recorded them. */
+function ratesOf(e: FairEvidenceLike): Fees | null {
+  const one = <T>(x: [] | [T] | undefined): T | undefined => (x && x.length ? x[0] : undefined);
+  const [rake_bps, rake_cap, jackpot_bps, jackpot_cap] = [one(e.rake_bps), one(e.rake_cap), one(e.jackpot_bps), one(e.jackpot_cap)];
+  if (rake_bps === undefined || rake_cap === undefined || jackpot_bps === undefined || jackpot_cap === undefined) return null;
+  return { rake_bps, rake_cap, jackpot_bps, jackpot_cap };
 }
 
 type CheckName = keyof VerificationReport['checks'];
@@ -170,9 +179,13 @@ export async function verifyHand(
   }
   const seed = evidence.revealed_seed.length ? Uint8Array.from(evidence.revealed_seed[0]) : null;
   let deck: number[] | null = null;
-  if (!seed) {
+  const now = options.now ?? BigInt(Date.now()) * 1_000_000n;
+  const pending = !seed && now < evidence.reveal_at;
+  if (pending) {
     report.revealAt = evidence.reveal_at;
     report.warnings.push(`Pending reveal: the seed is published at ${isoNs(evidence.reveal_at)}. Check again after that.`);
+  } else if (!seed) {
+    missing.push(`seed not published although reveal_at has passed (${isoNs(evidence.reveal_at)})`);
   } else if (seed.length !== 32) {
     fail('commitment', `the revealed seed is ${seed.length} bytes, not 32`);
   } else {
@@ -186,7 +199,7 @@ export async function verifyHand(
   set(
     'commitment',
     'The revealed seed opens the commitment, which was logged as event 0 before any card was dealt, for this canister, table and hand.',
-    !seed ? 'Seed not revealed yet.' : committedAt.length === 0 ? 'The seed opens the commitment, but the log has no ShuffleCommitted event.' : undefined,
+    pending ? 'Seed not revealed yet.' : !seed ? 'Seed not published.' : committedAt.length === 0 ? 'The seed opens the commitment, but the log has no ShuffleCommitted event.' : undefined,
   );
 
   // ---- shuffle
@@ -242,7 +255,7 @@ export async function verifyHand(
   const shownHoles = players.filter((p) => p.cards.length > 0).length;
   set(
     'dealing',
-    `Every visible card matches the rebuilt deck: ${board.length} board cards and ${shownHoles} players' hole cards.`,
+    `Every visible card matches the rebuilt deck: ${board.length} board cards and ${shownHoles} players' hole cards. The dealt_order check relies on the record's button and player list.`,
     !deck ? 'Needs the revealed seed.' : dealtOrder.length === 0 ? `Board checked (${board.length} cards); hole cards skipped (no dealt_order).` : undefined,
   );
 
@@ -295,76 +308,84 @@ export async function verifyHand(
   set('replay', `The log's ${record.log.length} entries agree with the board, the folds and all-ins, and the recorded commitments and payouts.`);
 
   // ---- settlement: pots and winners from the log's commitments and the rebuilt cards
+  const rates = ratesOf(evidence);
   if (voided) {
     set('settlement', '', 'The hand was voided: there is no settlement to check.');
   } else {
-    const pot = sum(replay.committed.values());
+    const committed = new Map(players.map((p) => [p.seat, replay.committed.get(p.seat) ?? 0n] as [number, bigint]));
+    const pot = sum(committed.values());
     const paid = sum(players.map((p) => p.won));
     const rake = record.rake;
+    const unreturned = unreturnedBet(committed, replay.left);
+    if (unreturned) {
+      fail(
+        'settlement',
+        `${who(unreturned.seat)} has ${unreturned.excess} more in than anyone else and no "Left the table" line: expected ${unreturned.excess} returned as an uncalled bet`,
+      );
+    }
     let drop: bigint;
-    if (options.fees) {
-      const want = feesFor(pot, board.length, options.fees);
+    let takeNote: string;
+    if (rates) {
+      const want = feesFor(pot, board.length, rates);
       if (want.rake !== rake) fail('settlement', `rake: expected ${want.rake}, record ${rake}`);
       drop = want.drop;
-      if (paid + rake + drop !== pot) {
-        fail('settlement', `payouts ${paid} + rake ${rake} + jackpot drop ${drop} = ${paid + rake + drop}, but the pot is ${pot}`);
+      if (paid + want.rake + drop !== pot) {
+        fail('settlement', `payouts ${paid} + rake ${want.rake} + jackpot drop ${drop} = ${paid + want.rake + drop}, but the pot is ${pot}`);
       }
+      takeNote =
+        `Rake ${want.rake} and jackpot drop ${drop} recomputed from the rates recorded at the deal ` +
+        `(rake ${rates.rake_bps} bps, cap ${rates.rake_cap}; jackpot ${rates.jackpot_bps} bps, cap ${rates.jackpot_cap}).`;
     } else {
       drop = pot - rake - paid;
       report.trusted.push({
         what: 'rake and jackpot drop amounts',
         basis: 'trusts-canister',
-        detail: `The table's rake and jackpot rates are not in the hand record. The rake (${rake}) is taken from the record, and the drop (${drop}) is inferred as pot − rake − payouts. Only the no-flop rule and the global limits (rake ≤ 10%, drop ≤ 3%) are checked.`,
+        detail: `This evidence predates recorded fee rates. The rake (${rake}) is taken from the record, and the drop (${drop}) is inferred as pot − rake − payouts. Only the no-flop rule and the global limits (rake ≤ 10%, drop ≤ 3%) are checked.`,
       });
-      report.warnings.push('Rake and jackpot drop rates unknown: the amounts were taken from the record, not recomputed.');
+      report.warnings.push('No fee rates in this evidence: rake and jackpot drop were taken from the record, not recomputed.');
       if (drop < 0n) fail('settlement', `payouts ${paid} + rake ${rake} exceed the pot ${pot}`);
       if (rake > (pot * BigInt(MAX_RAKE_BPS)) / 10_000n) fail('settlement', `rake ${rake} is over 10% of the pot ${pot}`);
       if (drop > ((pot - rake) * BigInt(MAX_JACKPOT_BPS)) / 10_000n) fail('settlement', `inferred jackpot drop ${drop} is over 3% of ${pot - rake}`);
+      takeNote = `Rake ${rake} and jackpot drop ${drop} were taken from the record (this evidence has no fee rates), not recomputed.`;
     }
     if (board.length < 3) {
       if (rake !== 0n) fail('settlement', `rake ${rake} was taken with no flop dealt`);
       if (drop !== 0n) fail('settlement', `jackpot drop ${drop} was taken with no flop dealt`);
     }
     let skip: string | undefined;
-    const needCards = live.length >= 2;
-    if (problems.settlement.length === 0 && live.length >= 1) {
-      if (needCards && (!deck || dealtOrder.length === 0)) {
-        skip = !deck ? 'Pot totals checked; the winners need the revealed seed.' : 'Pot totals checked; the winners need dealt_order to place the hole cards.';
-      } else {
+    if (live.length >= 2 && (!deck || dealtOrder.length === 0)) {
+      skip = !deck ? 'Pot totals checked; the winners need the revealed seed.' : 'Pot totals checked; the winners need dealt_order to place the hole cards.';
+    } else if (live.length >= 1 && drop >= 0n) {
+      try {
         const r = settle({
-          players: players.map((p) => ({
-            seat: p.seat,
-            committed: replay.committed.get(p.seat) ?? 0n,
-            folded: replay.folded.has(p.seat),
-            hole: holes.get(p.seat),
-          })),
+          players: players.map((p) => ({ seat: p.seat, committed: committed.get(p.seat)!, folded: replay.folded.has(p.seat), hole: holes.get(p.seat) })),
           board,
           button: record.button,
-          take: { rake, drop },
+          take: rates ? { fees: rates } : { rake, drop },
         });
         for (const p of players) {
           const want = r.won.get(p.seat) ?? 0n;
           if (want !== p.won) fail('settlement', `${who(p.seat)} won: expected ${want}, record ${p.won}`);
         }
+      } catch (e) {
+        fail('settlement', `cannot settle this hand: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
     set(
       'settlement',
-      `Recomputed ${live.length >= 2 ? 'the main and side pots and the winners from the rebuilt cards' : 'the uncontested pot'}: every payout matches (pot ${pot}, rake ${rake}, jackpot drop ${drop}).`,
+      `Recomputed ${live.length >= 2 ? 'the main and side pots and the winners from the rebuilt cards' : 'the uncontested pot'}: every payout matches (pot ${pot}). ${takeNote}`,
       skip,
     );
   }
 
-  // ---- overall
+  // ---- overall: a pending reveal first; then a proven fail always wins
   const statuses = Object.values(report.checks).map((c) => c.status);
-  if (!seed) {
+  report.warnings.push(...missing.map((m) => `Incomplete: ${m}.`));
+  if (pending) {
     report.overall = 'INCOMPLETE';
-  } else if (missing.length) {
-    report.overall = 'INCOMPLETE';
-    report.warnings.push(...missing.map((m) => `Incomplete: ${m}.`));
   } else if (statuses.includes('fail')) {
     report.overall = 'FAILED';
-  } else if (statuses.includes('skipped')) {
+  } else if (missing.length || statuses.includes('skipped')) {
     report.overall = 'INCOMPLETE';
   } else {
     report.overall = 'VERIFIED';

@@ -54,8 +54,15 @@ function toEvidence(f: NonNullable<VRecord['fair']>): FairEvidence {
     burns: f.burns,
     settled_at: BigInt(f.settled_at),
     reveal_at: BigInt(f.reveal_at),
+    rake_bps: f.rake_bps === null ? [] : [f.rake_bps],
+    rake_cap: f.rake_cap === null ? [] : [BigInt(f.rake_cap)],
+    jackpot_bps: f.jackpot_bps === null ? [] : [f.jackpot_bps],
+    jackpot_cap: f.jackpot_cap === null ? [] : [BigInt(f.jackpot_cap)],
   };
 }
+
+/** Evidence as an older build published it: no fee rates. */
+export const withoutRates = (e: FairEvidence): FairEvidence => ({ ...e, rake_bps: [], rake_cap: [], jackpot_bps: [], jackpot_cap: [] });
 
 /**
  * The record as `get_hand` returns it to the player at `viewerSeat` once the
@@ -90,10 +97,3 @@ export function recordOf(c: VCase, viewerSeat = 0): HandRecord {
   };
 }
 
-/** The fees the case was played at. */
-export const feesOf = (c: VCase) => ({
-  rake_bps: c.fees.rake_bps,
-  rake_cap: BigInt(c.fees.rake_cap),
-  jackpot_bps: c.fees.jackpot_bps,
-  jackpot_cap: BigInt(c.fees.jackpot_cap),
-});

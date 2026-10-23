@@ -103,6 +103,13 @@ type FairEvidence = record {
   // Seat of each hole card in the order it was dealt (both rounds).
   dealt_order : blob;
   table_id : nat64;
+  // The table's jackpot drop rate when the hand was dealt (basis points).
+  jackpot_bps : opt nat16;
+  jackpot_cap : opt nat64;
+  // The table's rake rate when the hand was dealt (basis points); `None`
+  // for hands dealt before the rates were recorded.
+  rake_bps : opt nat16;
+  rake_cap : opt nat64;
   version : nat16;
   canister : principal;
   // The 32-byte seed, in a reply only once `now >= reveal_at`.

@@ -29,6 +29,8 @@ export interface LogReplay {
   /** Chips each seat put in over the hand, after any uncalled bet came back. */
   committed: Map<number, bigint>;
   folded: Set<number>;
+  /** Seats that stood up after folding (their chips stay in the pot). */
+  left: Set<number>;
   /** What the log says each seat won. */
   wins: Map<number, bigint>;
   /** Street lines in log order. */
@@ -43,6 +45,7 @@ export function readLog(log: readonly LogLike[]): LogReplay {
   const committed = new Map<number, bigint>();
   const wins = new Map<number, bigint>();
   const folded = new Set<number>();
+  const left = new Set<number>();
   const streets: string[] = [];
   for (const e of log) {
     if (e.kind.length) continue; // protocol events carry no chips
@@ -52,6 +55,7 @@ export function readLog(log: readonly LogLike[]): LogReplay {
     }
     const seat = e.seat[0];
     if (e.text === 'Fold') folded.add(seat);
+    if (e.text === 'Left the table') left.add(seat);
     if (BET_TEXTS.has(e.text)) {
       const key = `${seat}/${phaseOf(e)}`;
       if (e.amount > (streetBet.get(key) ?? 0n)) streetBet.set(key, e.amount);
@@ -62,7 +66,19 @@ export function readLog(log: readonly LogLike[]): LogReplay {
     }
   }
   for (const [key, bet] of streetBet) add(committed, Number(key.split('/')[0]), bet);
-  return { committed, folded, wins, streets };
+  return { committed, folded, left, wins, streets };
+}
+
+/**
+ * The engine hands back the part of the largest commitment nobody matched
+ * (table.rs `return_uncalled`), unless that player left the table. Returns
+ * the seat and the amount that should have come back, or null.
+ */
+export function unreturnedBet(committed: ReadonlyMap<number, bigint>, left: ReadonlySet<number>): { seat: number; excess: bigint } | null {
+  const sorted = [...committed].sort((a, b) => (a[1] > b[1] ? -1 : a[1] < b[1] ? 1 : 0));
+  if (sorted.length < 2) return null;
+  const [[seat, top], [, second]] = sorted;
+  return top > second && !left.has(seat) ? { seat, excess: top - second } : null;
 }
 
 const pct = (amount: bigint, bps: number, cap: bigint) => {

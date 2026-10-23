@@ -258,6 +258,19 @@ pub struct FairHand {
     /// rounds, so `2 × players` entries. `None` until dealt, and for hands
     /// committed before this field existed.
     pub dealt_order: Option<Vec<u8>>,
+    /// The table's rake and jackpot rates when the hand was dealt, so the
+    /// settlement can be recomputed even if the table's config changes later.
+    /// `None` for hands dealt before this field existed.
+    pub rates: Option<FeeRates>,
+}
+
+/// Rake and bad-beat jackpot rates a hand was played at (see `TableConfig`).
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct FeeRates {
+    pub rake_bps: u16,
+    pub rake_cap: u64,
+    pub jackpot_bps: u16,
+    pub jackpot_cap: u64,
 }
 
 /// How long after a hand ends its seed stays hidden from the hand's players
@@ -292,6 +305,13 @@ pub struct FairEvidence {
     pub burns: u8,
     pub settled_at: u64,
     pub reveal_at: u64,
+    /// The table's rake rate when the hand was dealt (basis points); `None`
+    /// for hands dealt before the rates were recorded.
+    pub rake_bps: Option<u16>,
+    pub rake_cap: Option<u64>,
+    /// The table's jackpot drop rate when the hand was dealt (basis points).
+    pub jackpot_bps: Option<u16>,
+    pub jackpot_cap: Option<u64>,
 }
 
 impl std::fmt::Debug for FairEvidence {
@@ -310,6 +330,10 @@ impl std::fmt::Debug for FairEvidence {
             .field("burns", &self.burns)
             .field("settled_at", &self.settled_at)
             .field("reveal_at", &self.reveal_at)
+            .field("rake_bps", &self.rake_bps)
+            .field("rake_cap", &self.rake_cap)
+            .field("jackpot_bps", &self.jackpot_bps)
+            .field("jackpot_cap", &self.jackpot_cap)
             .finish()
     }
 }
@@ -319,7 +343,7 @@ impl FairHand {
     pub fn new(seed: [u8; 32], hand: HandId, now: u64) -> Self {
         let version = fair::SHUFFLE_VERSION;
         let commitment = fair::commitment(&seed, &hand, version);
-        FairHand { hand, version, seed, commitment, committed_at: now, outcome: FairOutcome::Committed, dealt_order: None }
+        FairHand { hand, version, seed, commitment, committed_at: now, outcome: FairOutcome::Committed, dealt_order: None, rates: None }
     }
 
     /// The evidence to store with the record of this hand, which ended at
@@ -353,6 +377,10 @@ impl FairHand {
             burns,
             settled_at,
             reveal_at: settled_at.saturating_add(REVEAL_DELAY_NS),
+            rake_bps: self.rates.as_ref().map(|r| r.rake_bps),
+            rake_cap: self.rates.as_ref().map(|r| r.rake_cap),
+            jackpot_bps: self.rates.as_ref().map(|r| r.jackpot_bps),
+            jackpot_cap: self.rates.as_ref().map(|r| r.jackpot_cap),
         })
     }
 
@@ -372,6 +400,7 @@ impl std::fmt::Debug for FairHand {
             .field("committed_at", &self.committed_at)
             .field("outcome", &self.outcome)
             .field("dealt_order", &self.dealt_order)
+            .field("rates", &self.rates)
             .finish()
     }
 }
@@ -911,7 +940,7 @@ impl Table {
     /// must be for this table's next hand (`hand_no + 1`). Every check runs
     /// before anything changes, so a refused commitment leaves no trace and
     /// its seed is simply dropped.
-    pub fn start_hand(&mut self, fair: FairHand, now: u64) -> Result<(), String> {
+    pub fn start_hand(&mut self, mut fair: FairHand, now: u64) -> Result<(), String> {
         if !matches!(self.phase, Phase::Waiting | Phase::HandOver) {
             return Err("Hand already in progress".into());
         }
@@ -969,6 +998,9 @@ impl Table {
         });
         self.deck = deck;
         self.last_seed_hash = Some(seed_hash);
+        // The rates this hand is played at, published with its evidence.
+        let c = &self.config;
+        fair.rates = Some(FeeRates { rake_bps: c.rake_bps, rake_cap: c.rake_cap, jackpot_bps: c.jackpot_bps, jackpot_cap: c.jackpot_cap });
         self.fair = Some(fair);
 
         let in_hand = |s: &Seat| s.in_hand;

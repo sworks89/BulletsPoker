@@ -62,6 +62,10 @@
           "dealt_order": [2, 4, 0, 2, 4, 0],
           "burns": 3,
           "settled_at": "13",
+          "rake_bps": 500,
+          "rake_cap": "30000000",
+          "jackpot_bps": 100,
+          "jackpot_cap": "10000000",
           "reveal_at": "86400000000013"
         }
       }
@@ -117,6 +121,10 @@
           "dealt_order": [2, 4, 0, 2, 4, 0],
           "burns": 3,
           "settled_at": "4",
+          "rake_bps": 333,
+          "rake_cap": "1000000000",
+          "jackpot_bps": 77,
+          "jackpot_cap": "1000000000",
           "reveal_at": "86400000000004"
         }
       }
@@ -165,6 +173,10 @@
           "dealt_order": [2, 4, 0, 2, 4, 0],
           "burns": 0,
           "settled_at": "3",
+          "rake_bps": 500,
+          "rake_cap": "30000000",
+          "jackpot_bps": 100,
+          "jackpot_cap": "10000000",
           "reveal_at": "86400000000003"
         }
       }
@@ -228,6 +240,10 @@
           "dealt_order": [2, 4, 0, 2, 4, 0],
           "burns": 3,
           "settled_at": "13",
+          "rake_bps": 1000,
+          "rake_cap": "2000000",
+          "jackpot_bps": 300,
+          "jackpot_cap": "500000",
           "reveal_at": "86400000000013"
         }
       }
@@ -292,6 +308,10 @@
           "dealt_order": [2, 4, 0, 2, 4, 0],
           "burns": 3,
           "settled_at": "13",
+          "rake_bps": 0,
+          "rake_cap": "0",
+          "jackpot_bps": 0,
+          "jackpot_cap": "0",
           "reveal_at": "86400000000013"
         }
       }
@@ -345,7 +365,81 @@
           "dealt_order": [2, 4, 0, 2, 4, 0],
           "burns": 1,
           "settled_at": "7",
+          "rake_bps": 500,
+          "rake_cap": "30000000",
+          "jackpot_bps": 100,
+          "jackpot_cap": "10000000",
           "reveal_at": "86400000000007"
+        }
+      }
+    },
+    {
+      "name": "dead_money_between_levels",
+      "rigged": true,
+      "fees": { "rake_bps": 250, "rake_cap": "30000000", "jackpot_bps": 100, "jackpot_cap": "10000000" },
+      "expected": { "pot": "1270000000", "rake": "30000000", "jackpot_drop": "10000000", "won": [{ "seat": 0, "won": "891023622" }, { "seat": 2, "won": "0" }, { "seat": 4, "won": "338976378" }, { "seat": 6, "won": "0" }] },
+      "record": {
+        "id": "1",
+        "table_id": "7",
+        "hand_no": "1",
+        "small_blind": "5000000",
+        "big_blind": "10000000",
+        "button": 0,
+        "board": [4, 25, 28, 9, 36],
+        "pot": "1270000000",
+        "rake": "30000000",
+        "players": [
+          { "seat": 0, "player": "kcyov-mibae-aqcai-baeaq-cai", "username": "player1", "cards": [51, 50], "shown": true, "committed": "230000000", "won": "891023622" },
+          { "seat": 2, "player": "l2hgx-oicai-baeaq-caiba-eaq", "username": "player2", "cards": [23, 2], "shown": false, "committed": "280000000", "won": "0" },
+          { "seat": 4, "player": "5w2os-7qdam-bqgay-dambq-gay", "username": "player3", "cards": [47, 46], "shown": true, "committed": "380000000", "won": "338976378" },
+          { "seat": 6, "player": "ilzwt-kieaq-caiba-eaqca-iba", "username": "player4", "cards": [43, 42], "shown": true, "committed": "380000000", "won": "0" }
+        ],
+        "log": [
+          { "phase": "PreFlop", "seat": null, "text": "Shuffle committed", "amount": "0", "kind": { "ShuffleCommitted": { "commitment": "e1c3777027c68c64d29d2599e87068d0bf66f2432a3e6a008e15604954017830" } } },
+          { "phase": "PreFlop", "seat": 2, "text": "Small blind", "amount": "5000000", "kind": null },
+          { "phase": "PreFlop", "seat": 4, "text": "Big blind", "amount": "10000000", "kind": null },
+          { "phase": "PreFlop", "seat": 6, "text": "Call", "amount": "10000000", "kind": null },
+          { "phase": "PreFlop", "seat": 0, "text": "All-in", "amount": "230000000", "kind": null },
+          { "phase": "PreFlop", "seat": 2, "text": "Call", "amount": "230000000", "kind": null },
+          { "phase": "PreFlop", "seat": 4, "text": "Call", "amount": "230000000", "kind": null },
+          { "phase": "PreFlop", "seat": 6, "text": "Call", "amount": "230000000", "kind": null },
+          { "phase": "Flop", "seat": null, "text": "Flop", "amount": "0", "kind": null },
+          { "phase": "Flop", "seat": 2, "text": "Bet", "amount": "50000000", "kind": null },
+          { "phase": "Flop", "seat": 4, "text": "Raise", "amount": "150000000", "kind": null },
+          { "phase": "Flop", "seat": 6, "text": "Call", "amount": "150000000", "kind": null },
+          { "phase": "Flop", "seat": 2, "text": "Fold", "amount": "0", "kind": null },
+          { "phase": "Turn", "seat": null, "text": "Turn", "amount": "0", "kind": null },
+          { "phase": "Turn", "seat": 4, "text": "Check", "amount": "0", "kind": null },
+          { "phase": "Turn", "seat": 6, "text": "Check", "amount": "0", "kind": null },
+          { "phase": "River", "seat": null, "text": "River", "amount": "0", "kind": null },
+          { "phase": "River", "seat": 4, "text": "Check", "amount": "0", "kind": null },
+          { "phase": "River", "seat": 6, "text": "Check", "amount": "0", "kind": null },
+          { "phase": "River", "seat": 0, "text": "Shows Pair", "amount": "0", "kind": null },
+          { "phase": "River", "seat": 4, "text": "Shows Pair", "amount": "0", "kind": null },
+          { "phase": "River", "seat": 6, "text": "Shows Pair", "amount": "0", "kind": null },
+          { "phase": "River", "seat": 0, "text": "Wins with Pair", "amount": "891023622", "kind": null },
+          { "phase": "River", "seat": 4, "text": "Wins with Pair", "amount": "338976378", "kind": null },
+          { "phase": "River", "seat": null, "text": "Shuffle seed reveal for the players", "amount": "86400000000014", "kind": "ShuffleRevealed" },
+          { "phase": "River", "seat": null, "text": "Shuffle check available to the players", "amount": "0", "kind": "HandVerificationAvailable" }
+        ],
+        "fair": {
+          "version": 1,
+          "scheme": "icp-raw_rand/v1",
+          "canister": "tzatm-iok7y-aq",
+          "table_id": "7",
+          "hand_no": "1",
+          "commitment": "e1c3777027c68c64d29d2599e87068d0bf66f2432a3e6a008e15604954017830",
+          "revealed_seed": "0b2835527f9cb9c6e3002d4a577491bedbf805224f6c8996b3d0fd1a2744618e",
+          "params": "00013400000036636172643d72616e6b2a342b737569743b72616e6b303d322e2e72616e6b31323d413b73756974303d632c313d642c323d682c333d730000002d6465616c3d706f702d66726f6d2d656e643b6275726e2d6265666f72652d666c6f702d7475726e2d7269766572",
+          "outcome": "settled",
+          "dealt_order": [2, 4, 6, 0, 2, 4, 6, 0],
+          "burns": 3,
+          "settled_at": "14",
+          "rake_bps": 250,
+          "rake_cap": "30000000",
+          "jackpot_bps": 100,
+          "jackpot_cap": "10000000",
+          "reveal_at": "86400000000014"
         }
       }
     },
@@ -408,6 +502,10 @@
           "dealt_order": [2, 4, 0, 2, 4, 0],
           "burns": 3,
           "settled_at": "13",
+          "rake_bps": 250,
+          "rake_cap": "30000000",
+          "jackpot_bps": 100,
+          "jackpot_cap": "10000000",
           "reveal_at": "86400000000013"
         }
       }

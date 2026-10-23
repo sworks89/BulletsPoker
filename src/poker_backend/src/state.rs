@@ -6418,6 +6418,10 @@ pub(crate) mod tests {
                 burns: 0,
                 settled_at: r - REVEAL_DELAY_NS,
                 reveal_at: r,
+                rake_bps: None,
+                rake_cap: None,
+                jackpot_bps: None,
+                jackpot_cap: None,
             }),
         }
     }
