@@ -12,7 +12,12 @@ class MemStore {
 }
 
 const C = 'ryjl3-tyaaa-aaaaa-aaaba-cai';
-const view = (id: bigint, hand_no: bigint, c?: number[]) => ({ id, hand_no, commitment: (c ? [Uint8Array.from(c)] : []) as [] | [Uint8Array] });
+const view = (id: bigint, hand_no: bigint, c?: number[], board: number[] = []) => ({
+  id,
+  hand_no,
+  board: Uint8Array.from(board),
+  commitment: (c ? [Uint8Array.from(c)] : []) as [] | [Uint8Array],
+});
 
 describe('commitments seen at the table', () => {
   it('stores the commitment shown for a hand and reads it back by canister, table and hand', () => {
@@ -23,6 +28,15 @@ describe('commitments seen at the table', () => {
     expect(seenCommitment(s, C, 8n, 1n)).toBeUndefined(); // no commitment in that view
     expect(seenCommitment(s, 'aaaaa-aa', 7n, 3n)).toBeUndefined();
     expect(seenKey(C, 7n, 3n)).toBe(`${C}:7:3`);
+  });
+
+  it('records a commitment only before the flop: a first sighting later in the hand proves nothing', () => {
+    const s = new MemStore();
+    recordSeen(s, C, [view(7n, 3n, [1], [10, 11, 12]), view(7n, 4n, [2], [10, 11, 12, 13, 14])]);
+    expect(seenCommitment(s, C, 7n, 3n)).toBeUndefined();
+    expect(seenCommitment(s, C, 7n, 4n)).toBeUndefined();
+    recordSeen(s, C, [view(7n, 5n, [3])]);
+    expect(seenCommitment(s, C, 7n, 5n)).toEqual(Uint8Array.from([3]));
   });
 
   it('keeps the first value seen, so a later different one shows up as a mismatch', () => {

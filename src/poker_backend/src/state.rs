@@ -2551,15 +2551,17 @@ impl State {
     /// seed. Unlike `hand_history` this reaches back past the last 50 hands.
     pub fn verifiable_hands(&self, caller: Principal, offset: usize, limit: usize, now: u64) -> Vec<HandSummary> {
         // Expired entries are only removed on the next write, so skip them here.
+        // Paging runs on the index, so skipped entries never decode a record.
+        // Entries are added only for the players of a record with evidence; a
+        // record removed by the hard cap just makes a short page.
         self.stores
             .fair_hands
             .range((caller, 0)..=(caller, u64::MAX))
             .rev()
             .filter(|e| now < e.value().saturating_add(FAIR_RETENTION_NS))
-            .filter_map(|e| self.stores.hands.get(&e.key().1))
-            .filter(|h| h.fair.is_some() && h.players.iter().any(|p| p.player == caller))
             .skip(offset)
             .take(limit)
+            .filter_map(|e| self.stores.hands.get(&e.key().1))
             .map(|h| hand_summary(&h, caller))
             .collect()
     }
@@ -6860,7 +6862,8 @@ pub(crate) mod tests {
         }
         assert_eq!(fair_list(&s, p(1)).iter().map(|e| e.0).collect::<Vec<_>>(), vec![5, 6, 7]);
         assert_eq!(s.users.get(&p(1)).unwrap().fair_hand_count, Some(3));
-        assert_eq!(s.verifiable_hands(p(1), 0, 100, 0).len(), 0, "bare records have no players");
+        let listed: Vec<u64> = s.verifiable_hands(p(1), 0, 100, 0).iter().map(|h| h.id).collect();
+        assert_eq!(listed, vec![7, 6, 5]);
         // The real cap.
         assert_eq!(FAIR_HANDS_PER_USER, 5_000);
     }

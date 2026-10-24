@@ -92,9 +92,9 @@ The canister records the commitment as entry 0 of the hand's log, in the same
 step that deals the hole cards, so no card leaves the deck before it. While the
 hand is played, the table view (`TableView.commitment`) shows the commitment to
 everyone watching, and the app keeps a copy on the player's device
-(`fair/seen.ts`). A copy seen at the table shows the deck was fixed before the
-flop and before any betting. Without one, the order rests on the canister's own
-log, which is not externally timestamped. The seed is revealed after the hand. A verifier recomputes the commitment from the revealed
+(`fair/seen.ts`) if it saw the commitment before any board card was out. Such a
+copy shows the deck was fixed before the flop was dealt. Without one, the order
+rests on the canister's own log, which is not externally timestamped. The seed is revealed after the hand. A verifier recomputes the commitment from the revealed
 seed and the hand id and compares all 32 bytes. A verifier must reject any
 version it does not implement.
 

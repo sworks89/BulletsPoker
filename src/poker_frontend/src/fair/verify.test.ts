@@ -380,7 +380,8 @@ describe('the commitment seen at the table', () => {
     const r = await verifyHand(record, evidence, CANISTER, opts(Uint8Array.from(evidence.commitment)));
     expect(r.overall).toBe('VERIFIED');
     expect(r.checks.commitment.status).toBe('pass');
-    expect(r.checks.commitment.detail).toMatch(/commitment matched what you saw at the table/);
+    expect(r.checks.commitment.detail).toMatch(/commitment matched what you saw at the table before the flop was dealt/);
+    expect(r.checks.commitment.detail).not.toMatch(/before any betting/);
     expect(r.trusted.map((t) => t.what)).not.toContain('commitment timing');
     expect(allText(r)).not.toMatch(/no commitment was recorded on this device/);
   });

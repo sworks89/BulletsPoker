@@ -224,7 +224,7 @@ export async function verifyHand(
   set(
     'commitment',
     observed
-      ? 'The revealed seed opens the commitment for this canister, table and hand. The commitment matched what you saw at the table during the hand (before the flop and before any betting), and the log records it as event 0, before any card was dealt.'
+      ? 'The revealed seed opens the commitment for this canister, table and hand. The commitment matched what you saw at the table before the flop was dealt, so the deck was fixed by then; the log records it as event 0, before any card was dealt.'
       : "The revealed seed opens the commitment for this canister, table and hand. The log records it as event 0, before any card was dealt; that order is the canister's own log (see Taken on trust), because this device did not see the commitment at the table.",
     pending ? 'Seed not revealed yet.' : !seed ? 'Seed not published.' : committedAt.length === 0 ? 'The seed opens the commitment, but the log has no ShuffleCommitted event.' : undefined,
   );

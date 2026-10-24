@@ -93,17 +93,21 @@ during play. The in-app verifier states both limits in every report: the
 **Players see the commitment during the hand.** While a hand is being played
 (PreFlop to River), `TableView.commitment` carries that hand's commitment, for
 every viewer except outsiders of a private room; it is `None` between hands.
-The app stores what it saw, keyed by canister, table and hand number, in the
-browser's localStorage (`fair/seen.ts`, last 500 hands, first value kept). The
+The app stores what it saw while the board was still empty (pre-flop), keyed
+by canister, table and hand number, in the browser's localStorage
+(`fair/seen.ts`, last 500 hands, first value kept). A commitment first seen
+after the flop is not stored, since it says nothing about when the deck was
+fixed. The
 verifier compares the published commitment with that copy
 (`verifyHand`, `observedCommitment`): a different value fails the commitment
 check, and the panel shows "Commitment seen at the table: yes/no".
 
-- With a copy, the commitment is shown to have been fixed before the flop and
-  before any betting the player saw. The hole cards are dealt in the same step
-  that records the commitment, so the first view a player can get already has
-  them out; a copy does not prove timing relative to the hole-card deal beyond
-  the canister's log.
+- With a copy, the commitment is shown to have been fixed before the flop was
+  dealt. It is not shown to precede the blinds or pre-flop actions that happened
+  before the first poll landed. The hole cards are dealt in the same step that
+  records the commitment, so the first view a player can get already has them
+  out; a copy does not prove timing relative to the hole-card deal beyond the
+  canister's log.
 - Without a copy (another device, cleared storage, a hand the player never
   watched), "commitment before the deal" means the canister's own log order,
   which the verifier checks (`ShuffleCommitted` must be entry 0). It is not an

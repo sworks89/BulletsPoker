@@ -2,7 +2,7 @@
 import type { VerificationReport } from './fair/verify';
 
 export const DISCLAIMER =
-  "This check proves the cards dealt match the seed behind the published commitment and that the pot was paid by the rules. If this device saw that commitment at the table during the hand, the deck was fixed before the flop and before any betting; otherwise that order rests on the canister's own log. It does not prove the seed came from ICP randomness, and it does not prove nobody could see the cards during play — the game canister holds them.";
+  "This check proves the cards dealt match the seed behind the published commitment and that the pot was paid by the rules. If this device saw that commitment at the table before the flop, the deck was fixed before the flop was dealt; otherwise that order rests on the canister's own log. It does not prove the seed came from ICP randomness, and it does not prove nobody could see the cards during play — the game canister holds them.";
 export const D1_LINE = '24 hours after a hand, the players in it can verify the shuffle, which reveals every card dealt in that hand.';
 
 const NS_PER_MS = 1_000_000n;

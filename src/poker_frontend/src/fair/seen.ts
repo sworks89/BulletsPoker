@@ -1,9 +1,11 @@
 // Commitments this device saw at the table while a hand was played.
 //
-// The table view shows the commitment of the hand being played. Keeping a
-// copy here lets the verifier later check that the published commitment is
-// the one shown during the hand (before the flop and before any betting),
-// instead of relying only on the canister's own log order.
+// The table view shows the commitment of the hand being played. A copy is
+// kept only while the board is still empty, so a stored copy always means
+// "seen before the flop was dealt"; a first sighting later in the hand proves
+// nothing about when the deck was fixed and is not stored. The verifier then
+// checks the published commitment against it instead of relying only on the
+// canister's own log order.
 //
 // Stored in localStorage under SEEN_KEY as a JSON array of [key, hex] pairs,
 // oldest first, at most SEEN_MAX entries. The first value seen for a hand is
@@ -17,6 +19,7 @@ type Bytes = Uint8Array | number[];
 export interface ViewLike {
   id: bigint;
   hand_no: bigint;
+  board: Bytes;
   commitment: [] | [Bytes];
 }
 
@@ -43,7 +46,7 @@ function load(store: StoreLike): [string, string][] {
   }
 }
 
-/** Remembers the commitment each view shows for its current hand. */
+/** Remembers the commitment each view shows for its current hand, if no board card is out yet. */
 export function recordSeen(store: StoreLike | null, canister: string, views: readonly ViewLike[]): void {
   if (!store || !canister) return;
   try {
@@ -52,7 +55,7 @@ export function recordSeen(store: StoreLike | null, canister: string, views: rea
     let changed = false;
     for (const v of views) {
       const c = v.commitment[0];
-      if (!c || c.length === 0) continue;
+      if (!c || c.length === 0 || v.board.length > 0) continue; // pre-flop only
       const key = seenKey(canister, v.id, v.hand_no);
       if (known.has(key)) continue;
       entries.push([key, hex(c)]);
