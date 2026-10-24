@@ -2,6 +2,7 @@
 //! item store, table gifts, chat and friends.
 
 pub mod cards;
+pub mod fair;
 pub mod jackpot;
 pub mod leaderboards;
 pub mod ledger;
@@ -44,7 +45,8 @@ const ENTROPY_EVERY_SECS: u64 = 300;
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
-    static DEALING: Cell<bool> = const { Cell::new(false) };
+    /// Tables with a seed request (`raw_rand`) in flight; one per table at most.
+    static PENDING_SEEDS: RefCell<BTreeSet<u64>> = const { RefCell::new(BTreeSet::new()) };
     static RETRYING: Cell<bool> = const { Cell::new(false) };
     /// Users with a wallet operation in flight.
     static WALLET_LOCKS: RefCell<BTreeSet<Principal>> = const { RefCell::new(BTreeSet::new()) };
@@ -285,23 +287,54 @@ async fn check_solvency() -> R<SolvencyReport> {
 async fn tick() {
     LIMITER.with(|l| l.borrow_mut().prune(now()));
     let ready = with_mut(|s| s.tick(now()));
-    if ready.is_empty() || DEALING.get() {
-        return;
+    // One fresh `raw_rand` per hand (owner decision D2a). Each runs as its own
+    // detached task so the tick returns at once: a slow `raw_rand` must never
+    // hold a tick open (the timer skips runs past 5 concurrent ones, which
+    // would stop action clocks everywhere).
+    for (request, hand_no) in claim_seed_requests(ready, |id| with(|s| s.tables.get(&id).map(|t| t.hand_no))) {
+        // The request guard moves into the task and is released when it ends,
+        // however it ends (including a trap's cleanup or cancellation).
+        ic_cdk::futures::spawn_migratory(seed_and_deal(request, hand_no));
     }
-    DEALING.set(true);
-    let rand = ledger::raw_rand().await;
-    DEALING.set(false);
-    let Ok(rand) = rand else { return };
-    with_mut(|s| s.mix_entropy(&rand));
-    for id in ready {
-        // Fresh, unpredictable deck per table and hand.
-        let hand_no = with(|s| s.tables.get(&id).map_or(0, |t| t.hand_no));
-        let mut h = Sha256::new();
-        h.update(&rand);
-        h.update(id.to_le_bytes());
-        h.update(hand_no.to_le_bytes());
-        let seed: [u8; 32] = h.finalize().into();
-        with_mut(|s| s.start_hand(id, seed, now()));
+}
+
+/// The seed requests to send for `ready` tables: one per table that still
+/// exists (with the hand number it is at now) and has none in flight.
+fn claim_seed_requests(ready: Vec<u64>, hand_no: impl Fn(u64) -> Option<u64>) -> Vec<(SeedRequest, u64)> {
+    ready.into_iter().filter_map(|id| Some((SeedRequest::claim(id)?, hand_no(id)?))).collect()
+}
+
+/// Fetches a seed for one table's next hand and deals it. A failed or
+/// malformed `raw_rand` means no hand this tick: there is no fallback.
+async fn seed_and_deal(request: SeedRequest, hand_no: u64) {
+    let Ok(rand) = ledger::raw_rand().await else { return };
+    let Ok(seed) = <[u8; 32]>::try_from(rand.as_slice()) else { return };
+    // The secret entropy gets fresh randomness too, domain-separated from the
+    // seed (which is revealed after the hand).
+    let mut h = Sha256::new();
+    h.update(b"BulletsPoker/entropy/v1");
+    h.update(seed);
+    let fresh = h.finalize();
+    with_mut(|s| {
+        s.mix_entropy(&fresh);
+        // Refused when the table changed during the await: the seed is dropped unseen.
+        let _ = s.deal_with_seed(request.0, hand_no, seed, ic_cdk::api::canister_self(), now());
+    });
+}
+
+/// A table's place in `PENDING_SEEDS`, released on drop (also when a trapped
+/// call is cleaned up), so a table can't have two seed requests in flight.
+struct SeedRequest(u64);
+
+impl SeedRequest {
+    fn claim(table: u64) -> Option<Self> {
+        PENDING_SEEDS.with(|p| p.borrow_mut().insert(table)).then(|| SeedRequest(table)) // lazily: a dropped guard releases the table
+    }
+}
+
+impl Drop for SeedRequest {
+    fn drop(&mut self) {
+        PENDING_SEEDS.with(|p| p.borrow_mut().remove(&self.0));
     }
 }
 
@@ -575,11 +608,23 @@ fn get_hand_history(limit: u32) -> Vec<HandSummary> {
     with(|s| s.hand_history(p, limit.min(50) as usize))
 }
 
-/// Full replay of a hand you played in.
+/// Your hands with shuffle evidence that are still verifiable (until 7 days
+/// after their seed is revealed), newest first; `limit` is capped at 100.
+/// Reaches further back than `get_hand_history`.
+#[query]
+fn get_verifiable_hands(offset: u32, limit: u32) -> Vec<HandSummary> {
+    let p = ic_cdk::api::msg_caller();
+    let now = ic_cdk::api::time();
+    with(|s| s.verifiable_hands(p, offset as usize, (limit as usize).min(state::VERIFIABLE_PAGE_MAX), now))
+}
+
+/// Full replay of a hand you played in. Its shuffle seed (which reveals every
+/// card dealt) is included from 24 hours after the hand ended.
 #[query]
 fn get_hand(id: u64) -> Option<HandRecord> {
     let p = ic_cdk::api::msg_caller();
-    with(|s| s.hand(p, id))
+    let now = ic_cdk::api::time();
+    with(|s| s.hand(p, id, now))
 }
 
 // ------------------------------------------------------------------ tables
@@ -1146,6 +1191,38 @@ fn http_request(req: metrics::HttpRequest) -> metrics::HttpResponse {
 ic_cdk::export_candid!();
 
 #[cfg(test)]
+mod seed_request_tests {
+    use super::*;
+
+    #[test]
+    fn a_table_has_one_seed_request_in_flight() {
+        let a = SeedRequest::claim(7).expect("first request");
+        assert!(SeedRequest::claim(7).is_none(), "second request while the first is pending");
+        let b = SeedRequest::claim(8).expect("other tables are independent");
+        drop(a);
+        let again = SeedRequest::claim(7).expect("released when the request ends");
+        drop((b, again));
+        assert!(PENDING_SEEDS.with(|p| p.borrow().is_empty()));
+    }
+
+    #[test]
+    fn requests_go_to_ready_tables_without_one_pending() {
+        let held = SeedRequest::claim(2).unwrap();
+        let hand_no = |id: u64| (id != 4).then_some(id * 10); // table 4 is gone
+        let reqs = claim_seed_requests(vec![1, 2, 3, 4], hand_no);
+        let got: Vec<(u64, u64)> = reqs.iter().map(|(r, h)| (r.0, *h)).collect();
+        assert_eq!(got, vec![(1, 10), (3, 30)], "2 is pending, 4 is gone");
+        // A second tick while those requests are in flight asks for nothing new.
+        let again = claim_seed_requests(vec![1, 2, 3], hand_no);
+        assert!(again.is_empty(), "{:?}", again.iter().map(|(r, h)| (r.0, *h)).collect::<Vec<_>>());
+        drop(reqs);
+        assert_eq!(claim_seed_requests(vec![1], hand_no).len(), 1, "released once a request ends");
+        drop(held);
+        assert!(PENDING_SEEDS.with(|p| p.borrow().is_empty()));
+    }
+}
+
+#[cfg(test)]
 mod candid_tests {
     /// Keeps `poker_backend.did` in sync with the Rust code.
     /// Run `UPDATE_CANDID=1 cargo test` after changing the API.
@@ -1156,6 +1233,10 @@ mod candid_tests {
         if std::env::var("UPDATE_CANDID").is_ok() {
             std::fs::write(path, &generated).unwrap();
         }
+        // No endpoint may return the stored fair-shuffle records (they hold secret seeds).
+        assert_eq!(exposed_secrets(&generated), Vec::<&str>::new(), "the public interface exposes these");
+        // The one seed field allowed out, filled in only after the reveal delay.
+        assert!(generated.contains("revealed_seed : opt blob"));
         let on_disk = std::fs::read_to_string(path).unwrap_or_default();
         assert_eq!(on_disk, generated, "run `UPDATE_CANDID=1 cargo test` to regenerate the .did file");
 
@@ -1171,5 +1252,38 @@ mod candid_tests {
         }
         assert_eq!(std::fs::read_to_string(format!("{out}/poker_backend.did.js")).unwrap_or_default(), js);
         assert_eq!(std::fs::read_to_string(format!("{out}/poker_backend.did.d.ts")).unwrap_or_default(), ts);
+    }
+
+    /// Names in a candid interface that must never be public. A seed field is
+    /// allowed only as `FairEvidence.revealed_seed`, which `hand()` fills in
+    /// once the reveal delay has passed; no field may claim a hand is verified.
+    fn exposed_secrets(did: &str) -> Vec<&'static str> {
+        let mut found: Vec<&'static str> = ["FairHand", "VoidedHand", "last_seed_hash", "fair_voided"]
+            .into_iter()
+            .filter(|name| did.contains(name))
+            .collect();
+        if did.matches("seed :").count() > did.matches("revealed_seed :").count()
+            || did.matches("revealed_seed :").count() > did.matches("type FairEvidence").count()
+        {
+            found.push("seed :");
+        }
+        if did.to_lowercase().contains("verified") {
+            found.push("verified");
+        }
+        found
+    }
+
+    #[test]
+    fn secret_guard_allows_only_the_revealed_seed() {
+        let ok = "type FairEvidence = record { revealed_seed : opt blob; commitment : blob };";
+        assert_eq!(exposed_secrets(ok), Vec::<&str>::new());
+        assert_eq!(exposed_secrets("type X = record { seed : blob };"), vec!["seed :"]);
+        assert_eq!(exposed_secrets("type X = record { hole_seed : blob };"), vec!["seed :"]);
+        assert_eq!(exposed_secrets(&format!("{ok} type Y = record {{ revealed_seed : opt blob }};")), vec!["seed :"]);
+        assert_eq!(exposed_secrets("type FairHand = record {};"), vec!["FairHand"]);
+        assert_eq!(exposed_secrets("type VoidedHand = record {};"), vec!["VoidedHand"]);
+        assert_eq!(exposed_secrets("record { last_seed_hash : opt blob }"), vec!["last_seed_hash"]);
+        assert_eq!(exposed_secrets("record { fair_voided : vec blob }"), vec!["fair_voided"]);
+        assert_eq!(exposed_secrets("record { verified : bool }"), vec!["verified"]);
     }
 }

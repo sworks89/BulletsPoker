@@ -1,36 +1,48 @@
 import { useEffect, useState } from 'react';
 import { useApp, usePoll } from '../context';
-import type { HandRecord, HandSummary, LogEntry } from '../ic';
+import type { HandRecord, HandSummary } from '../ic';
 import { amount, amountWithUnit, bytes, timeAgo } from '../format';
 import { Card } from './Table';
+import { HandVerification } from './HandVerification';
+import { groupVerifiable, logStepLabel, potAt } from '../replay';
 
 const BOARD_AT: Record<string, number> = { Waiting: 0, PreFlop: 0, Flop: 3, Turn: 4, River: 5, HandOver: 5 };
-const STREETS = new Set(['Flop', 'Turn', 'River']);
+/** Hands per page of the "Ready to verify" list (the canister caps a page at 100). */
+const VERIFY_PAGE = 25;
+const nowNs = () => BigInt(Date.now()) * 1_000_000n;
 
-/** Pot size after the first `step` log entries. */
-function potAt(log: LogEntry[], step: number): bigint {
-  let banked = 0n;
-  const street = new Map<number, bigint>();
-  for (const e of log.slice(0, step)) {
-    const seat = e.seat[0];
-    if (seat === undefined) {
-      if (STREETS.has(e.text)) {
-        for (const v of street.values()) banked += v;
-        street.clear();
-      }
-    } else if (e.text === 'Uncalled bet returned') {
-      street.set(seat, (street.get(seat) ?? 0n) - e.amount);
-    } else if (!e.text.startsWith('Wins') && !e.text.startsWith('Shows') && e.amount > 0n) {
-      street.set(seat, e.amount);
-    }
-  }
-  for (const v of street.values()) banked += v;
-  return banked;
+function HandRow({ h, active, onSelect, note }: { h: HandSummary; active: boolean; onSelect: () => void; note?: string }) {
+  return (
+    <button className={`hand-row ${active ? 'active' : ''}`} onClick={onSelect}>
+      <div className="hand-cards">
+        {bytes(h.my_cards).map((c, i) => (
+          <Card key={i} c={c} small />
+        ))}
+      </div>
+      <div className="grow">
+        <div className="small">
+          <b>{h.table_name}</b> <span className="muted">· {timeAgo(h.time)}</span>
+        </div>
+        <div className="muted small">
+          Pot {amountWithUnit(h.pot, h.currency)}
+          {h.outcome[0]?.startsWith('voided') && <span className="tag">Voided</span>}
+          {note && <span className="tag">{note}</span>}
+        </div>
+      </div>
+      <div className={h.net > 0n ? 'pos' : h.net < 0n ? 'neg' : 'muted'}>
+        {h.net > 0n ? '+' : ''}
+        {amount(h.net, h.currency)}
+      </div>
+    </button>
+  );
 }
 
 export function History() {
   const { backend, profile } = useApp();
+  const [tab, setTab] = useState<'recent' | 'verify'>('recent');
   const [hands, setHands] = useState<HandSummary[]>([]);
+  const [verifiable, setVerifiable] = useState<HandSummary[]>([]);
+  const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<bigint | null>(null);
 
   usePoll(
@@ -42,33 +54,61 @@ export function History() {
     10000,
     [backend],
   );
+  usePoll(
+    async () => {
+      if (tab !== 'verify') return;
+      // One extra row tells whether there is a next page.
+      setVerifiable(await backend.get_verifiable_hands(page * VERIFY_PAGE, VERIFY_PAGE + 1));
+    },
+    30000,
+    [backend, tab, page],
+  );
 
   if (!profile) return <div className="panel">Sign in to see your hand history.</div>;
+
+  const shown = verifiable.slice(0, VERIFY_PAGE);
+  const groups = groupVerifiable(shown, nowNs());
+  const row = (h: HandSummary, note?: string) => (
+    <HandRow key={String(h.id)} h={h} note={note} active={selected === h.id} onSelect={() => setSelected(h.id)} />
+  );
 
   return (
     <div className="history">
       <div className="panel hand-list">
-        <div className="panel-title">Your last {hands.length} hands</div>
-        {hands.length === 0 && <p className="muted">Play a hand and it will show up here.</p>}
-        {hands.map((h) => (
-          <button key={String(h.id)} className={`hand-row ${selected === h.id ? 'active' : ''}`} onClick={() => setSelected(h.id)}>
-            <div className="hand-cards">
-              {bytes(h.my_cards).map((c, i) => (
-                <Card key={i} c={c} small />
-              ))}
-            </div>
-            <div className="grow">
-              <div className="small">
-                <b>{h.table_name}</b> <span className="muted">· {timeAgo(h.time)}</span>
-              </div>
-              <div className="muted small">Pot {amountWithUnit(h.pot, h.currency)}</div>
-            </div>
-            <div className={h.net > 0n ? 'pos' : h.net < 0n ? 'neg' : 'muted'}>
-              {h.net > 0n ? '+' : ''}
-              {amount(h.net, h.currency)}
-            </div>
+        <div className="row gap" role="tablist">
+          <button role="tab" aria-selected={tab === 'recent'} className={`chip ${tab === 'recent' ? 'active' : ''}`} onClick={() => setTab('recent')}>
+            Recent
           </button>
-        ))}
+          <button role="tab" aria-selected={tab === 'verify'} className={`chip ${tab === 'verify' ? 'active' : ''}`} onClick={() => setTab('verify')}>
+            Ready to verify
+          </button>
+        </div>
+        {tab === 'recent' ? (
+          <>
+            <div className="panel-title">Your last {hands.length} hands</div>
+            {hands.length === 0 && <p className="muted">Play a hand and it will show up here.</p>}
+            {hands.map((h) => row(h))}
+          </>
+        ) : (
+          <>
+            <div className="panel-title">Hands you can verify</div>
+            <p className="muted small">Each hand's seed is published 24 hours after it ends and stays here for 7 days after that. Export the evidence to keep it longer.</p>
+            {shown.length === 0 && <p className="muted">{page === 0 ? 'No hands with shuffle evidence in the last 8 days.' : 'No more hands.'}</p>}
+            {groups.ready.length > 0 && <div className="small"><b>Ready</b></div>}
+            {groups.ready.map((h) => row(h))}
+            {groups.pending.length > 0 && <div className="small"><b>Pending</b></div>}
+            {groups.pending.map((h) => row(h, `in ${h.countdown}`))}
+            <div className="row gap">
+              <button className="chip" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
+                Newer
+              </button>
+              <span className="muted small">Page {page + 1}</span>
+              <button className="chip" disabled={verifiable.length <= VERIFY_PAGE} onClick={() => setPage((p) => p + 1)}>
+                Older
+              </button>
+            </div>
+          </>
+        )}
       </div>
       {selected !== null && <Replay id={selected} />}
     </div>
@@ -168,21 +208,28 @@ function Replay({ id }: { id: bigint }) {
         </span>
       </div>
 
+      <HandVerification hand={hand} />
+
       <ul className="hand-log">
-        {log.map((e, i) => (
-          <li key={i} className={`${i < step ? '' : 'future'} ${i === step - 1 ? 'current' : ''} ${e.seat.length ? '' : 'street'}`} >
-            <button className="btn-reset log-btn" aria-current={i === step - 1 ? 'step' : undefined} onClick={() => { setPlaying(false); setStep(i + 1); }}>
-            {e.seat.length ? (
-              <>
-                <b>{seatName(e.seat[0])}</b> {e.text.toLowerCase()}
-                {e.amount > 0n && <span className="muted"> {amount(e.amount, hand.currency)}</span>}
-              </>
-            ) : (
-              <b>— {e.text} —</b>
-            )}
-            </button>
-          </li>
-        ))}
+        {log.map((e, i) => {
+          const st = logStepLabel(e, hand.fair[0]?.reveal_at);
+          return (
+            <li key={i} className={`${i < step ? '' : 'future'} ${i === step - 1 ? 'current' : ''} ${st.type === 'action' ? '' : 'street'}`}>
+              <button className="btn-reset log-btn" aria-current={i === step - 1 ? 'step' : undefined} onClick={() => { setPlaying(false); setStep(i + 1); }}>
+                {st.type === 'action' ? (
+                  <>
+                    <b>{seatName(st.seat)}</b> {st.text}
+                    {st.amount > 0n && <span className="muted"> {amount(st.amount, hand.currency)}</span>}
+                  </>
+                ) : st.type === 'protocol' ? (
+                  <span className="protocol-step">{st.text}</span>
+                ) : (
+                  <b>— {st.text} —</b>
+                )}
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

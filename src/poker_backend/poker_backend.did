@@ -89,6 +89,40 @@ type DepositInfo = record {
   account : Account;
 };
 type EarnedMedal = record { id : text; earned_at : nat64 };
+// The `BP-FAIR-v1` evidence published with a recorded hand.
+// 
+// The stored copy (private stable state) holds the seed in `revealed_seed`;
+// `get_hand` returns it only from `reveal_at` on, and only to the hand's
+// players. Nothing here says whether the hand verifies: that is the
+// verifier's job.
+type FairEvidence = record {
+  reveal_at : nat64;
+  // Where the seed came from (`fair::RANDOMNESS_SCHEME`).
+  scheme : text;
+  hand_no : nat64;
+  // Seat of each hole card in the order it was dealt (both rounds).
+  dealt_order : blob;
+  table_id : nat64;
+  // The table's jackpot drop rate when the hand was dealt (basis points).
+  jackpot_bps : opt nat16;
+  jackpot_cap : opt nat64;
+  // The table's rake rate when the hand was dealt (basis points); `None`
+  // for hands dealt before the rates were recorded.
+  rake_bps : opt nat16;
+  rake_cap : opt nat64;
+  version : nat16;
+  canister : principal;
+  // The 32-byte seed, in a reply only once `now >= reveal_at`.
+  revealed_seed : opt blob;
+  // Burn cards used: one before each street dealt.
+  burns : nat8;
+  // `"settled"` or `"voided: <reason>"`.
+  outcome : text;
+  // `fair::params_bytes(version)`.
+  params : blob;
+  commitment : blob;
+  settled_at : nat64;
+};
 type FriendInfo = record {
   id : principal;
   username : text;
@@ -123,6 +157,10 @@ type HandRecord = record {
   log : vec LogEntry;
   pot : nat64;
   small_blind : nat64;
+  // The `BP-FAIR-v1` evidence: `None` for hands dealt before the fair
+  // shuffle. Stored with the seed; `get_hand` hides the seed until
+  // `reveal_at`.
+  fair : opt FairEvidence;
   hand_no : nat64;
   rake : nat64;
   time : nat64;
@@ -150,10 +188,16 @@ type HandSummary = record {
   // What the viewer won minus what they put in.
   net : int64;
   pot : nat64;
+  // When the hand's shuffle seed is published to its players (ns); `None`
+  // for hands dealt before the fair shuffle.
+  reveal_at : opt nat64;
   my_cards : blob;
   time : nat64;
   currency : Currency;
   board : blob;
+  // The shuffle evidence outcome: `"settled"` or `"voided: <reason>"`;
+  // `None` for hands dealt before the fair shuffle.
+  outcome : opt text;
   table_name : text;
 };
 type HouseStats = record {
@@ -246,11 +290,21 @@ type LedgerOp = record {
 };
 // One line of a hand's action log, used for hand histories and replays.
 type LogEntry = record {
+  // Set on protocol events (see `crate::fair`); `None` for ordinary actions
+  // and for every entry recorded before the fair shuffle shipped.
+  kind : opt LogKind;
   seat : opt nat8;
   "text" : text;
   phase : Phase;
   // The player's total bet on this street after the action, or the amount won/returned.
   amount : nat64;
+};
+// Typed protocol events in a hand's log.
+type LogKind = variant {
+  // Event 0 of every fair hand, written before any card is dealt.
+  ShuffleCommitted : record { commitment : blob };
+  ShuffleRevealed;
+  HandVerificationAvailable;
 };
 type MedalDef = record {
   id : text;
@@ -703,6 +757,10 @@ type TableView = record {
   // this many chips); 0 means the table's normal minimum.
   my_min_buy_in : nat64;
   max_raise_to : nat64;
+  // The `BP-FAIR-v1` commitment of the hand being played (`hand_no`), shown
+  // while it is played so players can keep a copy. A hash of a random
+  // seed: it reveals nothing about the cards. `None` between hands.
+  commitment : opt blob;
 };
 type ThrowEvent = record {
   id : nat64;
@@ -894,7 +952,8 @@ service : (opt InitArgs) -> {
   get_deposit_info : () -> (DepositInfo) query;
   get_dms : (principal, nat64) -> (vec ChatMessage) query;
   get_friends : () -> (vec FriendInfo) query;
-  // Full replay of a hand you played in.
+  // Full replay of a hand you played in. Its shuffle seed (which reveals every
+  // card dealt) is included from 24 hours after the hand ended.
   get_hand : (nat64) -> (opt HandRecord) query;
   // Your most recent hands, newest first.
   get_hand_history : (nat32) -> (vec HandSummary) query;
@@ -925,6 +984,10 @@ service : (opt InitArgs) -> {
   // Views of several tables at once (for multi-tabling); unknown ids are skipped.
   get_tables : (vec nat64) -> (vec TableView) query;
   get_tournament : (nat64) -> (opt TournamentDetail) query;
+  // Your hands with shuffle evidence that are still verifiable (until 7 days
+  // after their seed is revealed), newest first; `limit` is capped at 100.
+  // Reaches further back than `get_hand_history`.
+  get_verifiable_hands : (nat32, nat32) -> (vec HandSummary) query;
   // The caller's welcome bonus: the offer, or its progress.
   get_welcome : () -> (WelcomeView) query;
   // `GET /metrics` (Prometheus text, without the house's money figures) and

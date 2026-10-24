@@ -244,6 +244,11 @@ export const idlFactory = ({ IDL }) => {
     'avatar' : IDL.Text,
     'online' : IDL.Bool,
   });
+  const LogKind = IDL.Variant({
+    'ShuffleCommitted' : IDL.Record({ 'commitment' : IDL.Vec(IDL.Nat8) }),
+    'ShuffleRevealed' : IDL.Null,
+    'HandVerificationAvailable' : IDL.Null,
+  });
   const Phase = IDL.Variant({
     'Flop' : IDL.Null,
     'Turn' : IDL.Null,
@@ -253,10 +258,30 @@ export const idlFactory = ({ IDL }) => {
     'PreFlop' : IDL.Null,
   });
   const LogEntry = IDL.Record({
+    'kind' : IDL.Opt(LogKind),
     'seat' : IDL.Opt(IDL.Nat8),
     'text' : IDL.Text,
     'phase' : Phase,
     'amount' : IDL.Nat64,
+  });
+  const FairEvidence = IDL.Record({
+    'reveal_at' : IDL.Nat64,
+    'scheme' : IDL.Text,
+    'hand_no' : IDL.Nat64,
+    'dealt_order' : IDL.Vec(IDL.Nat8),
+    'table_id' : IDL.Nat64,
+    'jackpot_bps' : IDL.Opt(IDL.Nat16),
+    'jackpot_cap' : IDL.Opt(IDL.Nat64),
+    'rake_bps' : IDL.Opt(IDL.Nat16),
+    'rake_cap' : IDL.Opt(IDL.Nat64),
+    'version' : IDL.Nat16,
+    'canister' : IDL.Principal,
+    'revealed_seed' : IDL.Opt(IDL.Vec(IDL.Nat8)),
+    'burns' : IDL.Nat8,
+    'outcome' : IDL.Text,
+    'params' : IDL.Vec(IDL.Nat8),
+    'commitment' : IDL.Vec(IDL.Nat8),
+    'settled_at' : IDL.Nat64,
   });
   const HandPlayer = IDL.Record({
     'won' : IDL.Nat64,
@@ -272,6 +297,7 @@ export const idlFactory = ({ IDL }) => {
     'log' : IDL.Vec(LogEntry),
     'pot' : IDL.Nat64,
     'small_blind' : IDL.Nat64,
+    'fair' : IDL.Opt(FairEvidence),
     'hand_no' : IDL.Nat64,
     'rake' : IDL.Nat64,
     'time' : IDL.Nat64,
@@ -287,10 +313,12 @@ export const idlFactory = ({ IDL }) => {
     'id' : IDL.Nat64,
     'net' : IDL.Int64,
     'pot' : IDL.Nat64,
+    'reveal_at' : IDL.Opt(IDL.Nat64),
     'my_cards' : IDL.Vec(IDL.Nat8),
     'time' : IDL.Nat64,
     'currency' : Currency,
     'board' : IDL.Vec(IDL.Nat8),
+    'outcome' : IDL.Opt(IDL.Text),
     'table_name' : IDL.Text,
   });
   const JackpotPayout = IDL.Record({
@@ -578,6 +606,7 @@ export const idlFactory = ({ IDL }) => {
     'auto_sit_waiting' : IDL.Nat32,
     'my_min_buy_in' : IDL.Nat64,
     'max_raise_to' : IDL.Nat64,
+    'commitment' : IDL.Opt(IDL.Vec(IDL.Nat8)),
   });
   const Standing = IDL.Record({
     'table' : IDL.Opt(IDL.Nat64),
@@ -824,6 +853,11 @@ export const idlFactory = ({ IDL }) => {
     'get_tournament' : IDL.Func(
         [IDL.Nat64],
         [IDL.Opt(TournamentDetail)],
+        ['query'],
+      ),
+    'get_verifiable_hands' : IDL.Func(
+        [IDL.Nat32, IDL.Nat32],
+        [IDL.Vec(HandSummary)],
         ['query'],
       ),
     'get_welcome' : IDL.Func([], [WelcomeView], ['query']),

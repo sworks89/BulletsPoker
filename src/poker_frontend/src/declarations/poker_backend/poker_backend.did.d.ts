@@ -158,6 +158,58 @@ export interface DepositInfo {
   'account' : Account,
 }
 export interface EarnedMedal { 'id' : string, 'earned_at' : bigint }
+/**
+ * The `BP-FAIR-v1` evidence published with a recorded hand.
+ * 
+ * The stored copy (private stable state) holds the seed in `revealed_seed`;
+ * `get_hand` returns it only from `reveal_at` on, and only to the hand's
+ * players. Nothing here says whether the hand verifies: that is the
+ * verifier's job.
+ */
+export interface FairEvidence {
+  'reveal_at' : bigint,
+  /**
+   * Where the seed came from (`fair::RANDOMNESS_SCHEME`).
+   */
+  'scheme' : string,
+  'hand_no' : bigint,
+  /**
+   * Seat of each hole card in the order it was dealt (both rounds).
+   */
+  'dealt_order' : Uint8Array | number[],
+  'table_id' : bigint,
+  /**
+   * The table's jackpot drop rate when the hand was dealt (basis points).
+   */
+  'jackpot_bps' : [] | [number],
+  'jackpot_cap' : [] | [bigint],
+  /**
+   * The table's rake rate when the hand was dealt (basis points); `None`
+   * for hands dealt before the rates were recorded.
+   */
+  'rake_bps' : [] | [number],
+  'rake_cap' : [] | [bigint],
+  'version' : number,
+  'canister' : Principal,
+  /**
+   * The 32-byte seed, in a reply only once `now >= reveal_at`.
+   */
+  'revealed_seed' : [] | [Uint8Array | number[]],
+  /**
+   * Burn cards used: one before each street dealt.
+   */
+  'burns' : number,
+  /**
+   * `"settled"` or `"voided: <reason>"`.
+   */
+  'outcome' : string,
+  /**
+   * `fair::params_bytes(version)`.
+   */
+  'params' : Uint8Array | number[],
+  'commitment' : Uint8Array | number[],
+  'settled_at' : bigint,
+}
 export interface FriendInfo {
   'id' : Principal,
   'username' : string,
@@ -202,6 +254,12 @@ export interface HandRecord {
   'log' : Array<LogEntry>,
   'pot' : bigint,
   'small_blind' : bigint,
+  /**
+   * The `BP-FAIR-v1` evidence: `None` for hands dealt before the fair
+   * shuffle. Stored with the seed; `get_hand` hides the seed until
+   * `reveal_at`.
+   */
+  'fair' : [] | [FairEvidence],
   'hand_no' : bigint,
   'rake' : bigint,
   'time' : bigint,
@@ -233,10 +291,20 @@ export interface HandSummary {
    */
   'net' : bigint,
   'pot' : bigint,
+  /**
+   * When the hand's shuffle seed is published to its players (ns); `None`
+   * for hands dealt before the fair shuffle.
+   */
+  'reveal_at' : [] | [bigint],
   'my_cards' : Uint8Array | number[],
   'time' : bigint,
   'currency' : Currency,
   'board' : Uint8Array | number[],
+  /**
+   * The shuffle evidence outcome: `"settled"` or `"voided: <reason>"`;
+   * `None` for hands dealt before the fair shuffle.
+   */
+  'outcome' : [] | [string],
   'table_name' : string,
 }
 export interface HouseStats {
@@ -354,6 +422,11 @@ export interface LedgerOp {
  * One line of a hand's action log, used for hand histories and replays.
  */
 export interface LogEntry {
+  /**
+   * Set on protocol events (see `crate::fair`); `None` for ordinary actions
+   * and for every entry recorded before the fair shuffle shipped.
+   */
+  'kind' : [] | [LogKind],
   'seat' : [] | [number],
   'text' : string,
   'phase' : Phase,
@@ -362,6 +435,17 @@ export interface LogEntry {
    */
   'amount' : bigint,
 }
+/**
+ * Typed protocol events in a hand's log.
+ */
+export type LogKind = {
+    /**
+     * Event 0 of every fair hand, written before any card is dealt.
+     */
+    'ShuffleCommitted' : { 'commitment' : Uint8Array | number[] }
+  } |
+  { 'ShuffleRevealed' : null } |
+  { 'HandVerificationAvailable' : null };
 export interface MedalDef {
   'id' : string,
   'icon' : string,
@@ -994,6 +1078,12 @@ export interface TableView {
    */
   'my_min_buy_in' : bigint,
   'max_raise_to' : bigint,
+  /**
+   * The `BP-FAIR-v1` commitment of the hand being played (`hand_no`), shown
+   * while it is played so players can keep a copy. A hash of a random
+   * seed: it reveals nothing about the cards. `None` between hands.
+   */
+  'commitment' : [] | [Uint8Array | number[]],
 }
 export interface ThrowEvent {
   'id' : bigint,
@@ -1275,7 +1365,8 @@ export interface _SERVICE {
   'get_dms' : ActorMethod<[Principal, bigint], Array<ChatMessage>>,
   'get_friends' : ActorMethod<[], Array<FriendInfo>>,
   /**
-   * Full replay of a hand you played in.
+   * Full replay of a hand you played in. Its shuffle seed (which reveals every
+   * card dealt) is included from 24 hours after the hand ended.
    */
   'get_hand' : ActorMethod<[bigint], [] | [HandRecord]>,
   /**
@@ -1327,6 +1418,12 @@ export interface _SERVICE {
    */
   'get_tables' : ActorMethod<[BigUint64Array | bigint[]], Array<TableView>>,
   'get_tournament' : ActorMethod<[bigint], [] | [TournamentDetail]>,
+  /**
+   * Your hands with shuffle evidence that are still verifiable (until 7 days
+   * after their seed is revealed), newest first; `limit` is capped at 100.
+   * Reaches further back than `get_hand_history`.
+   */
+  'get_verifiable_hands' : ActorMethod<[number, number], Array<HandSummary>>,
   /**
    * The caller's welcome bonus: the offer, or its progress.
    */

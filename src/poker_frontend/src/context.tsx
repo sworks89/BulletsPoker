@@ -23,7 +23,9 @@ export type View =
   | { name: 'history' }
   | { name: 'tournaments'; id?: bigint }
   | { name: 'profile' }
-  | { name: 'admin' };
+  | { name: 'admin' }
+  /** Offline check of a hand evidence file; needs no sign-in. */
+  | { name: 'verify' };
 
 interface Toast {
   id: number;

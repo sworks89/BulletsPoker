@@ -409,3 +409,201 @@ fn ingress_filter_moderation_and_metrics() {
     let log: R<Vec<poker_backend::moderation::AuditEntry>> = env.query(env.admin, "admin_audit_log", encode_one(10u32).unwrap());
     assert_eq!(log.unwrap().len(), 6, "moderator changes, the mute, the suspension and its lifting");
 }
+
+// ------------------------------------------------------------ provably fair
+
+/// True when `needle` occurs anywhere in `hay`.
+fn contains_bytes(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Raw candid reply bytes of the public table views, as seen by `who`.
+fn raw_views(env: &Env, who: Principal, table: u64) -> Vec<Vec<u8>> {
+    let q = |m: &str, a: Vec<u8>| env.pic.query_call(env.poker, who, m, a).unwrap();
+    vec![
+        q("get_table", encode_one(table).unwrap()),
+        q("get_tables", encode_one(vec![table]).unwrap()),
+        q("list_tables", encode_args(()).unwrap()),
+    ]
+}
+
+fn hand_record(env: &Env, who: Principal, id: u64) -> Option<poker_backend::state::HandRecord> {
+    env.query(who, "get_hand", encode_one(id).unwrap())
+}
+
+#[test]
+fn fair_hand_is_verifiable_and_the_seed_stays_hidden_until_reveal() {
+    use poker_backend::fair::{shuffle_deck, verify_commitment, HandId};
+    use poker_backend::state::HandSummary;
+    use poker_backend::table::Phase;
+
+    let Some(env) = Env::new() else { return };
+    let (alice, bob, carol) = (principal(1), principal(2), principal(3));
+    for (p, n) in [(alice, "alice"), (bob, "bob"), (carol, "carol")] {
+        env.register(p, n);
+    }
+    env.approve_and_deposit(alice, 2 * E8S).unwrap();
+    env.approve_and_deposit(bob, 2 * E8S).unwrap();
+
+    let table = 5u64;
+    for (k, who) in [alice, bob].into_iter().enumerate() {
+        let r: R<()> = env.update(who, "join_table", encode_args((table, k as u8, 40_000_000u64, None::<String>)).unwrap());
+        r.unwrap();
+    }
+    env.run_timers(3);
+    let first = env.table(alice, table);
+    assert_eq!(first.hand_no, 1, "the first hand is dealt");
+    // The live hand's commitment is in the table view, the same for a watcher.
+    let shown = first.commitment.clone().expect("the commitment is shown while the hand is played");
+    assert_eq!(env.table(carol, table).commitment.as_ref(), Some(&shown));
+
+    // Check the hand down to a showdown, capturing every public view on the way.
+    let mut captured: Vec<Vec<u8>> = vec![];
+    for step in 0..40 {
+        for who in [alice, bob, carol] {
+            captured.extend(raw_views(&env, who, table));
+        }
+        let v = env.table(alice, table);
+        if v.hand_no != 1 || matches!(v.phase, Phase::HandOver | Phase::Waiting) {
+            break;
+        }
+        let seat = v.to_act.expect("someone to act") as usize;
+        let s = v.seats[seat].as_ref().unwrap();
+        let action = if s.bet < v.current_bet { Action::Call } else { Action::Check };
+        let r: R<()> = env.update(s.player, "act", encode_args((table, action)).unwrap());
+        r.unwrap();
+        assert!(step < 39, "hand did not finish");
+    }
+
+    let history: Vec<HandSummary> = env.query(alice, "get_hand_history", encode_one(5u32).unwrap());
+    let id = history.first().expect("the hand is in the history").id;
+
+    // Before the reveal: participants get the evidence but not the seed; others get nothing.
+    let rec = hand_record(&env, alice, id).expect("participant sees the hand");
+    let fair = rec.fair.clone().expect("fair evidence");
+    assert!(fair.revealed_seed.is_none(), "seed must be absent before reveal_at");
+    assert_eq!(fair.commitment.len(), 32);
+    assert_eq!(fair.outcome, "settled");
+    assert_eq!(fair.canister, env.poker);
+    assert!(fair.reveal_at >= fair.settled_at + 24 * 3600 * 1_000_000_000);
+    assert!(hand_record(&env, bob, id).unwrap().fair.unwrap().revealed_seed.is_none());
+    assert!(hand_record(&env, carol, id).is_none(), "non-participants get no record");
+    assert_eq!(rec.board.len(), 5, "checked down to the river");
+    assert_eq!(fair.burns, 3);
+    assert_eq!(fair.commitment, shown, "the record publishes the commitment shown at the table");
+    // The hand is listed as verifiable for its players only, pending until reveal_at.
+    let listed: Vec<HandSummary> = env.query(alice, "get_verifiable_hands", encode_args((0u32, 500u32)).unwrap());
+    assert_eq!(listed.iter().map(|h| h.id).collect::<Vec<_>>(), vec![id]);
+    assert_eq!(listed[0].reveal_at, Some(fair.reveal_at));
+    let none: Vec<HandSummary> = env.query(carol, "get_verifiable_hands", encode_args((0u32, 500u32)).unwrap());
+    assert!(none.is_empty());
+
+    // 24 hours and a second later the seed is revealed to participants only.
+    env.pic.advance_time(Duration::from_secs(24 * 3600 + 1));
+    env.pic.tick();
+    env.pic.tick();
+    assert!(hand_record(&env, carol, id).is_none());
+    let revealed = hand_record(&env, alice, id).unwrap().fair.unwrap();
+    let seed: [u8; 32] = revealed.revealed_seed.clone().expect("seed revealed after reveal_at").try_into().expect("32 bytes");
+    assert_eq!(hand_record(&env, bob, id).unwrap().fair.unwrap().revealed_seed.as_deref(), Some(&seed[..]));
+
+    // Rebuild the deck from the evidence alone.
+    let hand = HandId { canister: revealed.canister, table_id: revealed.table_id, hand_no: revealed.hand_no };
+    let commitment: [u8; 32] = revealed.commitment.clone().try_into().unwrap();
+    assert!(verify_commitment(&seed, &hand, revealed.version, &commitment));
+    let mut wrong = seed;
+    wrong[0] ^= 1;
+    assert!(!verify_commitment(&wrong, &hand, revealed.version, &commitment));
+    let mut deck = shuffle_deck(&seed, &hand, revealed.version).unwrap();
+
+    let mut hole: std::collections::BTreeMap<u8, Vec<u8>> = Default::default();
+    for &seat in &revealed.dealt_order {
+        hole.entry(seat).or_default().push(deck.pop().unwrap());
+    }
+    assert_eq!(revealed.dealt_order.len(), 4);
+    let record = hand_record(&env, alice, id).unwrap();
+    let mut matched = 0;
+    for p in &record.players {
+        if !p.cards.is_empty() {
+            assert_eq!(hole[&p.seat], p.cards, "hole cards of seat {}", p.seat);
+            matched += 1;
+        }
+    }
+    assert!(matched >= 1, "at least the viewer's own cards were checked");
+    // Board: a burn before the flop, the turn and the river.
+    let mut board = vec![];
+    for n in [3, 1, 1] {
+        deck.pop();
+        for _ in 0..n {
+            board.push(deck.pop().unwrap());
+        }
+    }
+    assert_eq!(revealed.burns, 3);
+    assert_eq!(record.board, board);
+
+    // While the hand was live, no public view carried the seed (raw or hex).
+    assert!(captured.len() >= 9);
+    let hex: String = seed.iter().map(|b| format!("{b:02x}")).collect();
+    for (i, bytes) in captured.iter().enumerate() {
+        assert!(!contains_bytes(bytes, &seed), "view {i} leaked the seed");
+        assert!(!contains_bytes(bytes, hex.as_bytes()), "view {i} leaked the seed in hex");
+    }
+    // Sanity: the check is able to see the seed when it is there.
+    let bytes = env.pic.query_call(env.poker, alice, "get_hand", encode_one(id).unwrap()).unwrap();
+    assert!(contains_bytes(&bytes, &seed));
+}
+
+/// Cycles per hand, measured and printed (never asserted: PocketIC pricing
+/// is not mainnet pricing).
+#[test]
+fn cycle_cost_per_hand() {
+    let Some(env) = Env::new() else { return };
+    const N: u64 = 25;
+    let (alice, bob) = (principal(1), principal(2));
+    env.register(alice, "alice");
+    env.register(bob, "bob");
+    env.approve_and_deposit(alice, 2 * E8S).unwrap();
+    env.approve_and_deposit(bob, 2 * E8S).unwrap();
+    let table = 5u64;
+    for (k, who) in [alice, bob].into_iter().enumerate() {
+        let r: R<()> = env.update(who, "join_table", encode_args((table, k as u8, 40_000_000u64, None::<String>)).unwrap());
+        r.unwrap();
+    }
+
+    let t0 = env.pic.get_time().as_nanos_since_unix_epoch();
+    let c0 = env.pic.cycle_balance(env.poker);
+    let mut steps = 0u64;
+    let mut dealt = 0u64;
+    while dealt < N {
+        env.run_timers(1);
+        steps += 1;
+        assert!(steps < 100 * N, "hands are not being dealt");
+        let v = env.table(alice, table);
+        if v.hand_no > dealt {
+            if let Some(seat) = v.to_act {
+                dealt = v.hand_no;
+                let who = v.seats[seat as usize].as_ref().unwrap().player;
+                let r: R<()> = env.update(who, "act", encode_args((table, Action::Fold)).unwrap());
+                r.unwrap();
+            }
+        }
+    }
+    let c1 = env.pic.cycle_balance(env.poker);
+    let elapsed = env.pic.get_time().as_nanos_since_unix_epoch() - t0;
+    let played = c0 - c1;
+
+    // Idle: the same number of one-second steps, nobody seated.
+    for who in [alice, bob] {
+        let r: R<LeaveResult> = env.update(who, "leave_table", encode_one(table).unwrap());
+        r.unwrap();
+    }
+    env.run_timers(2);
+    let i0 = env.pic.cycle_balance(env.poker);
+    env.run_timers(steps);
+    let i1 = env.pic.cycle_balance(env.poker);
+    let idle = i0 - i1;
+
+    eprintln!("CYCLES hands={N} steps={steps} simulated_ns={elapsed}");
+    eprintln!("CYCLES play_total={played} idle_same_steps={idle}");
+    eprintln!("CYCLES per_hand_net={} per_hand_gross={}", played.saturating_sub(idle) / N as u128, played / N as u128);
+}

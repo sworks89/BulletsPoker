@@ -2,3 +2,4 @@
 *.sh text eol=lf
 *.did text eol=lf
 src/poker_frontend/src/declarations/** text eol=lf
+src/poker_frontend/src/fair/vectors.json text eol=lf

@@ -87,7 +87,8 @@ A social Texas Hold'em poker room that runs entirely on the [Internet Computer](
 ```
 src/
   poker_backend/            Rust canister (ic-cdk 0.20)
-    src/cards.rs            deck, SHA-256 seeded Fisher–Yates shuffle, 7-card evaluator
+    src/cards.rs            cards, pre-BP-FAIR-v1 legacy shuffle, 7-card evaluator
+    src/fair.rs             BP-FAIR-v1 shuffle commitment and seeded shuffle (docs/provably-fair.md)
     src/table.rs            Hold'em state machine (pure logic, heavily tested)
     src/state.rs            users, wallet balances, store, gifts, chat, friends, tables, player rooms
     src/tournament.rs       sit-and-go's and scheduled tournaments: blinds, payouts, balancing
@@ -172,7 +173,7 @@ Only controllers can call the `admin_*` methods (create tables, add recurring to
 ## Before taking real money: read this
 
 - **Legal.** Real-money poker is regulated or prohibited in many jurisdictions. Get legal advice, and expect to need licensing, geo-blocking, age verification/KYC and responsible-gambling tooling before launching for real ICP. A play-chips mode is an easy addition if you want a free-to-play launch first.
-- **Card secrecy.** Hole cards are returned by query calls, which a single replica answers. A malicious node could see them. The planned fix is to encrypt each player's hole cards with [vetKeys](https://internetcomputer.org/docs/building-apps/network-features/vetkeys/introduction) so only the player's browser can decrypt them.
+- **Card secrecy.** Hole cards are returned by query calls, which a single replica answers. A malicious node could see them. The planned fix is to encrypt each player's hole cards with [vetKeys](https://internetcomputer.org/docs/building-apps/network-features/vetkeys/introduction) so only the player's browser can decrypt them. Even then the canister holds each hand's seed and deck in plaintext state while it is played. The verifiable shuffle and hand history let players check after a hand that the cards matched the seed behind the commitment shown at the table before the flop, but not that nobody saw them during play. See the protocol ([docs/provably-fair.md](docs/provably-fair.md)) and its threat model ([docs/provably-fair-threat-model.md](docs/provably-fair-threat-model.md)).
 - **Collusion and bots.** Players can report collusion, but there is no automated collusion or bot detection yet.
 - **Scale.** All state is in one canister and serialized on upgrade. That is fine to start with. For growth, move to `ic-stable-structures` and shard tables across canisters.
 - **Audit.** Have the wallet and ledger code professionally audited before holding meaningful funds.

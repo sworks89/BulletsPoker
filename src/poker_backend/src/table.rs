@@ -5,8 +5,10 @@
 //! canister moves chips between a player's wallet balance and their stack on
 //! `sit`/`stand`/`top_up`, and sweeps `rake_accrued` into the house treasury.
 
-use crate::cards::{best_hand, category, shuffled_deck, Card, HandScore};
+use crate::cards::{best_hand, category, Card, HandScore};
+use crate::fair::{self, HandId};
 use candid::{CandidType, Deserialize, Principal};
+use sha2::{Digest, Sha256};
 
 /// What a table plays for: real ICP (1 chip = 1 e8s) or free play chips.
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -86,7 +88,7 @@ impl Phase {
     }
 }
 
-#[derive(CandidType, Deserialize, Clone, Debug)]
+#[derive(CandidType, Deserialize, Clone)]
 pub struct Seat {
     pub player: Principal,
     pub stack: u64,
@@ -209,6 +211,204 @@ pub struct LogEntry {
     pub text: String,
     /// The player's total bet on this street after the action, or the amount won/returned.
     pub amount: u64,
+    /// Set on protocol events (see `crate::fair`); `None` for ordinary actions
+    /// and for every entry recorded before the fair shuffle shipped.
+    pub kind: Option<LogKind>,
+}
+
+/// Typed protocol events in a hand's log.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum LogKind {
+    /// Event 0 of every fair hand, written before any card is dealt.
+    ShuffleCommitted { commitment: [u8; 32] },
+    ShuffleRevealed,
+    HandVerificationAvailable,
+}
+
+/// Where a committed hand ended up.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum FairOutcome {
+    /// Commitment built, cards not yet dealt.
+    Committed,
+    /// Hole cards dealt; the hand is being played.
+    Dealt,
+    /// The hand reached `HandOver`.
+    Settled,
+    /// The hand can no longer finish (for example its table was removed).
+    Voided(String),
+}
+
+/// The `BP-FAIR-v1` record of one hand. The seed stays secret until the
+/// reveal: it is never returned by a query, logged or formatted (`Debug`
+/// leaves it out).
+///
+/// **Never return from an endpoint: contains the secret seed.** `CandidType`
+/// is derived only so the heap snapshot can persist it; publish evidence
+/// through a separate type built at reveal time (`candid_tests` fails if this
+/// type reaches the public interface).
+#[derive(CandidType, Deserialize, Clone)]
+pub struct FairHand {
+    pub hand: HandId,
+    pub version: u16,
+    seed: [u8; 32],
+    pub commitment: [u8; 32],
+    pub committed_at: u64,
+    pub outcome: FairOutcome,
+    /// Seat of each hole card in the order it was popped from the deck: both
+    /// rounds, so `2 × players` entries. `None` until dealt, and for hands
+    /// committed before this field existed.
+    pub dealt_order: Option<Vec<u8>>,
+    /// The table's rake and jackpot rates when the hand was dealt, so the
+    /// settlement can be recomputed even if the table's config changes later.
+    /// `None` for hands dealt before this field existed.
+    pub rates: Option<FeeRates>,
+}
+
+/// Rake and bad-beat jackpot rates a hand was played at (see `TableConfig`).
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct FeeRates {
+    pub rake_bps: u16,
+    pub rake_cap: u64,
+    pub jackpot_bps: u16,
+    pub jackpot_cap: u64,
+}
+
+/// How long after a hand ends its seed stays hidden from the hand's players
+/// (owner decision D1): long enough that nobody studies an opponent's folded
+/// cards during the same session.
+pub const REVEAL_DELAY_NS: u64 = 24 * 3600 * 1_000_000_000;
+
+/// The `BP-FAIR-v1` evidence published with a recorded hand.
+///
+/// The stored copy (private stable state) holds the seed in `revealed_seed`;
+/// `get_hand` returns it only from `reveal_at` on, and only to the hand's
+/// players. Nothing here says whether the hand verifies: that is the
+/// verifier's job.
+#[derive(CandidType, Deserialize, Clone, PartialEq, Eq)]
+pub struct FairEvidence {
+    pub version: u16,
+    /// Where the seed came from (`fair::RANDOMNESS_SCHEME`).
+    pub scheme: String,
+    pub canister: Principal,
+    pub table_id: u64,
+    pub hand_no: u64,
+    pub commitment: Vec<u8>,
+    /// The 32-byte seed, in a reply only once `now >= reveal_at`.
+    pub revealed_seed: Option<Vec<u8>>,
+    /// `fair::params_bytes(version)`.
+    pub params: Vec<u8>,
+    /// `"settled"` or `"voided: <reason>"`.
+    pub outcome: String,
+    /// Seat of each hole card in the order it was dealt (both rounds).
+    pub dealt_order: Vec<u8>,
+    /// Burn cards used: one before each street dealt.
+    pub burns: u8,
+    pub settled_at: u64,
+    pub reveal_at: u64,
+    /// The table's rake rate when the hand was dealt (basis points); `None`
+    /// for hands dealt before the rates were recorded.
+    pub rake_bps: Option<u16>,
+    pub rake_cap: Option<u64>,
+    /// The table's jackpot drop rate when the hand was dealt (basis points).
+    pub jackpot_bps: Option<u16>,
+    pub jackpot_cap: Option<u64>,
+}
+
+impl std::fmt::Debug for FairEvidence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hex: String = self.commitment.iter().map(|b| format!("{b:02x}")).collect();
+        f.debug_struct("FairEvidence")
+            .field("version", &self.version)
+            .field("scheme", &self.scheme)
+            .field("canister", &self.canister)
+            .field("table_id", &self.table_id)
+            .field("hand_no", &self.hand_no)
+            .field("commitment", &hex)
+            .field("revealed_seed", &self.revealed_seed.as_ref().map(|_| "<secret>"))
+            .field("outcome", &self.outcome)
+            .field("dealt_order", &self.dealt_order)
+            .field("burns", &self.burns)
+            .field("settled_at", &self.settled_at)
+            .field("reveal_at", &self.reveal_at)
+            .field("rake_bps", &self.rake_bps)
+            .field("rake_cap", &self.rake_cap)
+            .field("jackpot_bps", &self.jackpot_bps)
+            .field("jackpot_cap", &self.jackpot_cap)
+            .finish()
+    }
+}
+
+impl FairHand {
+    /// Commits to `seed` for `hand` under the current shuffle version.
+    pub fn new(seed: [u8; 32], hand: HandId, now: u64) -> Self {
+        let version = fair::SHUFFLE_VERSION;
+        let commitment = fair::commitment(&seed, &hand, version);
+        FairHand { hand, version, seed, commitment, committed_at: now, outcome: FairOutcome::Committed, dealt_order: None, rates: None }
+    }
+
+    /// The evidence to store with the record of this hand, which ended at
+    /// `settled_at` with `board_len` board cards. Holds the seed: the caller
+    /// stores it privately and `get_hand` hides it until `reveal_at`.
+    /// `None` while the hand is still live.
+    pub fn evidence(&self, board_len: usize, settled_at: u64) -> Option<FairEvidence> {
+        let outcome = match &self.outcome {
+            FairOutcome::Settled => "settled".to_string(),
+            FairOutcome::Voided(reason) => format!("voided: {reason}"),
+            FairOutcome::Committed | FairOutcome::Dealt => return None,
+        };
+        // `deal_board` burns once per street: flop (3 cards), turn, river.
+        let burns = match board_len {
+            0 => 0,
+            1..=3 => 1,
+            4 => 2,
+            _ => 3,
+        };
+        Some(FairEvidence {
+            version: self.version,
+            scheme: fair::RANDOMNESS_SCHEME.to_string(),
+            canister: self.hand.canister,
+            table_id: self.hand.table_id,
+            hand_no: self.hand.hand_no,
+            commitment: self.commitment.to_vec(),
+            revealed_seed: Some(self.seed.to_vec()),
+            params: fair::params_bytes(self.version),
+            outcome,
+            dealt_order: self.dealt_order.clone().unwrap_or_default(),
+            burns,
+            settled_at,
+            reveal_at: settled_at.saturating_add(REVEAL_DELAY_NS),
+            rake_bps: self.rates.as_ref().map(|r| r.rake_bps),
+            rake_cap: self.rates.as_ref().map(|r| r.rake_cap),
+            jackpot_bps: self.rates.as_ref().map(|r| r.jackpot_bps),
+            jackpot_cap: self.rates.as_ref().map(|r| r.jackpot_cap),
+        })
+    }
+
+    pub(crate) fn seed_hash(&self) -> [u8; 32] {
+        Sha256::digest(self.seed).into()
+    }
+}
+
+impl std::fmt::Debug for FairHand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hex: String = self.commitment.iter().map(|b| format!("{b:02x}")).collect();
+        f.debug_struct("FairHand")
+            .field("hand", &self.hand)
+            .field("version", &self.version)
+            .field("seed", &"<secret>")
+            .field("commitment", &hex)
+            .field("committed_at", &self.committed_at)
+            .field("outcome", &self.outcome)
+            .field("dealt_order", &self.dealt_order)
+            .field("rates", &self.rates)
+            .finish()
+    }
+}
+
+/// Fixed canister principal for tests that deal with a chosen seed.
+#[cfg(test)]
+pub(crate) fn test_canister() -> Principal {
+    Principal::from_slice(&[0xCA, 0xFE, 1])
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -224,7 +424,7 @@ pub struct HandResult {
     pub jackpot_drop: u64,
 }
 
-#[derive(CandidType, Deserialize, Clone, Debug)]
+#[derive(CandidType, Deserialize, Clone)]
 pub struct Table {
     pub id: u64,
     pub config: TableConfig,
@@ -270,6 +470,134 @@ pub struct Table {
     pub empty_since: Option<u64>,
     /// Watchers waiting to be seated automatically when a seat opens, in order.
     pub auto_sit: Option<std::collections::VecDeque<AutoSitEntry>>,
+    /// The fair-shuffle record of the current (or just finished) hand. Holds
+    /// the secret seed: never expose it through a view.
+    pub fair: Option<FairHand>,
+    /// SHA-256 of the last seed dealt here, so a seed is never used twice in a row.
+    pub last_seed_hash: Option<[u8; 32]>,
+}
+
+/// Shows how many cards a hidden list holds, never which.
+struct HiddenCards(usize);
+
+impl std::fmt::Debug for HiddenCards {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<{} cards hidden>", self.0)
+    }
+}
+
+/// Like a derived `Debug`, but the undealt deck and hole cards are hidden:
+/// during a hand they are as secret as the seed.
+impl std::fmt::Debug for Table {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Exhaustive, so a new field has to be placed here deliberately.
+        let Table {
+            id,
+            config,
+            seats,
+            button,
+            phase,
+            deck,
+            board,
+            to_act,
+            current_bet,
+            min_raise,
+            hand_no,
+            action_deadline,
+            phase_changed_at,
+            last_result,
+            rake_accrued,
+            jackpot_accrued,
+            log,
+            tournament_mode,
+            time_bank_active,
+            bank_started_at,
+            turn_deadline,
+            action_seq,
+            bank_deadline,
+            game,
+            copy_number,
+            empty_since,
+            auto_sit,
+            fair,
+            last_seed_hash,
+        } = self;
+        f.debug_struct("Table")
+            .field("id", id)
+            .field("config", config)
+            .field("seats", seats)
+            .field("button", button)
+            .field("phase", phase)
+            .field("deck", &HiddenCards(deck.len()))
+            .field("board", board)
+            .field("to_act", to_act)
+            .field("current_bet", current_bet)
+            .field("min_raise", min_raise)
+            .field("hand_no", hand_no)
+            .field("action_deadline", action_deadline)
+            .field("phase_changed_at", phase_changed_at)
+            .field("last_result", last_result)
+            .field("rake_accrued", rake_accrued)
+            .field("jackpot_accrued", jackpot_accrued)
+            .field("log", log)
+            .field("tournament_mode", tournament_mode)
+            .field("time_bank_active", time_bank_active)
+            .field("bank_started_at", bank_started_at)
+            .field("turn_deadline", turn_deadline)
+            .field("action_seq", action_seq)
+            .field("bank_deadline", bank_deadline)
+            .field("game", game)
+            .field("copy_number", copy_number)
+            .field("empty_since", empty_since)
+            .field("auto_sit", auto_sit)
+            .field("fair", fair)
+            .field("last_seed_hash", &last_seed_hash.map(|_| "<hash>"))
+            .finish()
+    }
+}
+
+/// Like a derived `Debug`, but hole cards are hidden.
+impl std::fmt::Debug for Seat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Seat {
+            player,
+            stack,
+            hole,
+            in_hand,
+            folded,
+            all_in,
+            bet,
+            committed,
+            acted,
+            sitting_out,
+            sitting_out_since,
+            left,
+            last_action,
+            time_bank,
+            last_faced,
+            owes_bb,
+            leaving,
+        } = self;
+        f.debug_struct("Seat")
+            .field("player", player)
+            .field("stack", stack)
+            .field("hole", &HiddenCards(hole.len()))
+            .field("in_hand", in_hand)
+            .field("folded", folded)
+            .field("all_in", all_in)
+            .field("bet", bet)
+            .field("committed", committed)
+            .field("acted", acted)
+            .field("sitting_out", sitting_out)
+            .field("sitting_out_since", sitting_out_since)
+            .field("left", left)
+            .field("last_action", last_action)
+            .field("time_bank", time_bank)
+            .field("last_faced", last_faced)
+            .field("owes_bb", owes_bb)
+            .field("leaving", leaving)
+            .finish()
+    }
 }
 
 /// A watcher waiting for a seat at a table.
@@ -319,6 +647,8 @@ impl Table {
             copy_number: None,
             empty_since: None,
             auto_sit: None,
+            fair: None,
+            last_seed_hash: None,
         }
     }
 
@@ -333,6 +663,7 @@ impl Table {
             seat: seat.map(|i| i as u8),
             text: text.into(),
             amount,
+            kind: None,
         });
     }
 
@@ -604,11 +935,31 @@ impl Table {
         removed
     }
 
-    /// Starts a new hand with a shuffled deck derived from `seed`.
-    pub fn start_hand(&mut self, seed: [u8; 32], now: u64) -> Result<(), String> {
+    /// Starts the next hand from a fresh commitment: the `ShuffleCommitted`
+    /// event is logged first, then the `BP-FAIR-v1` deck is dealt. `fair`
+    /// must be for this table's next hand (`hand_no + 1`). Every check runs
+    /// before anything changes, so a refused commitment leaves no trace and
+    /// its seed is simply dropped.
+    pub fn start_hand(&mut self, mut fair: FairHand, now: u64) -> Result<(), String> {
         if !matches!(self.phase, Phase::Waiting | Phase::HandOver) {
             return Err("Hand already in progress".into());
         }
+        let next = self.hand_no + 1;
+        if fair.hand.table_id != self.id || fair.hand.hand_no != next {
+            return Err("The shuffle commitment is for a different hand".into());
+        }
+        if fair.outcome != FairOutcome::Committed || !fair::verify_commitment(&fair.seed, &fair.hand, fair.version, &fair.commitment) {
+            return Err("Invalid shuffle commitment".into());
+        }
+        if self.fair.as_ref().is_some_and(|f| f.hand.table_id == self.id && f.hand.hand_no == next) {
+            return Err("This hand already has a shuffle commitment".into());
+        }
+        let seed_hash = fair.seed_hash();
+        if self.last_seed_hash == Some(seed_hash) {
+            return Err("Shuffle seed already used".into());
+        }
+        // Pure: computing the deck now means nothing can fail once the commitment is written.
+        let deck = fair::shuffle_deck(&fair.seed, &fair.hand, fair.version)?;
         self.settle_after_hand();
         if self.eligible_count() < 2 {
             return Err("Need at least two players".into());
@@ -633,11 +984,24 @@ impl Table {
             }
         }
         self.hand_no += 1;
-        self.deck = shuffled_deck(seed);
         self.board.clear();
         self.last_result = None;
         self.log.clear();
         self.phase = Phase::PreFlop;
+        // Event 0: the commitment, before any card leaves the deck.
+        self.log.push(LogEntry {
+            phase: self.phase,
+            seat: None,
+            text: "Shuffle committed".into(),
+            amount: 0,
+            kind: Some(LogKind::ShuffleCommitted { commitment: fair.commitment }),
+        });
+        self.deck = deck;
+        self.last_seed_hash = Some(seed_hash);
+        // The rates this hand is played at, published with its evidence.
+        let c = &self.config;
+        fair.rates = Some(FeeRates { rake_bps: c.rake_bps, rake_cap: c.rake_cap, jackpot_bps: c.jackpot_bps, jackpot_cap: c.jackpot_cap });
+        self.fair = Some(fair);
 
         let in_hand = |s: &Seat| s.in_hand;
         self.button = self.next_where(self.button, in_hand).unwrap();
@@ -679,16 +1043,22 @@ impl Table {
         }
 
         // Deal two cards to each player, one at a time, starting left of the button.
+        let mut dealt_order = vec![];
         for _ in 0..2 {
             let mut i = self.button;
             loop {
                 i = self.next_where(i, in_hand).unwrap();
                 let c = self.deck.pop().unwrap();
                 self.seat_mut(i).hole.push(c);
+                dealt_order.push(i as u8);
                 if i == self.button {
                     break;
                 }
             }
+        }
+        if let Some(f) = self.fair.as_mut() {
+            f.outcome = FairOutcome::Dealt;
+            f.dealt_order = Some(dealt_order);
         }
 
         self.set_phase(Phase::PreFlop, now);
@@ -847,8 +1217,17 @@ impl Table {
             return (0, 0);
         }
         let pct = |amount: u64, bps: u16, cap: u64| ((amount as u128 * bps as u128 / 10_000) as u64).min(cap);
-        let rake = pct(pot, self.config.rake_bps, self.config.rake_cap);
-        let drop = pct(pot - rake, self.config.jackpot_bps, self.config.jackpot_cap);
+        // The rates recorded when this hand was dealt (published in its
+        // evidence), so a config change mid-hand cannot change its rake.
+        let c = &self.config;
+        let r = self.fair.as_ref().and_then(|f| f.rates.clone()).unwrap_or(FeeRates {
+            rake_bps: c.rake_bps,
+            rake_cap: c.rake_cap,
+            jackpot_bps: c.jackpot_bps,
+            jackpot_cap: c.jackpot_cap,
+        });
+        let rake = pct(pot, r.rake_bps, r.rake_cap);
+        let drop = pct(pot - rake, r.jackpot_bps, r.jackpot_cap);
         self.rake_accrued += rake;
         self.jackpot_accrued += drop;
         (rake, drop)
@@ -1044,7 +1423,20 @@ impl Table {
         for s in self.seats.iter_mut().flatten() {
             s.bet = 0;
         }
+        if let Some(f) = self.fair.as_mut().filter(|f| f.hand.hand_no == self.hand_no) {
+            if matches!(f.outcome, FairOutcome::Committed | FairOutcome::Dealt) {
+                f.outcome = FairOutcome::Settled;
+            }
+        }
         self.set_phase(Phase::HandOver, now);
+    }
+
+    /// Test-only: deals the next hand from a chosen seed through the real
+    /// commit-then-deal path.
+    #[cfg(test)]
+    pub fn start_hand_with_seed(&mut self, seed: [u8; 32], now: u64) -> Result<(), String> {
+        let hand = HandId { canister: test_canister(), table_id: self.id, hand_no: self.hand_no + 1 };
+        self.start_hand(FairHand::new(seed, hand, now), now)
     }
 
     // ---------------------------------------------------------------- actions
@@ -1308,7 +1700,7 @@ mod tests {
         let mut t = Table::new(1, config());
         t.sit(p(1), 0, 500).unwrap();
         t.sit(p(2), 1, 500).unwrap();
-        t.start_hand([1; 32], 0).unwrap();
+        t.start_hand_with_seed([1; 32], 0).unwrap();
         // Heads-up: button posts the small blind and acts first preflop.
         let btn = t.button;
         assert_eq!(t.seat(btn).bet, 5);
@@ -1327,7 +1719,7 @@ mod tests {
         for k in 0..4 {
             t.sit(p(k + 1), k, 300).unwrap();
         }
-        t.start_hand([9; 32], 0).unwrap();
+        t.start_hand_with_seed([9; 32], 0).unwrap();
         assert_eq!(t.phase, Phase::PreFlop);
         // Everyone calls, big blind checks.
         while t.phase == Phase::PreFlop {
@@ -1355,7 +1747,7 @@ mod tests {
         for k in 0..3 {
             t.sit(p(k + 1), k, 500).unwrap();
         }
-        t.start_hand([3; 32], 0).unwrap();
+        t.start_hand_with_seed([3; 32], 0).unwrap();
         let utg = to_act_player(&t);
         assert!(t.act(&utg, Action::Raise(15), 1).is_err()); // below min raise to 20
         t.act(&utg, Action::Raise(30), 1).unwrap();
@@ -1377,13 +1769,13 @@ mod tests {
         let mut t = Table::new(1, config());
         t.sit(p(1), 0, 500).unwrap();
         t.sit(p(2), 1, 500).unwrap();
-        t.start_hand([1; 32], 0).unwrap();
+        t.start_hand_with_seed([1; 32], 0).unwrap();
         while t.phase.is_betting() {
             let pl = to_act_player(&t);
             t.act(&pl, Action::Call, 1).unwrap();
         }
         let texts: Vec<&str> = t.log.iter().map(|e| e.text.as_str()).collect();
-        assert_eq!(&texts[..2], &["Small blind", "Big blind"]);
+        assert_eq!(&texts[..3], &["Shuffle committed", "Small blind", "Big blind"]);
         for street in ["Flop", "Turn", "River"] {
             assert!(texts.contains(&street), "{texts:?}");
         }
@@ -1404,7 +1796,7 @@ mod tests {
         let mut hands = 0;
         // p1 is away: they keep being dealt in and auto-folded until they bust.
         while t.seats[0].as_ref().is_some_and(|s| s.stack > 0) && hands < 100 {
-            t.start_hand([hands as u8; 32], now).unwrap();
+            t.start_hand_with_seed([hands as u8; 32], now).unwrap();
             while t.phase.is_betting() {
                 if t.seat(t.to_act.unwrap()).player == p(1) {
                     assert_eq!(t.action_deadline, now, "absent player acts immediately");
@@ -1426,7 +1818,7 @@ mod tests {
         t.sit(p(1), 0, 100).unwrap();
         t.sit(p(2), 1, 300).unwrap();
         t.sit(p(3), 2, 600).unwrap();
-        t.start_hand([5; 32], 0).unwrap();
+        t.start_hand_with_seed([5; 32], 0).unwrap();
         let start_total = total(&t);
         while t.phase.is_betting() {
             let pl = to_act_player(&t);
@@ -1454,7 +1846,7 @@ mod tests {
         t.sit(p(1), 1, 1000).unwrap();
         t.sit(p(2), 2, 1000).unwrap();
         t.sit(p(4), 3, p4_buy).unwrap();
-        t.start_hand([9; 32], 0).unwrap();
+        t.start_hand_with_seed([9; 32], 0).unwrap();
         while t.phase == Phase::PreFlop {
             let pl = to_act_player(&t);
             if t.act(&pl, Action::Check, 1).is_err() {
@@ -1473,14 +1865,14 @@ mod tests {
         t.sit(p(1), 0, 500).unwrap();
         t.sit(p(2), 1, 500).unwrap();
         assert!(!t.seat(0).owes_bb, "first players of a new game don't owe");
-        t.start_hand([1; 32], 0).unwrap();
+        t.start_hand_with_seed([1; 32], 0).unwrap();
         t.sit(p(3), 2, 500).unwrap();
         assert!(t.seat(2).owes_bb);
         while t.phase.is_betting() {
             let pl = to_act_player(&t);
             t.act(&pl, Action::Fold, 1).unwrap();
         }
-        t.start_hand([2; 32], 10 * NANOS).unwrap();
+        t.start_hand_with_seed([2; 32], 10 * NANOS).unwrap();
         assert!(!t.seat(2).owes_bb);
         assert_eq!(t.seat(2).committed, 10, "a full big blind, whatever the position");
     }
@@ -1526,7 +1918,7 @@ mod tests {
         t.sit(p(1), 0, 100).unwrap();
         t.sit(p(2), 1, 1000).unwrap();
         t.sit(p(3), 2, 1000).unwrap();
-        t.start_hand([3; 32], 0).unwrap();
+        t.start_hand_with_seed([3; 32], 0).unwrap();
         // p1 aces, p2 kings, p3 queens; a dry board (deck pops from the end).
         t.seats[0].as_mut().unwrap().hole = vec![card(12, 3), card(12, 2)];
         t.seats[1].as_mut().unwrap().hole = vec![card(11, 0), card(11, 1)];
@@ -1556,12 +1948,12 @@ mod tests {
         let mut t = Table::new(1, cfg);
         t.sit(p(1), 0, 500).unwrap();
         t.sit(p(2), 1, 500).unwrap();
-        t.start_hand([2; 32], 0).unwrap();
+        t.start_hand_with_seed([2; 32], 0).unwrap();
         let pl = to_act_player(&t);
         t.act(&pl, Action::Fold, 1).unwrap();
         assert_eq!(t.rake_accrued, 0);
 
-        t.start_hand([4; 32], 10 * NANOS).unwrap();
+        t.start_hand_with_seed([4; 32], 10 * NANOS).unwrap();
         while t.phase.is_betting() {
             let pl = to_act_player(&t);
             if t.phase == Phase::PreFlop {
@@ -1585,13 +1977,13 @@ mod tests {
         let mut t = Table::new(1, cfg);
         t.sit(p(1), 0, 1_000).unwrap();
         t.sit(p(2), 1, 1_000).unwrap();
-        t.start_hand([2; 32], 0).unwrap();
+        t.start_hand_with_seed([2; 32], 0).unwrap();
         // Preflop fold: no flop, no drop.
         let pl = to_act_player(&t);
         t.act(&pl, Action::Fold, 1).unwrap();
         assert_eq!((t.rake_accrued, t.jackpot_accrued), (0, 0));
 
-        t.start_hand([4; 32], 10 * NANOS).unwrap();
+        t.start_hand_with_seed([4; 32], 10 * NANOS).unwrap();
         let first = to_act_player(&t);
         t.act(&first, Action::Raise(500), 1).unwrap();
         let second = to_act_player(&t);
@@ -1615,7 +2007,7 @@ mod tests {
         for k in 0..3 {
             t.sit(p(k + 1), k, 200).unwrap();
         }
-        t.start_hand([8; 32], 0).unwrap();
+        t.start_hand_with_seed([8; 32], 0).unwrap();
         let actor = t.to_act.unwrap();
         // A player who is not to act stands up: they stay in the hand.
         let leaver = (0..3).find(|&i| i != actor).unwrap();
@@ -1651,7 +2043,7 @@ mod tests {
         for k in 0..3 {
             t.sit(p(k + 1), k, 200).unwrap();
         }
-        t.start_hand([8; 32], 0).unwrap();
+        t.start_hand_with_seed([8; 32], 0).unwrap();
         let lp = to_act_player(&t);
         let committed = t.seat(t.to_act.unwrap()).committed;
         t.act(&lp, Action::Fold, 1).unwrap();
@@ -1671,7 +2063,7 @@ mod tests {
         t.sit(p(1), 0, 100).unwrap();
         t.sit(p(2), 1, 500).unwrap();
         t.sit(p(3), 2, 1000).unwrap();
-        t.start_hand([3; 32], 0).unwrap();
+        t.start_hand_with_seed([3; 32], 0).unwrap();
         // p1 queens, p2 aces, p3 kings; a dry board (deck pops from the end).
         t.seats[0].as_mut().unwrap().hole = vec![card(10, 0), card(10, 1)];
         t.seats[1].as_mut().unwrap().hole = vec![card(12, 3), card(12, 2)];
@@ -1701,7 +2093,7 @@ mod tests {
         for k in 0..3 {
             t.sit(p(k + 1), k, 200).unwrap();
         }
-        t.start_hand([8; 32], 0).unwrap();
+        t.start_hand_with_seed([8; 32], 0).unwrap();
         // Preflop, facing the big blind: folded.
         let first = to_act_player(&t);
         let i = t.to_act.unwrap();
@@ -1731,7 +2123,7 @@ mod tests {
         let mut t = Table::new(1, config());
         t.sit(p(1), 0, 200).unwrap();
         t.sit(p(2), 1, 200).unwrap();
-        t.start_hand([6; 32], 0).unwrap();
+        t.start_hand_with_seed([6; 32], 0).unwrap();
         assert!(t.handle_timeout(1).is_none());
         let late = to_act_player(&t);
         // The clock runs out, then the time bank (30s) kicks in.
@@ -1752,7 +2144,7 @@ mod tests {
     fn time_out_on_the_flop(t: &mut Table) -> (Principal, u64) {
         t.sit(p(1), 0, 200).unwrap();
         t.sit(p(2), 1, 200).unwrap();
-        t.start_hand([6; 32], 0).unwrap();
+        t.start_hand_with_seed([6; 32], 0).unwrap();
         let a = to_act_player(t);
         t.act(&a, Action::Call, 1).unwrap();
         let b = to_act_player(t);
@@ -1813,7 +2205,7 @@ mod tests {
         let mut t = Table::new(1, config());
         t.sit(p(1), 0, 200).unwrap();
         t.sit(p(2), 1, 200).unwrap();
-        t.start_hand([6; 32], 0).unwrap();
+        t.start_hand_with_seed([6; 32], 0).unwrap();
         let who = to_act_player(&t);
         let deadline = t.action_deadline;
         for k in 1..=10 {
@@ -1835,7 +2227,7 @@ mod tests {
         let mut t = Table::new(1, config());
         t.sit(p(1), 0, 200).unwrap();
         t.sit(p(2), 1, 200).unwrap();
-        t.start_hand([6; 32], 0).unwrap();
+        t.start_hand_with_seed([6; 32], 0).unwrap();
         let who = to_act_player(&t);
         let deadline = t.action_deadline;
         for k in 0..5 {
@@ -1856,7 +2248,7 @@ mod tests {
         let mut t = Table::new(1, config());
         t.sit(p(1), 0, 200).unwrap();
         t.sit(p(2), 1, 200).unwrap();
-        t.start_hand([6; 32], 0).unwrap();
+        t.start_hand_with_seed([6; 32], 0).unwrap();
         let who = to_act_player(&t);
         let i = t.seat_of(&who).unwrap();
         assert!(t.handle_timeout(20 * NANOS).is_none());
@@ -1925,7 +2317,7 @@ mod tests {
         t.sit(p(1), 0, 200).unwrap();
         t.sit(p(2), 1, 200).unwrap();
         t.sit(p(3), 2, 200).unwrap();
-        t.start_hand([6; 32], 0).unwrap();
+        t.start_hand_with_seed([6; 32], 0).unwrap();
         t.stand(&p(1), 1).unwrap();
         assert!(t.sit(p(1), 3, 100).is_err(), "their old seat is still in this hand");
         while t.phase.is_betting() {
@@ -1942,7 +2334,7 @@ mod tests {
         let mut t = Table::new(1, config());
         t.sit(p(1), 0, 200).unwrap();
         t.sit(p(2), 1, 200).unwrap();
-        t.start_hand([6; 32], 0).unwrap();
+        t.start_hand_with_seed([6; 32], 0).unwrap();
         let first = to_act_player(&t);
         let i = t.seat_of(&first).unwrap();
         assert_eq!(t.seat(i).time_bank, TIME_BANK_MAX, "starts full (refill is capped)");
@@ -1959,7 +2351,7 @@ mod tests {
                 t.act(&p, Action::Call, 33 * NANOS).unwrap();
             }
         }
-        t.start_hand([7; 32], 40 * NANOS).unwrap();
+        t.start_hand_with_seed([7; 32], 40 * NANOS).unwrap();
         assert_eq!(t.seat(i).time_bank, TIME_BANK_MAX - 10 * NANOS);
         // Not sitting out: someone who used it but acted in time keeps playing.
         assert!(!t.seat(i).sitting_out);
@@ -1982,7 +2374,7 @@ mod tests {
             }
             let mut seed = [0u8; 32];
             seed[..4].copy_from_slice(&h.to_le_bytes());
-            t.start_hand(seed, now).unwrap();
+            t.start_hand_with_seed(seed, now).unwrap();
             while t.phase.is_betting() {
                 k = k.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
                 let i = t.to_act.unwrap();
@@ -2017,7 +2409,7 @@ mod tests {
         for k in 0..3 {
             t.sit(p(k + 1), k, 500).unwrap();
         }
-        t.start_hand([3; 32], 0).unwrap();
+        t.start_hand_with_seed([3; 32], 0).unwrap();
         t
     }
 
@@ -2055,7 +2447,7 @@ mod tests {
         let second = to_act_player(&t);
         t.act(&second, Action::Fold, 1).unwrap();
         assert_eq!(t.phase, Phase::HandOver);
-        t.start_hand([4; 32], 2).unwrap();
+        t.start_hand_with_seed([4; 32], 2).unwrap();
         let pl = to_act_player(&t);
         let err = t.act_for(&pl, Action::Fold, 3, Some(old)).unwrap_err();
         assert!(err.contains(STALE), "{err}");
@@ -2126,5 +2518,252 @@ mod tests {
         t.seat_mut(c_seat).sitting_out = true;
         t.handle_timeout(t.action_deadline + 1);
         assert_ne!(seq(&t), s2);
+    }
+
+    // ------------------------------------------------------ fair shuffle
+
+    use crate::fair::{self, HandId};
+
+    /// A seed with no repeated bytes, easy to spot in serialised output.
+    fn odd_seed(tag: u8) -> [u8; 32] {
+        std::array::from_fn(|i| tag ^ (i as u8).wrapping_mul(37).wrapping_add(11))
+    }
+
+    fn hand_for(t: &Table, hand_no: u64) -> HandId {
+        HandId { canister: test_canister(), table_id: t.id, hand_no }
+    }
+
+    fn fold_to_hand_over(t: &mut Table, now: u64) {
+        while t.phase.is_betting() {
+            let pl = to_act_player(t);
+            t.act(&pl, Action::Fold, now).unwrap();
+        }
+    }
+
+    fn three_seated() -> Table {
+        let mut t = Table::new(3, config());
+        for k in 0..3 {
+            t.sit(p(k + 1), k, 500).unwrap();
+        }
+        t
+    }
+
+    #[test]
+    fn commitment_is_logged_before_any_card() {
+        let mut t = three_seated();
+        let seed = odd_seed(1);
+        // The hand being dealt is number 1: `HandId.hand_no` is the number after the increment.
+        let hand = hand_for(&t, 1);
+        let fh = FairHand::new(seed, hand.clone(), 7);
+        let commitment = fh.commitment;
+        t.start_hand(fh, 7).unwrap();
+        assert_eq!(t.hand_no, 1);
+
+        // Event 0 is the commitment; nothing before it, no other typed events.
+        assert_eq!(t.log[0].kind, Some(LogKind::ShuffleCommitted { commitment }));
+        assert_eq!(t.log[0].seat, None);
+        assert!(t.log[1..].iter().all(|e| e.kind.is_none()));
+        let f = t.fair.as_ref().unwrap();
+        assert_eq!(f.hand, hand);
+        assert_eq!(f.version, fair::SHUFFLE_VERSION);
+        assert_eq!(f.commitment, commitment);
+        assert_eq!(f.committed_at, 7);
+        assert_eq!(f.outcome, FairOutcome::Dealt);
+        assert!(fair::verify_commitment(&seed, &hand, fair::SHUFFLE_VERSION, &commitment));
+
+        // The cards are the v1 deck for hand 1, popped from the end, one at a
+        // time starting left of the button, for two rounds.
+        let mut deck = fair::shuffle_deck(&seed, &hand, fair::SHUFFLE_VERSION).unwrap();
+        let mut order = vec![];
+        let mut i = t.button;
+        loop {
+            i = t.next_where(i, |s| s.in_hand).unwrap();
+            order.push(i);
+            if i == t.button {
+                break;
+            }
+        }
+        assert_eq!(order.len(), 3);
+        for round in 0..2 {
+            for &i in &order {
+                assert_eq!(t.seat(i).hole[round], deck.pop().unwrap());
+            }
+        }
+        assert_eq!(t.deck, deck);
+        // The board burns one card before the flop.
+        let c = to_act_player(&t);
+        t.act(&c, Action::Call, 8).unwrap();
+        let c = to_act_player(&t);
+        t.act(&c, Action::Call, 8).unwrap();
+        let c = to_act_player(&t);
+        t.act(&c, Action::Check, 8).unwrap();
+        assert_eq!(t.phase, Phase::Flop);
+        deck.pop();
+        let flop: Vec<Card> = (0..3).map(|_| deck.pop().unwrap()).collect();
+        assert_eq!(t.board, flop);
+    }
+
+    #[test]
+    fn cannot_deal_without_a_commitment() {
+        let mut t = three_seated();
+        let seed = odd_seed(2);
+        // For the wrong hand number (the old pre-increment number, or one ahead).
+        assert!(t.start_hand(FairHand::new(seed, hand_for(&t, 0), 0), 0).is_err());
+        assert!(t.start_hand(FairHand::new(seed, hand_for(&t, 2), 0), 0).is_err());
+        // For another table.
+        let other = HandId { table_id: 99, ..hand_for(&t, 1) };
+        assert!(t.start_hand(FairHand::new(seed, other, 0), 0).is_err());
+        // A commitment that doesn't match the seed.
+        let mut forged = FairHand::new(seed, hand_for(&t, 1), 0);
+        forged.commitment[0] ^= 1;
+        assert!(t.start_hand(forged, 0).is_err());
+        // An outcome other than freshly committed.
+        let mut stale = FairHand::new(seed, hand_for(&t, 1), 0);
+        stale.outcome = FairOutcome::Settled;
+        assert!(t.start_hand(stale, 0).is_err());
+
+        // Nothing was dealt or stored.
+        assert_eq!(t.hand_no, 0);
+        assert_eq!(t.phase, Phase::Waiting);
+        assert!(t.fair.is_none() && t.last_seed_hash.is_none());
+        assert!(t.deck.is_empty() && t.log.is_empty());
+        assert!(t.seats.iter().flatten().all(|s| s.hole.is_empty() && s.bet == 0));
+    }
+
+    #[test]
+    fn cannot_overwrite_a_commitment() {
+        let mut t = three_seated();
+        t.start_hand(FairHand::new(odd_seed(3), hand_for(&t, 1), 0), 0).unwrap();
+        // Mid-hand, a second commitment for the same hand is refused.
+        assert!(t.start_hand(FairHand::new(odd_seed(4), hand_for(&t, 1), 1), 1).is_err());
+        fold_to_hand_over(&mut t, 1);
+        assert_eq!(t.fair.as_ref().unwrap().outcome, FairOutcome::Settled);
+
+        // A commitment for hand 2 is already held (say, a racing request won).
+        let held = FairHand::new(odd_seed(5), hand_for(&t, 2), 2);
+        let held_commitment = held.commitment;
+        t.fair = Some(held);
+        let later = 10 * NANOS;
+        assert!(t.start_hand(FairHand::new(odd_seed(6), hand_for(&t, 2), later), later).is_err());
+        assert_eq!(t.fair.as_ref().unwrap().commitment, held_commitment);
+        assert_eq!(t.hand_no, 1);
+        assert_eq!(t.phase, Phase::HandOver);
+    }
+
+    #[test]
+    fn same_seed_twice_is_refused() {
+        let mut t = three_seated();
+        let seed = odd_seed(7);
+        t.start_hand(FairHand::new(seed, hand_for(&t, 1), 0), 0).unwrap();
+        let first = t.fair.as_ref().unwrap().commitment;
+        fold_to_hand_over(&mut t, 1);
+        let later = 10 * NANOS;
+        // Same seed for the next hand: refused, even though its commitment differs.
+        let again = FairHand::new(seed, hand_for(&t, 2), later);
+        assert_ne!(again.commitment, first);
+        assert!(t.start_hand(again, later).is_err());
+        assert_eq!(t.hand_no, 1);
+        assert_eq!(t.fair.as_ref().unwrap().commitment, first);
+        // A fresh seed deals.
+        t.start_hand(FairHand::new(odd_seed(8), hand_for(&t, 2), later), later).unwrap();
+        assert_eq!(t.hand_no, 2);
+    }
+
+    #[test]
+    fn fair_hand_debug_hides_the_seed() {
+        let seed = odd_seed(9);
+        let mut t = three_seated();
+        t.start_hand(FairHand::new(seed, hand_for(&t, 1), 0), 0).unwrap();
+        let dbg = format!("{t:?}");
+        assert!(dbg.contains("FairHand"));
+        assert!(!dbg.contains(&format!("{seed:?}")));
+        let hex: String = seed.iter().map(|b| format!("{b:02x}")).collect();
+        assert!(!dbg.contains(&hex));
+    }
+
+    #[test]
+    fn fair_state_round_trips_through_candid() {
+        let mut t = three_seated();
+        t.start_hand(FairHand::new(odd_seed(10), hand_for(&t, 1), 0), 0).unwrap();
+        let bytes = candid::encode_one(&t).unwrap();
+        let back: Table = candid::decode_one(&bytes).unwrap();
+        let (a, b) = (t.fair.as_ref().unwrap(), back.fair.as_ref().unwrap());
+        assert_eq!((a.hand.clone(), a.commitment, a.seed, a.outcome.clone()), (b.hand.clone(), b.commitment, b.seed, b.outcome.clone()));
+        assert_eq!(t.last_seed_hash, back.last_seed_hash);
+        assert_eq!(back.log[0].kind, t.log[0].kind);
+    }
+
+    #[test]
+    fn rake_uses_the_rates_the_hand_was_dealt_with() {
+        let mut cfg = config();
+        cfg.rake_bps = 1000; // 10%
+        cfg.rake_cap = 1_000;
+        let mut t = Table::new(1, cfg);
+        t.sit(p(1), 0, 500).unwrap();
+        t.sit(p(2), 1, 500).unwrap();
+        t.start_hand_with_seed(odd_seed(60), 0).unwrap();
+        let mut changed = false;
+        while t.phase.is_betting() {
+            if t.phase == Phase::Flop && !changed {
+                // The table's rates change mid-hand: this hand keeps the old ones.
+                t.config.rake_bps = 0;
+                t.config.rake_cap = 0;
+                changed = true;
+            }
+            let pl = to_act_player(&t);
+            if t.act(&pl, Action::Check, 1).is_err() {
+                t.act(&pl, Action::Call, 1).unwrap();
+            }
+        }
+        assert!(changed);
+        let r = t.last_result.as_ref().unwrap();
+        assert_eq!((r.pot, r.rake), (20, 2), "10% of 20, at the rates recorded at the deal");
+        assert_eq!(t.rake_accrued, 2);
+        assert_eq!(t.fair.as_ref().unwrap().rates.as_ref().unwrap().rake_bps, 1000);
+    }
+
+    /// Seats in hand, starting left of `button`, as the evidence verifier expects.
+    fn left_of_button(t: &Table) -> Vec<u8> {
+        let n = t.seats.len();
+        (1..=n).map(|k| (t.button + k) % n).filter(|&i| t.seats[i].as_ref().is_some_and(|s| s.in_hand)).map(|i| i as u8).collect()
+    }
+
+    #[test]
+    fn dealt_order_skips_sitting_out_seats_and_follows_a_vacated_button() {
+        let mut t = Table::new(1, config());
+        for k in 0..4 {
+            t.sit(p(k + 1), k, 500).unwrap();
+        }
+        t.seat_mut(2).sitting_out = true;
+        t.start_hand_with_seed(odd_seed(61), 0).unwrap();
+        let order = t.fair.as_ref().unwrap().dealt_order.clone().unwrap();
+        let round = left_of_button(&t);
+        assert!(!round.contains(&2), "a sitting-out seat is not dealt in");
+        assert_eq!(round.len(), 3);
+        assert_eq!(order, [round.clone(), round].concat());
+        fold_to_hand_over(&mut t, 1);
+
+        // The button's player leaves: the button seat is empty when the next hand starts.
+        let old_button = t.button;
+        let leaver = t.seat(old_button).player;
+        assert!(matches!(t.stand(&leaver, 2 * NANOS).unwrap(), StandOutcome::Left(_)));
+        assert!(t.seats[old_button].is_none());
+        t.start_hand_with_seed(odd_seed(62), 20 * NANOS).unwrap();
+        let order = t.fair.as_ref().unwrap().dealt_order.clone().unwrap();
+        let round = left_of_button(&t);
+        assert_ne!(t.button, old_button);
+        assert!(!round.contains(&(old_button as u8)) && !round.contains(&2));
+        assert_eq!(round.len(), 2);
+        assert_eq!(*round.last().unwrap() as usize, t.button, "the button is dealt last");
+        assert_eq!(order, [round.clone(), round].concat());
+        // Every hole card follows dealt_order: pop from the end of the seeded deck.
+        let mut deck = fair::shuffle_deck(&odd_seed(62), &hand_for(&t, t.hand_no), 1).unwrap();
+        let mut holes: std::collections::BTreeMap<u8, Vec<Card>> = Default::default();
+        for seat in &order {
+            holes.entry(*seat).or_default().push(deck.pop().unwrap());
+        }
+        for (seat, cards) in holes {
+            assert_eq!(t.seat(seat as usize).hole, cards);
+        }
     }
 }
