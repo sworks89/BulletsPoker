@@ -11,17 +11,20 @@ is revealed. It is enough to write an independent verifier.
 ## What this does and does not show
 
 When a hand's seed is revealed, a verifier can check two things: the
-seed matches the commitment published before the first card was dealt, and the
-deck that was dealt is exactly the one this protocol derives from that seed.
-This means the shuffle cannot have been swapped after the commitment without
-detection.
+seed matches the commitment the canister logged as entry 0 of the hand's log
+before the first card was dealt, and the deck that was dealt is exactly the one
+this protocol derives from that seed. This means the shuffle cannot have been
+swapped after the commitment without detection. Players do not see the
+commitment during the hand; it is published with the hand record afterwards.
 
 It is **not** mental poker, and it keeps no card secret from the canister. The canister holds the
 seed and the deck in its state while the hand is played. A verifier must still
-trust the Internet Computer subnet that runs the canister, and the
-management canister's `raw_rand`, which supplies the seed. The threat model in
-`docs/superpowers/specs/2026-10-23-provably-fair-requirements.md` (Phase 9)
-lists the remaining trust assumptions.
+trust the canister's code, the Internet Computer subnet that runs it, and the
+management canister's `raw_rand`, which supplies the seed. `raw_rand` output
+carries no public proof of its origin. The
+[threat model](provably-fair-threat-model.md) lists what this verifiable
+shuffle and hand history do and do not protect against, and the remaining
+trust assumptions.
 
 ## Constants
 
@@ -165,6 +168,7 @@ nobody else:
 | `dealt_order` | the seat of each hole card in the order it was popped (both rounds, `2 × players` entries) |
 | `burns` | burn cards used: one before each street that was dealt |
 | `settled_at`, `reveal_at` | when the hand ended; `reveal_at = settled_at + 24 h` |
+| `rake_bps`, `rake_cap`, `jackpot_bps`, `jackpot_cap` | the table's rake and jackpot-drop rates when the hand was dealt; empty for hands dealt before the rates were recorded |
 
 The seed is withheld for 24 hours after the hand ends, because it reveals every
 card dealt, including folded and mucked ones. Hands that were dealt but never
