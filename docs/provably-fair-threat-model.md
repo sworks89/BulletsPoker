@@ -90,18 +90,32 @@ during play. The in-app verifier states both limits in every report: the
    `revealed_seed` until `now >= reveal_at`, where
    `reveal_at = settled_at + 24 h` (`REVEAL_DELAY_NS` in `table.rs`).
 
-**Players do not see the commitment during the hand.** `TableView` and
-`HandResult` carry no log and no evidence. Players first see the commitment
-when they open the hand record after the hand ends, 24 hours before the seed.
-"Commitment before the deal" therefore means the canister's own log order,
-which the verifier checks (`ShuffleCommitted` must be entry 0). It is not an
-externally timestamped event.
+**Players see the commitment during the hand.** While a hand is being played
+(PreFlop to River), `TableView.commitment` carries that hand's commitment, for
+every viewer except outsiders of a private room; it is `None` between hands.
+The app stores what it saw, keyed by canister, table and hand number, in the
+browser's localStorage (`fair/seen.ts`, last 500 hands, first value kept). The
+verifier compares the published commitment with that copy
+(`verifyHand`, `observedCommitment`): a different value fails the commitment
+check, and the panel shows "Commitment seen at the table: yes/no".
 
-**Players can keep their own copy of the commitment.** The Verify panel shows
-the commitment with a Copy button before the reveal
-(`components/HandVerification.tsx`). A player who copies it then can check that
-it has not changed later. The app does not keep this copy for them, and
-"Export evidence" is offered only once the seed is revealed.
+- With a copy, the commitment is shown to have been fixed before the flop and
+  before any betting the player saw. The hole cards are dealt in the same step
+  that records the commitment, so the first view a player can get already has
+  them out; a copy does not prove timing relative to the hole-card deal beyond
+  the canister's log.
+- Without a copy (another device, cleared storage, a hand the player never
+  watched), "commitment before the deal" means the canister's own log order,
+  which the verifier checks (`ShuffleCommitted` must be entry 0). It is not an
+  externally timestamped event. The report lists it as taken on trust
+  ("commitment timing") and warns.
+
+**Players can keep their own copy of the commitment.** Besides the automatic
+copy, the Verify panel shows the commitment with a Copy button before the
+reveal (`components/HandVerification.tsx`), and "Export evidence" works before
+the reveal too: the file then holds the record, the player's own cards and the
+commitment without the seed, and the verifier reports it as pending
+(INCOMPLETE).
 
 ## Threats
 
@@ -195,6 +209,9 @@ Each threat gets one of three classes, given the trust assumptions above:
   `fromEvidenceJson` (`fair/evidence.ts`) only checks it against the file's own
   `evidence.canister` field.
   - So anyone can fabricate a file that verifies offline, or one that fails.
+  - The offline screen shows the canister the file names, warns when it is not
+    this app's game canister, and says: "This file is not signed: a passing
+    check shows the file is consistent, not that the game produced it."
   - An evidence file proves only that it is internally consistent. It does not
     prove that this canister produced it.
 
@@ -362,9 +379,10 @@ Stopping the canister also stops every hand in progress.
 - **A controller can change anything.** A controller can install any code, and
   that code can read or rewrite stable memory, including stored records, seeds
   and evidence.
-- **The only copy outside the canister is what a player kept.** That is either
-  the commitment copied before the reveal, or the evidence file exported after
-  it (`toEvidenceJson`, `fair/evidence.ts`).
+- **The only copy outside the canister is what a player kept.** That is the
+  commitment the app stored when it was shown at the table, a commitment copied
+  by hand, or an evidence file exported before or after the reveal
+  (`toEvidenceJson`, `fair/evidence.ts`).
   - The export is the player's own copy. With it they can check that a later
     record still matches.
   - The export is not signed, so it proves nothing to a third party (see
@@ -475,25 +493,31 @@ automated collusion detection.
   past the 200,000-record hard cap.
   - The storage used at the cap has not been measured. A rough estimate is
     0.6–1 GB of stable memory.
-- **History list length.** A player's history keeps only their last 50 hand
-  ids (`HISTORY_PER_USER`), and the History screen asks for 50.
-  - A player who plays more than 50 hands in 24 hours can no longer open the
-    older ones from the app.
-  - The records still exist, and `get_hand(id)` still returns them.
+- **History list length.** The recent-hands list keeps only the last 50 hand
+  ids (`HISTORY_PER_USER`). Hands with evidence are also listed separately
+  (`get_verifiable_hands`, History > "Ready to verify"): a per-player list in
+  stable memory (`stores.fair_hands`) kept until `reveal_at + 7 days`, pruned
+  on write and filtered on read.
+  - That list holds at most 5,000 hands per player (`FAIR_HANDS_PER_USER`);
+    past it the oldest go even inside their window. That is about one hand
+    every 2.3 minutes for 8 days.
+  - A record removed early by the 200,000-record hard cap drops out of the
+    list.
 - **`dealt_order` is checked against the record.** The verifier checks that
   `dealt_order` is the dealt seats twice, starting left of the button. It uses
   the record's own `button` and player list, which the canister supplies.
-  - No test covers `dealt_order` with a sitting-out seat or a dead button.
-- **`reveal_at` is taken from the evidence.** The verifier does not check that
-  `reveal_at == settled_at + 24 h`. Evidence with a far-future `reveal_at`
-  stays "pending reveal" (INCOMPLETE) until then. Pending is judged by the
+  - `dealt_order_skips_sitting_out_seats_and_follows_a_vacated_button`
+    (`table.rs`) covers a sitting-out seat and a button seat vacated between
+    hands. The engine moves the button to the next seat in the hand, so there
+    is no dead button as such.
+- **`reveal_at` is taken from the evidence.** The verifier warns when
+  `reveal_at != settled_at + 24 h` but does not fail the hand: the reveal time
+  does not change which cards were dealt. Evidence with a far-future
+  `reveal_at` stays "pending reveal" (INCOMPLETE) until then. Pending is judged by the
   local clock, in the browser as well as offline.
 - **Hidden hole cards are not compared.** The record blanks other players'
   unshown cards for each viewer. Only visible cards are checked against the
   rebuilt deck.
-- **The Verify panel does not show per-check detail.** The report's per-check
-  `detail` strings are built but not rendered. The panel shows each check's
-  status, the errors, the warnings and the trusted items.
 - **Exported evidence is unsigned**, and `get_hand` replies are not certified
   (threats 3 and 8).
 - **The candid guard is a deny-list of names** (`candid_tests`, `lib.rs`;
