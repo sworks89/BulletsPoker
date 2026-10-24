@@ -608,6 +608,16 @@ fn get_hand_history(limit: u32) -> Vec<HandSummary> {
     with(|s| s.hand_history(p, limit.min(50) as usize))
 }
 
+/// Your hands with shuffle evidence that are still verifiable (until 7 days
+/// after their seed is revealed), newest first; `limit` is capped at 100.
+/// Reaches further back than `get_hand_history`.
+#[query]
+fn get_verifiable_hands(offset: u32, limit: u32) -> Vec<HandSummary> {
+    let p = ic_cdk::api::msg_caller();
+    let now = ic_cdk::api::time();
+    with(|s| s.verifiable_hands(p, offset as usize, (limit as usize).min(state::VERIFIABLE_PAGE_MAX), now))
+}
+
 /// Full replay of a hand you played in. Its shuffle seed (which reveals every
 /// card dealt) is included from 24 hours after the hand ended.
 #[query]

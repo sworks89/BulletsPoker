@@ -1217,8 +1217,17 @@ impl Table {
             return (0, 0);
         }
         let pct = |amount: u64, bps: u16, cap: u64| ((amount as u128 * bps as u128 / 10_000) as u64).min(cap);
-        let rake = pct(pot, self.config.rake_bps, self.config.rake_cap);
-        let drop = pct(pot - rake, self.config.jackpot_bps, self.config.jackpot_cap);
+        // The rates recorded when this hand was dealt (published in its
+        // evidence), so a config change mid-hand cannot change its rake.
+        let c = &self.config;
+        let r = self.fair.as_ref().and_then(|f| f.rates.clone()).unwrap_or(FeeRates {
+            rake_bps: c.rake_bps,
+            rake_cap: c.rake_cap,
+            jackpot_bps: c.jackpot_bps,
+            jackpot_cap: c.jackpot_cap,
+        });
+        let rake = pct(pot, r.rake_bps, r.rake_cap);
+        let drop = pct(pot - rake, r.jackpot_bps, r.jackpot_cap);
         self.rake_accrued += rake;
         self.jackpot_accrued += drop;
         (rake, drop)
@@ -2682,5 +2691,79 @@ mod tests {
         assert_eq!((a.hand.clone(), a.commitment, a.seed, a.outcome.clone()), (b.hand.clone(), b.commitment, b.seed, b.outcome.clone()));
         assert_eq!(t.last_seed_hash, back.last_seed_hash);
         assert_eq!(back.log[0].kind, t.log[0].kind);
+    }
+
+    #[test]
+    fn rake_uses_the_rates_the_hand_was_dealt_with() {
+        let mut cfg = config();
+        cfg.rake_bps = 1000; // 10%
+        cfg.rake_cap = 1_000;
+        let mut t = Table::new(1, cfg);
+        t.sit(p(1), 0, 500).unwrap();
+        t.sit(p(2), 1, 500).unwrap();
+        t.start_hand_with_seed(odd_seed(60), 0).unwrap();
+        let mut changed = false;
+        while t.phase.is_betting() {
+            if t.phase == Phase::Flop && !changed {
+                // The table's rates change mid-hand: this hand keeps the old ones.
+                t.config.rake_bps = 0;
+                t.config.rake_cap = 0;
+                changed = true;
+            }
+            let pl = to_act_player(&t);
+            if t.act(&pl, Action::Check, 1).is_err() {
+                t.act(&pl, Action::Call, 1).unwrap();
+            }
+        }
+        assert!(changed);
+        let r = t.last_result.as_ref().unwrap();
+        assert_eq!((r.pot, r.rake), (20, 2), "10% of 20, at the rates recorded at the deal");
+        assert_eq!(t.rake_accrued, 2);
+        assert_eq!(t.fair.as_ref().unwrap().rates.as_ref().unwrap().rake_bps, 1000);
+    }
+
+    /// Seats in hand, starting left of `button`, as the evidence verifier expects.
+    fn left_of_button(t: &Table) -> Vec<u8> {
+        let n = t.seats.len();
+        (1..=n).map(|k| (t.button + k) % n).filter(|&i| t.seats[i].as_ref().is_some_and(|s| s.in_hand)).map(|i| i as u8).collect()
+    }
+
+    #[test]
+    fn dealt_order_skips_sitting_out_seats_and_follows_a_vacated_button() {
+        let mut t = Table::new(1, config());
+        for k in 0..4 {
+            t.sit(p(k + 1), k, 500).unwrap();
+        }
+        t.seat_mut(2).sitting_out = true;
+        t.start_hand_with_seed(odd_seed(61), 0).unwrap();
+        let order = t.fair.as_ref().unwrap().dealt_order.clone().unwrap();
+        let round = left_of_button(&t);
+        assert!(!round.contains(&2), "a sitting-out seat is not dealt in");
+        assert_eq!(round.len(), 3);
+        assert_eq!(order, [round.clone(), round].concat());
+        fold_to_hand_over(&mut t, 1);
+
+        // The button's player leaves: the button seat is empty when the next hand starts.
+        let old_button = t.button;
+        let leaver = t.seat(old_button).player;
+        assert!(matches!(t.stand(&leaver, 2 * NANOS).unwrap(), StandOutcome::Left(_)));
+        assert!(t.seats[old_button].is_none());
+        t.start_hand_with_seed(odd_seed(62), 20 * NANOS).unwrap();
+        let order = t.fair.as_ref().unwrap().dealt_order.clone().unwrap();
+        let round = left_of_button(&t);
+        assert_ne!(t.button, old_button);
+        assert!(!round.contains(&(old_button as u8)) && !round.contains(&2));
+        assert_eq!(round.len(), 2);
+        assert_eq!(*round.last().unwrap() as usize, t.button, "the button is dealt last");
+        assert_eq!(order, [round.clone(), round].concat());
+        // Every hole card follows dealt_order: pop from the end of the seeded deck.
+        let mut deck = fair::shuffle_deck(&odd_seed(62), &hand_for(&t, t.hand_no), 1).unwrap();
+        let mut holes: std::collections::BTreeMap<u8, Vec<Card>> = Default::default();
+        for seat in &order {
+            holes.entry(*seat).or_default().push(deck.pop().unwrap());
+        }
+        for (seat, cards) in holes {
+            assert_eq!(t.seat(seat as usize).hole, cards);
+        }
     }
 }

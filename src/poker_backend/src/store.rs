@@ -32,6 +32,7 @@ const LEDGER_OPS: MemoryId = MemoryId::new(6);
 const REPORTS: MemoryId = MemoryId::new(7);
 const REPORTS_BY_TARGET: MemoryId = MemoryId::new(8);
 const REFERRALS: MemoryId = MemoryId::new(9);
+const FAIR_HANDS: MemoryId = MemoryId::new(10);
 
 macro_rules! candid_storable {
     ($($t:ty),*) => {$(
@@ -70,6 +71,10 @@ pub struct Stores {
     pub reports_by_target: StableBTreeMap<(Principal, u64), u8, Mem>,
     /// (referrer, attached_at, friend) -> friend entry; one referrer's friends are adjacent, oldest first.
     pub referrals: StableBTreeMap<FriendKey, FriendEntry, Mem>,
+    /// (player, hand id) -> reveal_at: the hands with shuffle evidence each
+    /// player can still verify, oldest first per player. Kept until
+    /// `reveal_at + FAIR_RETENTION_NS`, at most `FAIR_HANDS_PER_USER` per player.
+    pub fair_hands: StableBTreeMap<(Principal, u64), u64, Mem>,
 }
 
 impl Stores {
@@ -88,6 +93,7 @@ impl Stores {
             reports: StableBTreeMap::init(mm.get(REPORTS)),
             reports_by_target: StableBTreeMap::init(mm.get(REPORTS_BY_TARGET)),
             referrals: StableBTreeMap::init(mm.get(REFERRALS)),
+            fair_hands: StableBTreeMap::init(mm.get(FAIR_HANDS)),
         };
         (stores, users)
     }

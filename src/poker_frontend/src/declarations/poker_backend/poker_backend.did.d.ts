@@ -291,6 +291,11 @@ export interface HandSummary {
    */
   'net' : bigint,
   'pot' : bigint,
+  /**
+   * When the hand's shuffle seed is published to its players (ns); `None`
+   * for hands dealt before the fair shuffle.
+   */
+  'reveal_at' : [] | [bigint],
   'my_cards' : Uint8Array | number[],
   'time' : bigint,
   'currency' : Currency,
@@ -1073,6 +1078,12 @@ export interface TableView {
    */
   'my_min_buy_in' : bigint,
   'max_raise_to' : bigint,
+  /**
+   * The `BP-FAIR-v1` commitment of the hand being played (`hand_no`), shown
+   * while it is played so players can keep a copy. A hash of a random
+   * seed: it reveals nothing about the cards. `None` between hands.
+   */
+  'commitment' : [] | [Uint8Array | number[]],
 }
 export interface ThrowEvent {
   'id' : bigint,
@@ -1407,6 +1418,12 @@ export interface _SERVICE {
    */
   'get_tables' : ActorMethod<[BigUint64Array | bigint[]], Array<TableView>>,
   'get_tournament' : ActorMethod<[bigint], [] | [TournamentDetail]>,
+  /**
+   * Your hands with shuffle evidence that are still verifiable (until 7 days
+   * after their seed is revealed), newest first; `limit` is capped at 100.
+   * Reaches further back than `get_hand_history`.
+   */
+  'get_verifiable_hands' : ActorMethod<[number, number], Array<HandSummary>>,
   /**
    * The caller's welcome bonus: the offer, or its progress.
    */

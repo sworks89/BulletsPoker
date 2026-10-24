@@ -313,6 +313,7 @@ export const idlFactory = ({ IDL }) => {
     'id' : IDL.Nat64,
     'net' : IDL.Int64,
     'pot' : IDL.Nat64,
+    'reveal_at' : IDL.Opt(IDL.Nat64),
     'my_cards' : IDL.Vec(IDL.Nat8),
     'time' : IDL.Nat64,
     'currency' : Currency,
@@ -605,6 +606,7 @@ export const idlFactory = ({ IDL }) => {
     'auto_sit_waiting' : IDL.Nat32,
     'my_min_buy_in' : IDL.Nat64,
     'max_raise_to' : IDL.Nat64,
+    'commitment' : IDL.Opt(IDL.Vec(IDL.Nat8)),
   });
   const Standing = IDL.Record({
     'table' : IDL.Opt(IDL.Nat64),
@@ -851,6 +853,11 @@ export const idlFactory = ({ IDL }) => {
     'get_tournament' : IDL.Func(
         [IDL.Nat64],
         [IDL.Opt(TournamentDetail)],
+        ['query'],
+      ),
+    'get_verifiable_hands' : IDL.Func(
+        [IDL.Nat32, IDL.Nat32],
+        [IDL.Vec(HandSummary)],
         ['query'],
       ),
     'get_welcome' : IDL.Func([], [WelcomeView], ['query']),

@@ -39,6 +39,14 @@ pub const FAIR_HISTORY_HARD_MAX: usize = 200_000;
 /// Most records one `publish_hand` prunes. One goes in per call, so anything
 /// above 1 lets a backlog (records that just left their window) drain.
 const PRUNE_PER_CALL: usize = 4;
+/// Most hands one player's verifiable-hands list keeps (`get_verifiable_hands`).
+/// Past it the oldest go even inside their window. 5,000 hands in the 8-day
+/// window is about one hand every 2.3 minutes, day and night.
+pub const FAIR_HANDS_PER_USER: u32 = 5_000;
+/// Most entries one write prunes from a player's verifiable-hands list.
+const FAIR_LIST_PRUNE_PER_CALL: usize = 4;
+/// Largest page `get_verifiable_hands` returns.
+pub const VERIFIABLE_PAGE_MAX: usize = 100;
 pub const SIGNUP_CHIPS: u64 = 20_000;
 pub const DAILY_CHIPS: u64 = 5_000;
 const MAX_STREAK: u32 = 7;
@@ -200,6 +208,8 @@ pub struct User {
     /// Set once a deposit or sweep completed; `None` on older accounts, which
     /// `crate::wallet` checks against their recent ops.
     pub has_deposited: Option<bool>,
+    /// How many entries this player has in `stores.fair_hands`; `None` = 0.
+    pub fair_hand_count: Option<u32>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq)]
@@ -300,6 +310,26 @@ pub struct HandSummary {
     /// The shuffle evidence outcome: `"settled"` or `"voided: <reason>"`;
     /// `None` for hands dealt before the fair shuffle.
     pub outcome: Option<String>,
+    /// When the hand's shuffle seed is published to its players (ns); `None`
+    /// for hands dealt before the fair shuffle.
+    pub reveal_at: Option<u64>,
+}
+
+/// `h` as listed for `caller`, one of its players.
+fn hand_summary(h: &HandRecord, caller: Principal) -> HandSummary {
+    let me = h.players.iter().find(|p| p.player == caller);
+    HandSummary {
+        id: h.id,
+        table_name: h.table_name.clone(),
+        currency: h.currency,
+        time: h.time,
+        board: h.board.clone(),
+        my_cards: me.map(|p| p.cards.clone()).unwrap_or_default(),
+        pot: h.pot,
+        net: me.map_or(0, |p| p.won as i64 - p.committed as i64),
+        outcome: h.fair.as_ref().map(|f| f.outcome.clone()),
+        reveal_at: h.fair.as_ref().map(|f| f.reveal_at),
+    }
 }
 
 #[derive(CandidType, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -612,6 +642,10 @@ pub struct TableView {
     pub jackpot: u64,
     /// A jackpot hit in the hand on screen, for the celebration.
     pub jackpot_hit: Option<JackpotHit>,
+    /// The `BP-FAIR-v1` commitment of the hand being played (`hand_no`), shown
+    /// while it is played so players can keep a copy. A hash of a random
+    /// seed: it reveals nothing about the cards. `None` between hands.
+    pub commitment: Option<Vec<u8>>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -1004,6 +1038,7 @@ impl State {
                 welcome: None,
                 deposit_fails: None,
                 has_deposited: None,
+                fair_hand_count: None,
             },
         );
         Ok(self.profile(&caller).unwrap())
@@ -2437,6 +2472,9 @@ impl State {
                     u.history.pop_front();
                 }
             }
+            if let Some(f) = &record.fair {
+                self.track_fair_hand(p.player, id, f.reveal_at, now, FAIR_HANDS_PER_USER);
+            }
         }
         self.stores.hands.insert(id, record);
         self.prune_hands(now, HISTORY_MAX as u64, FAIR_HISTORY_HARD_MAX as u64, PRUNE_PER_CALL);
@@ -2503,21 +2541,52 @@ impl State {
             .rev()
             .filter_map(|id| self.stores.hands.get(id))
             .take(limit)
-            .map(|h| {
-                let me = h.players.iter().find(|p| p.player == caller);
-                HandSummary {
-                    id: h.id,
-                    table_name: h.table_name.clone(),
-                    currency: h.currency,
-                    time: h.time,
-                    board: h.board.clone(),
-                    my_cards: me.map(|p| p.cards.clone()).unwrap_or_default(),
-                    pot: h.pot,
-                    net: me.map_or(0, |p| p.won as i64 - p.committed as i64),
-                    outcome: h.fair.as_ref().map(|f| f.outcome.clone()),
-                }
-            })
+            .map(|h| hand_summary(&h, caller))
             .collect()
+    }
+
+    /// The caller's hands that carry shuffle evidence and are still inside
+    /// their verification window (`now < reveal_at + FAIR_RETENTION_NS`),
+    /// newest first: both the revealed ones and those still waiting for the
+    /// seed. Unlike `hand_history` this reaches back past the last 50 hands.
+    pub fn verifiable_hands(&self, caller: Principal, offset: usize, limit: usize, now: u64) -> Vec<HandSummary> {
+        // Expired entries are only removed on the next write, so skip them here.
+        self.stores
+            .fair_hands
+            .range((caller, 0)..=(caller, u64::MAX))
+            .rev()
+            .filter(|e| now < e.value().saturating_add(FAIR_RETENTION_NS))
+            .filter_map(|e| self.stores.hands.get(&e.key().1))
+            .filter(|h| h.fair.is_some() && h.players.iter().any(|p| p.player == caller))
+            .skip(offset)
+            .take(limit)
+            .map(|h| hand_summary(&h, caller))
+            .collect()
+    }
+
+    /// Adds hand `id` to `player`'s verifiable-hands list, then removes (at
+    /// most `FAIR_LIST_PRUNE_PER_CALL`) entries from the front that are past
+    /// their window or over `cap`. Hand ids are given out in time order and
+    /// `reveal_at` is a fixed delay after publication, so a player's oldest
+    /// entries are always the first to expire.
+    pub(crate) fn track_fair_hand(&mut self, player: Principal, id: u64, reveal_at: u64, now: u64, cap: u32) {
+        let Some(mut u) = self.users.get_mut(&player) else { return };
+        let mut count = u.fair_hand_count.unwrap_or(0);
+        if self.stores.fair_hands.insert((player, id), reveal_at).is_none() {
+            count += 1;
+        }
+        for _ in 0..FAIR_LIST_PRUNE_PER_CALL {
+            let Some((key, oldest_reveal)) = self.stores.fair_hands.range((player, 0)..=(player, u64::MAX)).next().map(|e| e.into_pair()) else {
+                break;
+            };
+            let expired = now >= oldest_reveal.saturating_add(FAIR_RETENTION_NS);
+            if !expired && count <= cap {
+                break;
+            }
+            self.stores.fair_hands.remove(&key);
+            count = count.saturating_sub(1);
+        }
+        u.fair_hand_count = Some(count);
     }
 
     /// A hand as seen by `caller` at `now`: only their own and shown hole
@@ -2790,6 +2859,7 @@ impl State {
             throws: vec![],
             jackpot_hit: None,
             restricted: true,
+            commitment: None,
             ..view
         })
     }
@@ -2883,6 +2953,11 @@ impl State {
             restricted: false,
             my_min_buy_in: viewer.map_or(0, |v| self.min_return_buy_in(id, &v, now)),
             action_seq: t.action_seq.unwrap_or(0),
+            commitment: t
+                .fair
+                .as_ref()
+                .filter(|f| t.phase.is_betting() && f.hand.table_id == id && f.hand.hand_no == t.hand_no)
+                .map(|f| f.commitment.to_vec()),
         })
     }
 }
@@ -6183,11 +6258,25 @@ pub(crate) mod tests {
                 }
             }
         };
+        // The commitment is in every view while the hand is played, and only then.
+        let shown = |s: &State, now: u64| -> Option<Vec<u8>> {
+            let all: Vec<_> = [None, Some(p(1)), Some(p(2)), Some(p(3)), Some(p(9))]
+                .into_iter()
+                .map(|viewer| s.table_view(table, viewer, now).unwrap().commitment)
+                .collect();
+            assert!(all.windows(2).all(|w| w[0] == w[1]), "every viewer sees the same commitment");
+            all[0].clone()
+        };
         check(&s, 1);
+        assert_eq!(shown(&s, 1), None, "no commitment before the first hand");
         s.deal_with_seed(table, 0, seed, test_canister(), 1).unwrap();
         let mut now = 2;
         check(&s, now);
+        let seen = shown(&s, now).expect("the commitment is shown while the hand is played");
+        assert_eq!(seen, s.tables[&table].fair.as_ref().unwrap().commitment.to_vec());
+        assert_eq!(s.table_view(table, None, now).unwrap().hand_no, 1);
         while s.tables[&table].phase.is_betting() {
+            assert_eq!(shown(&s, now).as_ref(), Some(&seen), "the same commitment on every street");
             let t = &s.tables[&table];
             let actor = t.seats[t.to_act.unwrap()].as_ref().unwrap().player;
             if s.act(actor, table, Action::Check, now).is_err() {
@@ -6198,6 +6287,7 @@ pub(crate) mod tests {
         }
         assert_eq!(s.tables[&table].phase, Phase::HandOver);
         assert_eq!(s.tables[&table].fair.as_ref().unwrap().outcome, FairOutcome::Settled);
+        assert_eq!(shown(&s, now), None, "no commitment between hands");
         check(&s, now + 10 * SEC);
         // Nor in the recorded hand or the history.
         for k in 1..=3 {
@@ -6205,6 +6295,30 @@ pub(crate) mod tests {
             assert!(!contains(&candid::encode_one(&history).unwrap(), &seed));
             let rec = s.hand(p(k), history[0].id, 0).unwrap();
             assert!(!contains(&candid::encode_one(&rec).unwrap(), &seed));
+            // What the table showed during the hand is what the record publishes.
+            assert_eq!(rec.fair.unwrap().commitment, seen);
+        }
+    }
+
+    #[test]
+    fn private_room_outsiders_do_not_see_the_commitment() {
+        let mut s = setup();
+        s.user_mut(&p(1)).unwrap().xp = 50;
+        let args = RoomArgs { name: "Home Game".into(), currency: Currency::Chips, big_blind: 100, max_seats: 6, password: Some("aces".into()), action_timeout_secs: 30 };
+        let id = s.create_room(p(1), args, 0).unwrap();
+        s.join_table(p(1), id, 0, 2_000, None, 0).unwrap();
+        s.unlock_room(p(2), id, "aces".into()).unwrap();
+        s.join_table(p(2), id, 1, 2_000, None, 0).unwrap();
+        let hand_no = s.tables[&id].hand_no;
+        s.deal_with_seed(id, hand_no, odd_seed(30), test_canister(), 1).unwrap();
+        let commitment = s.tables[&id].fair.as_ref().unwrap().commitment.to_vec();
+        for seated in [p(1), p(2)] {
+            assert_eq!(s.table_view(id, Some(seated), 2).unwrap().commitment, Some(commitment.clone()));
+        }
+        for outsider in [Some(p(3)), None] {
+            let v = s.table_view(id, outsider, 2).unwrap();
+            assert!(v.restricted);
+            assert_eq!(v.commitment, None);
         }
     }
 
@@ -6658,6 +6772,97 @@ pub(crate) mod tests {
             assert!(s.hand(p(1), id, at).unwrap().fair.is_some());
         }
         assert!(s.hand_history(p(3), 50).is_empty());
+    }
+
+    /// Plays `n` fair hands heads-up at `table` (everyone folds to the big
+    /// blind), one every 30 s from `start`. Returns the time after the last
+    /// one and the hand ids, oldest first.
+    fn play_fair_hands(s: &mut State, table: u64, n: u32, start: u64) -> (u64, Vec<u64>) {
+        let mut now = start;
+        let mut ids = vec![];
+        for k in 0..n {
+            let mut seed = odd_seed(77);
+            seed[..4].copy_from_slice(&(k + start as u32).to_be_bytes());
+            let hand_no = s.tables[&table].hand_no;
+            s.deal_with_seed(table, hand_no, seed, test_canister(), now).unwrap();
+            fold_out(s, table, now + 1);
+            ids.push(s.hand_history(p(1), 1)[0].id);
+            now += 30 * SEC;
+        }
+        (now, ids)
+    }
+
+    fn fair_list(s: &State, who: Principal) -> Vec<(u64, u64)> {
+        s.stores.fair_hands.range((who, 0)..=(who, u64::MAX)).map(|e| (e.key().1, e.value())).collect()
+    }
+
+    #[test]
+    fn old_fair_hands_stay_verifiable_past_the_recent_history() {
+        let (mut s, table) = heads_up_cash();
+        let (end, ids) = play_fair_hands(&mut s, table, 60, 1);
+        let first = ids[0];
+        // The recent list has rolled past the first hands.
+        assert_eq!(s.hand_history(p(1), 50).len(), 50);
+        assert!(s.hand_history(p(1), 50).iter().all(|h| h.id != first));
+        // Once its seed is out, the first hand is still listed and fetchable.
+        let reveal = s.stores.hands.get(&first).unwrap().fair.unwrap().reveal_at;
+        let at = reveal.max(end);
+        for k in 1..=2 {
+            let all = s.verifiable_hands(p(k), 0, 100, at);
+            assert_eq!(all.len(), 60);
+            // Newest first, every one with its reveal time.
+            assert_eq!(all.iter().map(|h| h.id).collect::<Vec<_>>(), ids.iter().rev().copied().collect::<Vec<_>>());
+            assert!(all.iter().all(|h| h.reveal_at.is_some()));
+            assert_eq!(all[59].reveal_at, Some(reveal));
+            let f = s.hand(p(k), first, at).unwrap().fair.unwrap();
+            assert!(f.revealed_seed.is_some());
+            // Paging.
+            let page: Vec<u64> = s.verifiable_hands(p(k), 50, 100, at).iter().map(|h| h.id).collect();
+            assert_eq!(page, ids[..10].iter().rev().copied().collect::<Vec<_>>());
+            assert_eq!(s.verifiable_hands(p(k), 2, 3, at).len(), 3);
+            assert!(s.verifiable_hands(p(k), 60, 100, at).is_empty());
+        }
+        // Non-participants get nothing.
+        assert!(s.verifiable_hands(p(3), 0, 100, at).is_empty());
+        assert!(s.verifiable_hands(Principal::anonymous(), 0, 100, at).is_empty());
+        // A record pruned from the hand store drops out of the list.
+        s.stores.hands.remove(&ids[1]);
+        assert!(s.verifiable_hands(p(1), 0, 100, at).iter().all(|h| h.id != ids[1]));
+        assert_eq!(s.users.get(&p(1)).unwrap().fair_hand_count, Some(60));
+    }
+
+    #[test]
+    fn the_verifiable_list_drops_hands_past_the_window() {
+        let (mut s, table) = heads_up_cash();
+        let (_, ids) = play_fair_hands(&mut s, table, 3, 1);
+        let reveal = |s: &State, id: u64| s.stores.hands.get(&id).unwrap().fair.unwrap().reveal_at;
+        let end_of = |s: &State, id: u64| reveal(s, id) + FAIR_RETENTION_NS;
+        // Read: a hand is listed up to the end of its window, and not from then on.
+        assert_eq!(s.verifiable_hands(p(1), 0, 100, end_of(&s, ids[0]) - 1).len(), 3);
+        let listed: Vec<u64> = s.verifiable_hands(p(1), 0, 100, end_of(&s, ids[0])).iter().map(|h| h.id).collect();
+        assert_eq!(listed, vec![ids[2], ids[1]]);
+        assert!(s.verifiable_hands(p(1), 0, 100, end_of(&s, ids[2])).is_empty());
+        // Write: the next hand prunes the expired entries for good.
+        let later = end_of(&s, ids[1]);
+        let (_, more) = play_fair_hands(&mut s, table, 1, later);
+        for k in 1..=2 {
+            assert_eq!(fair_list(&s, p(k)).iter().map(|e| e.0).collect::<Vec<_>>(), vec![ids[2], more[0]]);
+            assert_eq!(s.users.get(&p(k)).unwrap().fair_hand_count, Some(2));
+        }
+    }
+
+    #[test]
+    fn the_verifiable_list_is_capped_per_player() {
+        let (mut s, _) = heads_up_cash();
+        for id in 1..=7u64 {
+            s.stores.hands.insert(id, bare_record(id, Some(REVEAL_DELAY_NS + id)));
+            s.track_fair_hand(p(1), id, REVEAL_DELAY_NS + id, 0, 3);
+        }
+        assert_eq!(fair_list(&s, p(1)).iter().map(|e| e.0).collect::<Vec<_>>(), vec![5, 6, 7]);
+        assert_eq!(s.users.get(&p(1)).unwrap().fair_hand_count, Some(3));
+        assert_eq!(s.verifiable_hands(p(1), 0, 100, 0).len(), 0, "bare records have no players");
+        // The real cap.
+        assert_eq!(FAIR_HANDS_PER_USER, 5_000);
     }
 }
 

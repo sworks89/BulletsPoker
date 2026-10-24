@@ -188,6 +188,9 @@ type HandSummary = record {
   // What the viewer won minus what they put in.
   net : int64;
   pot : nat64;
+  // When the hand's shuffle seed is published to its players (ns); `None`
+  // for hands dealt before the fair shuffle.
+  reveal_at : opt nat64;
   my_cards : blob;
   time : nat64;
   currency : Currency;
@@ -754,6 +757,10 @@ type TableView = record {
   // this many chips); 0 means the table's normal minimum.
   my_min_buy_in : nat64;
   max_raise_to : nat64;
+  // The `BP-FAIR-v1` commitment of the hand being played (`hand_no`), shown
+  // while it is played so players can keep a copy. A hash of a random
+  // seed: it reveals nothing about the cards. `None` between hands.
+  commitment : opt blob;
 };
 type ThrowEvent = record {
   id : nat64;
@@ -977,6 +984,10 @@ service : (opt InitArgs) -> {
   // Views of several tables at once (for multi-tabling); unknown ids are skipped.
   get_tables : (vec nat64) -> (vec TableView) query;
   get_tournament : (nat64) -> (opt TournamentDetail) query;
+  // Your hands with shuffle evidence that are still verifiable (until 7 days
+  // after their seed is revealed), newest first; `limit` is capped at 100.
+  // Reaches further back than `get_hand_history`.
+  get_verifiable_hands : (nat32, nat32) -> (vec HandSummary) query;
   // The caller's welcome bonus: the offer, or its progress.
   get_welcome : () -> (WelcomeView) query;
   // `GET /metrics` (Prometheus text, without the house's money figures) and
