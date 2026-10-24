@@ -71,6 +71,11 @@ export interface VerificationReport {
 export interface VerifyOptions {
   /** The current time in ns since the epoch (default: the browser clock). */
   now?: bigint;
+  /**
+   * The commitment this device saw at the table while the hand was played
+   * (fair/seen.ts). When given, the published commitment must equal it.
+   */
+  observedCommitment?: Uint8Array;
 }
 
 /** The rates published with the evidence, if this build recorded them. */
@@ -84,6 +89,8 @@ function ratesOf(e: FairEvidenceLike): Fees | null {
 type CheckName = keyof VerificationReport['checks'];
 
 const SCHEME = 'icp-raw_rand/v1';
+/** The protocol's reveal delay: reveal_at = settled_at + 24 h (REVEAL_DELAY_NS in table.rs). */
+const REVEAL_DELAY_NS = 24n * 3_600_000_000_000n;
 const MAX_RAKE_BPS = 1000; // TableConfig::validate
 const MAX_JACKPOT_BPS = 300;
 
@@ -177,6 +184,24 @@ export async function verifyHand(
       fail('commitment', `the log's ShuffleCommitted ${hex(logged)} differs from the evidence commitment ${hex(evidence.commitment)}`);
     }
   }
+  const observed = options.observedCommitment;
+  if (observed && !same(observed, evidence.commitment)) {
+    fail('commitment', `the commitment shown at the table differs from the published one: the table showed ${hex(observed)}, the evidence has ${hex(evidence.commitment)}`);
+  }
+  if (!observed) {
+    report.warnings.push("No commitment was recorded on this device for this hand, so its pre-deal timing relies on the canister's log.");
+    report.trusted.push({
+      what: 'commitment timing',
+      basis: 'trusts-canister',
+      detail:
+        "This device did not see the commitment at the table during the hand. That it was fixed before the cards were dealt rests on the canister's own log, which puts it at entry 0; the log is not externally timestamped.",
+    });
+  }
+  if (evidence.reveal_at !== evidence.settled_at + REVEAL_DELAY_NS) {
+    report.warnings.push(
+      `reveal_at is not settled_at + 24 h (the protocol's reveal delay): settled_at ${isoNs(evidence.settled_at)}, reveal_at ${isoNs(evidence.reveal_at)}.`,
+    );
+  }
   const seed = evidence.revealed_seed.length ? Uint8Array.from(evidence.revealed_seed[0]) : null;
   let deck: number[] | null = null;
   const now = options.now ?? BigInt(Date.now()) * 1_000_000n;
@@ -198,7 +223,9 @@ export async function verifyHand(
   }
   set(
     'commitment',
-    'The revealed seed opens the commitment, which was logged as event 0 before any card was dealt, for this canister, table and hand.',
+    observed
+      ? 'The revealed seed opens the commitment for this canister, table and hand. The commitment matched what you saw at the table during the hand (before the flop and before any betting), and the log records it as event 0, before any card was dealt.'
+      : "The revealed seed opens the commitment for this canister, table and hand. The log records it as event 0, before any card was dealt; that order is the canister's own log (see Taken on trust), because this device did not see the commitment at the table.",
     pending ? 'Seed not revealed yet.' : !seed ? 'Seed not published.' : committedAt.length === 0 ? 'The seed opens the commitment, but the log has no ShuffleCommitted event.' : undefined,
   );
 
@@ -310,7 +337,11 @@ export async function verifyHand(
   // ---- settlement: pots and winners from the log's commitments and the rebuilt cards
   const rates = ratesOf(evidence);
   if (voided) {
-    set('settlement', '', 'The hand was voided: there is no settlement to check.');
+    // A voided hand pays nothing: what was put in goes back to the players.
+    if (record.pot !== 0n) fail('settlement', `the hand was voided but the record has a pot of ${record.pot}`);
+    if (record.rake !== 0n) fail('settlement', `the hand was voided but the record takes rake ${record.rake}`);
+    for (const p of players) if (p.won !== 0n) fail('settlement', `the hand was voided but ${who(p.seat)} won ${p.won}`);
+    set('settlement', '', 'The hand was voided: nothing was paid out (pot, rake and payouts are all 0).');
   } else {
     const committed = new Map(players.map((p) => [p.seat, replay.committed.get(p.seat) ?? 0n] as [number, bigint]));
     const pot = sum(committed.values());

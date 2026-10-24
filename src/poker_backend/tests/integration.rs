@@ -453,6 +453,9 @@ fn fair_hand_is_verifiable_and_the_seed_stays_hidden_until_reveal() {
     env.run_timers(3);
     let first = env.table(alice, table);
     assert_eq!(first.hand_no, 1, "the first hand is dealt");
+    // The live hand's commitment is in the table view, the same for a watcher.
+    let shown = first.commitment.clone().expect("the commitment is shown while the hand is played");
+    assert_eq!(env.table(carol, table).commitment.as_ref(), Some(&shown));
 
     // Check the hand down to a showdown, capturing every public view on the way.
     let mut captured: Vec<Vec<u8>> = vec![];
@@ -487,6 +490,13 @@ fn fair_hand_is_verifiable_and_the_seed_stays_hidden_until_reveal() {
     assert!(hand_record(&env, carol, id).is_none(), "non-participants get no record");
     assert_eq!(rec.board.len(), 5, "checked down to the river");
     assert_eq!(fair.burns, 3);
+    assert_eq!(fair.commitment, shown, "the record publishes the commitment shown at the table");
+    // The hand is listed as verifiable for its players only, pending until reveal_at.
+    let listed: Vec<HandSummary> = env.query(alice, "get_verifiable_hands", encode_args((0u32, 500u32)).unwrap());
+    assert_eq!(listed.iter().map(|h| h.id).collect::<Vec<_>>(), vec![id]);
+    assert_eq!(listed[0].reveal_at, Some(fair.reveal_at));
+    let none: Vec<HandSummary> = env.query(carol, "get_verifiable_hands", encode_args((0u32, 500u32)).unwrap());
+    assert!(none.is_empty());
 
     // 24 hours and a second later the seed is revealed to participants only.
     env.pic.advance_time(Duration::from_secs(24 * 3600 + 1));

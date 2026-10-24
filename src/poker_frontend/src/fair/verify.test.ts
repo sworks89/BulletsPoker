@@ -348,4 +348,63 @@ describe('verifyHand', () => {
     expect(r.overall).toBe('FAILED');
     expect(r.errors.join('\n')).toMatch(/board card 2 \(flop\)/);
   });
+
+  it('a voided hand that paid anything out is FAILED', async () => {
+    const { record, evidence } = voidedOf('rake_cap');
+    for (const bad of [
+      { ...record, pot: 5n },
+      { ...record, rake: 1n },
+      { ...record, players: record.players.map((p, i) => ({ ...p, won: i === 0 ? 3n : 0n })) },
+    ]) {
+      const r = await run(bad, evidence);
+      expect(r.overall).toBe('FAILED');
+      expect(r.checks.settlement.status).toBe('fail');
+      expect(r.errors.join('\n')).toMatch(/voided/);
+    }
+  });
+
+  it('warns when reveal_at is not settled_at + 24 h', async () => {
+    const { record, evidence } = hand('showdown_default_rates');
+    const ok = await run(record, evidence);
+    expect(allText(ok)).not.toMatch(/reveal_at/);
+    const r = await run(record, { ...evidence, reveal_at: evidence.settled_at + 60_000_000_000n });
+    expect(r.warnings.join('\n')).toMatch(/reveal_at is not settled_at \+ 24 h/);
+  });
+});
+
+describe('the commitment seen at the table', () => {
+  const opts = (observedCommitment?: Uint8Array) => ({ now: undefined, observedCommitment });
+
+  it('a matching commitment seen at the table is noted, and its timing is not taken on trust', async () => {
+    const { record, evidence } = hand('showdown_default_rates');
+    const r = await verifyHand(record, evidence, CANISTER, opts(Uint8Array.from(evidence.commitment)));
+    expect(r.overall).toBe('VERIFIED');
+    expect(r.checks.commitment.status).toBe('pass');
+    expect(r.checks.commitment.detail).toMatch(/commitment matched what you saw at the table/);
+    expect(r.trusted.map((t) => t.what)).not.toContain('commitment timing');
+    expect(allText(r)).not.toMatch(/no commitment was recorded on this device/);
+  });
+
+  it('a different commitment seen at the table fails the commitment check', async () => {
+    const { record, evidence } = hand('showdown_default_rates');
+    const seen = Uint8Array.from(evidence.commitment);
+    seen[5] ^= 1;
+    const r = await verifyHand(record, evidence, CANISTER, opts(seen));
+    expect(r.overall).toBe('FAILED');
+    expect(r.checks.commitment.status).toBe('fail');
+    expect(r.errors.join('\n')).toMatch(/the commitment shown at the table differs from the published one/);
+  });
+
+  it('without a commitment seen on this device the ordering is taken on trust, with a warning', async () => {
+    const { record, evidence } = hand('showdown_default_rates');
+    const r = await verifyHand(record, evidence, CANISTER, opts());
+    expect(r.overall).toBe('VERIFIED');
+    expect(r.warnings).toContain(
+      "No commitment was recorded on this device for this hand, so its pre-deal timing relies on the canister's log.",
+    );
+    const timing = r.trusted.find((t) => t.what === 'commitment timing');
+    expect(timing?.basis).toBe('trusts-canister');
+    expect(r.checks.commitment.detail).toMatch(/canister's own log/);
+    expect(r.checks.commitment.detail).not.toMatch(/matched what you saw/);
+  });
 });

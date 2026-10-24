@@ -3,6 +3,7 @@ import { useApp } from '../context';
 import { backendId, type HandRecord } from '../ic';
 import { toEvidenceJson } from '../fair/evidence';
 import { verifyHand, type VerificationReport } from '../fair/verify';
+import { defaultStore, seenCommitment } from '../fair/seen';
 import { D1_LINE, DISCLAIMER, verificationRows, verifyState, windowText } from '../replay';
 
 const nowNs = () => BigInt(Date.now()) * 1_000_000n;
@@ -57,6 +58,7 @@ export function HandVerification({ hand }: { hand: HandRecord }) {
   if (state.kind === 'none') return null;
   const ev = hand.fair[0];
   const seed = ev?.revealed_seed[0];
+  const observed = ev ? seenCommitment(defaultStore(), backendId, ev.table_id, ev.hand_no) : undefined;
 
   const run = async () => {
     if (!ev) return;
@@ -64,7 +66,7 @@ export function HandVerification({ hand }: { hand: HandRecord }) {
     setReport(null);
     setFailure(null);
     try {
-      setReport(await verifyHand(hand, ev, backendId, { now: nowNs() }));
+      setReport(await verifyHand(hand, ev, backendId, { now: nowNs(), observedCommitment: observed }));
     } catch (e) {
       setFailure(`Verification failed to run: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -98,6 +100,10 @@ export function HandVerification({ hand }: { hand: HandRecord }) {
       {ev && (
         <>
           <Field label="Commitment" value={hex(ev.commitment)} />
+          <p className="small">
+            Commitment seen at the table: <b>{observed ? 'yes' : 'no'}</b>
+            {!observed && <span className="muted"> (this device has no copy from the hand, so its timing relies on the canister's log)</span>}
+          </p>
           {seed && <Field label="Revealed seed" value={hex(seed)} />}
           <Field label="Shuffle version" value={String(ev.version)} />
           <Field label="Scheme" value={ev.scheme} />
@@ -116,11 +122,9 @@ export function HandVerification({ hand }: { hand: HandRecord }) {
               {running ? 'Verifying…' : 'Verify hand'}
             </button>
           )}
-          {seed && (
-            <button className="btn ghost small" onClick={download}>
-              Export evidence
-            </button>
-          )}
+          <button className="btn ghost small" onClick={download}>
+            {seed ? 'Export evidence' : 'Export evidence (seed not revealed yet)'}
+          </button>
         </div>
       )}
 
@@ -135,6 +139,7 @@ export function HandVerification({ hand }: { hand: HandRecord }) {
                   <th scope="row">{r.label}</th>
                   <td>{r.statusText}</td>
                   <td className="muted small">{r.basisText}</td>
+                  <td className="small">{r.detail}</td>
                 </tr>
               ))}
             </tbody>

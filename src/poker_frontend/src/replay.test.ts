@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DISCLAIMER, D1_LINE, VERIFY_WINDOW_NS, logStepLabel, potAt, revealCountdown, verifyState, verificationRows, windowText,
+  DISCLAIMER, D1_LINE, VERIFY_WINDOW_NS, groupVerifiable, logStepLabel, potAt, revealCountdown, verifyState, verificationRows, windowText,
 } from './replay';
 import type { VerificationReport } from './fair/verify';
 
@@ -68,8 +68,15 @@ describe('verifyState', () => {
   });
   it('ends the window 7 days after reveal_at but keeps the verify option when the seed is there', () => {
     const now = 100n * H + VERIFY_WINDOW_NS + 1n;
-    expect(verifyState({ fair: [ev()] }, now)).toMatchObject({ kind: 'ended', message: 'Verification window ended — use exported evidence' });
-    expect(verifyState({ fair: [ev({ revealed_seed: [[1]] })] }, now)).toMatchObject({ kind: 'ended', canVerify: true });
+    expect(verifyState({ fair: [ev({ revealed_seed: [[1]] })] }, now)).toMatchObject({
+      kind: 'ended',
+      message: 'Verification window ended — use exported evidence',
+      canVerify: true,
+    });
+  });
+  it('a seed never published is shown as withheld, not as a normal end of the window', () => {
+    const now = 100n * H + VERIFY_WINDOW_NS + 1n;
+    expect(verifyState({ fair: [ev()] }, now)).toMatchObject({ kind: 'unavailable', canVerify: false });
   });
   it('labels voided hands', () => {
     const s = verifyState({ fair: [ev({ revealed_seed: [[1]], outcome: 'voided: dealer error' })] }, 101n * H);
@@ -95,6 +102,7 @@ describe('logStepLabel', () => {
     const rev = entry({ kind: { ShuffleRevealed: null }, amount: 0n });
     expect(logStepLabel(rev)).toEqual({ type: 'protocol', text: 'Seed reveal at 1970-01-01 00:00 UTC' });
     expect(logStepLabel(entry({ kind: { HandVerificationAvailable: null } })).text).toBe('Hand verification available');
+    expect(logStepLabel(entry({ kind: { HandVerificationAvailable: null } }), 0n).text).toBe('Hand verification available from 1970-01-01 00:00 UTC');
   });
   it('keeps ordinary actions and streets', () => {
     expect(logStepLabel(entry({ seat: 2, text: 'Raises', amount: 5n }))).toEqual({ type: 'action', seat: 2, text: 'raises', amount: 5n });
@@ -116,8 +124,24 @@ describe('potAt', () => {
 describe('copy', () => {
   it('has the exact disclaimer and D1 line', () => {
     expect(DISCLAIMER).toBe(
-      'This check proves the cards dealt match a seed committed before the hand and that the pot was paid by the rules. It does not prove the seed came from ICP randomness, and it does not prove nobody could see the cards during play — the game canister holds them.',
+      "This check proves the cards dealt match the seed behind the published commitment and that the pot was paid by the rules. If this device saw that commitment at the table during the hand, the deck was fixed before the flop and before any betting; otherwise that order rests on the canister's own log. It does not prove the seed came from ICP randomness, and it does not prove nobody could see the cards during play — the game canister holds them.",
     );
+    expect(DISCLAIMER).not.toMatch(/committed before the hand/);
     expect(D1_LINE).toBe('24 hours after a hand, the players in it can verify the shuffle, which reveals every card dealt in that hand.');
+  });
+});
+
+describe('groupVerifiable', () => {
+  const h = (id: number, reveal: bigint | null) => ({ id: BigInt(id), reveal_at: (reveal === null ? [] : [reveal]) as [] | [bigint] });
+  it('lists revealed hands first (newest first), then pending ones soonest first with a countdown', () => {
+    const now = 100n * H;
+    const g = groupVerifiable([h(5, 101n * H), h(4, 120n * H + 30n * M), h(3, 99n * H), h(2, 100n * H), h(1, 50n * H), h(0, null)], now);
+    expect(g.ready.map((x) => x.id)).toEqual([3n, 2n, 1n]);
+    expect(g.pending.map((x) => x.id)).toEqual([5n, 4n]);
+    expect(g.pending.map((x) => x.countdown)).toEqual(['1 h 0 m', '20 h 30 m']);
+  });
+  it('drops hands with no evidence and is empty for an empty list', () => {
+    expect(groupVerifiable([h(1, null)], 0n)).toEqual({ ready: [], pending: [] });
+    expect(groupVerifiable([], 0n)).toEqual({ ready: [], pending: [] });
   });
 });

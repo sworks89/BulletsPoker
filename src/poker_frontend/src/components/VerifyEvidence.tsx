@@ -1,6 +1,9 @@
 import { useId, useState } from 'react';
 import { MAX_EVIDENCE_CHARS, fromEvidenceJson } from '../fair/evidence';
 import { verifyHand, type VerificationReport } from '../fair/verify';
+import { defaultStore, seenCommitment } from '../fair/seen';
+import { backendId } from '../ic';
+import { UNSIGNED_LINE, canisterNote } from '../replay';
 import { VerificationReportView } from './VerificationReportView';
 
 /**
@@ -10,6 +13,7 @@ import { VerificationReportView } from './VerificationReportView';
 export function VerifyEvidence() {
   const [text, setText] = useState('');
   const [report, setReport] = useState<VerificationReport | null>(null);
+  const [claimed, setClaimed] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const fileId = useId();
@@ -17,6 +21,7 @@ export function VerifyEvidence() {
 
   const check = async (source: string) => {
     setReport(null);
+    setClaimed(null);
     setError(null);
     setBusy(true);
     try {
@@ -25,7 +30,9 @@ export function VerifyEvidence() {
         setError(parsed.error);
         return;
       }
-      setReport(await verifyHand(parsed.record, parsed.evidence, parsed.canister, { now: BigInt(Date.now()) * 1_000_000n }));
+      const observed = seenCommitment(defaultStore(), parsed.canister, parsed.evidence.table_id, parsed.evidence.hand_no);
+      setClaimed(parsed.canister);
+      setReport(await verifyHand(parsed.record, parsed.evidence, parsed.canister, { now: BigInt(Date.now()) * 1_000_000n, observedCommitment: observed }));
     } catch (e) {
       setError(`Verification failed to run: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -69,7 +76,18 @@ export function VerifyEvidence() {
         </button>
       </div>
       {error && <div role="alert">{error}</div>}
-      {report && <VerificationReportView report={report} />}
+      {report && claimed !== null && (
+        <>
+          {(() => {
+            const note = canisterNote(claimed, backendId);
+            return note.warn ? <div role="alert">{note.text}</div> : <p className="small">{note.text}</p>;
+          })()}
+          <p className="small verify-unsigned">
+            <strong>{UNSIGNED_LINE}</strong>
+          </p>
+          <VerificationReportView report={report} />
+        </>
+      )}
     </div>
   );
 }

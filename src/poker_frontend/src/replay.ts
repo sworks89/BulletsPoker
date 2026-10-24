@@ -2,7 +2,7 @@
 import type { VerificationReport } from './fair/verify';
 
 export const DISCLAIMER =
-  'This check proves the cards dealt match a seed committed before the hand and that the pot was paid by the rules. It does not prove the seed came from ICP randomness, and it does not prove nobody could see the cards during play — the game canister holds them.';
+  "This check proves the cards dealt match the seed behind the published commitment and that the pot was paid by the rules. If this device saw that commitment at the table during the hand, the deck was fixed before the flop and before any betting; otherwise that order rests on the canister's own log. It does not prove the seed came from ICP randomness, and it does not prove nobody could see the cards during play — the game canister holds them.";
 export const D1_LINE = '24 hours after a hand, the players in it can verify the shuffle, which reveals every card dealt in that hand.';
 
 const NS_PER_MS = 1_000_000n;
@@ -95,9 +95,48 @@ export function verifyState(hand: { fair: [] | [StateEvidence] } | null, now: bi
   const canVerify = ev.revealed_seed.length > 0;
   const voided = ev.outcome.startsWith('voided');
   const base = { revealAt, canVerify, voided, ...(voided ? { voidedLabel: VOIDED_LABEL } : {}) };
-  if (now > revealAt + VERIFY_WINDOW_NS) return { kind: 'ended', message: 'Verification window ended — use exported evidence', ...base };
+  // A seed missing past reveal_at was withheld: say so, even after the window.
   if (!canVerify) return { kind: 'unavailable', message: 'The seed is not published for this hand. Use exported evidence if you have it.', ...base };
+  if (now > revealAt + VERIFY_WINDOW_NS) return { kind: 'ended', message: 'Verification window ended — use exported evidence', ...base };
   return { kind: 'ready', message: 'Verify hand', ...base };
+}
+
+// ------------------------------------------------------ offline evidence files
+
+export const UNSIGNED_LINE = 'This file is not signed: a passing check shows the file is consistent, not that the game produced it.';
+
+/** What to say about the canister an evidence file names, compared with this app's backend. */
+export function canisterNote(claimed: string, appCanister: string): { text: string; warn: boolean } {
+  if (!appCanister) return { text: `The file says it comes from canister ${claimed}. This app's game canister is not known here, so that could not be compared.`, warn: true };
+  if (claimed !== appCanister) {
+    return { text: `The file says it comes from canister ${claimed}, which is not this app's game canister (${appCanister}).`, warn: true };
+  }
+  return { text: `The file says it comes from canister ${claimed}, this app's game canister.`, warn: false };
+}
+
+// ------------------------------------------------------ verifiable hands list
+
+export interface VerifiableLike {
+  id: bigint;
+  reveal_at: [] | [bigint];
+}
+
+const byDesc = (a: bigint, b: bigint) => (a < b ? 1 : a > b ? -1 : 0);
+
+/**
+ * Splits `get_verifiable_hands` results into hands whose seed is out (ready,
+ * newest first) and hands still waiting for it (pending, soonest first, with
+ * a countdown). Hands without evidence are dropped.
+ */
+export function groupVerifiable<T extends VerifiableLike>(hands: readonly T[], now: bigint): { ready: T[]; pending: (T & { countdown: string })[] } {
+  const at = (h: T) => h.reveal_at[0] as bigint;
+  const fair = hands.filter((h) => h.reveal_at.length > 0);
+  const ready = fair.filter((h) => now >= at(h)).sort((a, b) => byDesc(a.id, b.id));
+  const pending = fair
+    .filter((h) => now < at(h))
+    .sort((a, b) => byDesc(at(b), at(a)))
+    .map((h) => ({ ...h, countdown: revealCountdown(at(h), now) }));
+  return { ready, pending };
 }
 
 // ----------------------------------------------------------- log rendering
@@ -114,8 +153,12 @@ export type LogStep =
   | { type: 'street'; text: string }
   | { type: 'action'; seat: number; text: string; amount: bigint };
 
-/** A log entry as a replay step. Protocol entries never carry chips: ShuffleRevealed's amount is reveal_at. */
-export function logStepLabel(e: LogLike): LogStep {
+/**
+ * A log entry as a replay step. Protocol entries never carry chips:
+ * ShuffleRevealed's amount is reveal_at. `revealAt` (from the hand's
+ * evidence) dates the HandVerificationAvailable step, whose stored amount is 0.
+ */
+export function logStepLabel(e: LogLike, revealAt?: bigint): LogStep {
   const k = e.kind[0];
   if (k) {
     if ('ShuffleCommitted' in k) {
@@ -123,7 +166,9 @@ export function logStepLabel(e: LogLike): LogStep {
       return { type: 'protocol', text: `Shuffle committed: ${hex(c).slice(0, 16)}…` };
     }
     if ('ShuffleRevealed' in k) return { type: 'protocol', text: `Seed reveal at ${utc(e.amount)}` };
-    if ('HandVerificationAvailable' in k) return { type: 'protocol', text: 'Hand verification available' };
+    if ('HandVerificationAvailable' in k) {
+      return { type: 'protocol', text: revealAt === undefined ? 'Hand verification available' : `Hand verification available from ${utc(revealAt)}` };
+    }
     return { type: 'protocol', text: e.text };
   }
   if (e.seat.length) return { type: 'action', seat: e.seat[0], text: e.text.toLowerCase(), amount: e.amount };
