@@ -299,3 +299,31 @@ UPDATE_FAIR_VECTORS=1 cargo test -p poker_backend vectors_file_matches
 Without the variable, the test fails if the file differs from what the code
 produces. A change to the vectors is a change to the protocol and needs a new
 version number.
+
+## Measured cost
+
+Measured on 2026-10-24 by `cycle_cost_per_hand` in
+`src/poker_backend/tests/integration.rs` (run through
+`scripts/integration-test.sh`), against the backend canister on PocketIC 16.1.0
+with an application subnet.
+
+- Each hand draws one `raw_rand` (D2a), hashes one commitment and runs one
+  shuffle.
+- N = 25 heads-up hands on a 0.01/0.02 ICP table, each ended by a fold, in 146
+  simulated seconds.
+- The backend burned 3,993,153,042 cycles while playing them, and
+  2,626,251,826 cycles over the same 146 one-second steps with nobody seated.
+- The difference is about 1.37 billion cycles over 25 hands: roughly 54.7
+  million cycles per hand (gross, without subtracting idle: 159.7 million).
+
+Caveats:
+
+- The per-hand figure includes the `act` ingress message that ends each hand,
+  all of the table's other timer work and the hand's storage. The `raw_rand`
+  fee is not separated out, and the dealing path with and without it was not
+  compared.
+- PocketIC's application subnet charges its own fee schedule and subnet size.
+  Mainnet figures will differ; treat these as an order of magnitude, not a
+  quote.
+- One run, no repetitions. The test prints the numbers and asserts nothing
+  about them.
