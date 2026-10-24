@@ -39,6 +39,15 @@ in its own state. It deals from them. A verifier must still trust four things:
   cannot check where the seed came from.
 - **The replica that answers `get_hand`.** `get_hand` is a query (`lib.rs`,
   `get_hand`), so a single replica answers it and the reply is not certified.
+- **The verifier code and the environment running it.** The in-app verifier
+  (`fair/verify.ts` and the Verify panel) is served by the same operator's
+  frontend canister. A controller, a compromised frontend or a compromised
+  browser could show VERIFIED whatever the data says.
+  - Players who want high assurance should export the evidence file ("Export
+    evidence") and check it with a verifier they obtained independently.
+  - They can build the open-source verifier (`src/poker_frontend/src/fair/`)
+    themselves from a reviewed commit, or write their own from
+    [`provably-fair.md`](provably-fair.md) and its test vectors.
 
 Verification happens after the hand. It cannot show that nobody saw the cards
 during play. The in-app verifier states both limits in every report: the
@@ -300,8 +309,9 @@ this only by trusting the deployed code. See Future work: verifiable builds.
 - **Leaving.** `leave_table` calls `Table::stand`. A player who leaves while
   still live in a hand stays seated and is marked `leaving`. Their remaining
   turns are checked or folded for them, and they are paid out when the hand
-  ends (`take_leavers`). A player who has already folded leaves at once,
-  without their chips in the pot.
+  ends (`take_leavers`). A player who has already folded leaves at once. They
+  get back their remaining stack; the chips they already committed stay in
+  the pot.
 - **Sitting out.** On a sitting-out player's turn, `set_sitting_out` and
   `set_deadline` set their clock to now. The next tick's `handle_timeout` then
   checks or folds for them. `handle_timeout` does the same for any player
@@ -314,8 +324,9 @@ this only by trusting the deployed code. See Future work: verifiable builds.
   tournament tables.
 
 **A committed hand is voided only when its table is removed**
-(`void_unsettled_hand`). None of the code paths that remove a table can do so
-during a live hand:
+(`void_unsettled_hand`). None of the code paths that remove a table is
+expected to do so during a live hand. For tournament close this rests on an
+invariant the code does not enforce (see the tournament item below):
 
 - `close_room` refuses while anyone is seated (`player_count() > 0`). A
   leaving player still counts.
@@ -324,7 +335,12 @@ during a live hand:
   betting.
 - Tournament tables are broken up only when `between_hands()` holds
   (`tournament.rs`, table balancing). They are closed only after the
-  tournament finished.
+  tournament has finished.
+  - This relies on a finished tournament having no live hand. Close does not
+    check `between_hands()`.
+  - If a hand were still live at close, `void_unsettled_hand` (tournament
+    close in `tournament_tick`) would publish it as voided rather than lose
+    it.
 - No admin endpoint removes a table.
 
 **A voided hand is still published.** Its players get it with its evidence and

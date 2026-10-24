@@ -1,8 +1,9 @@
 //! `BP-FAIR-v1`: the commit-reveal shuffle protocol.
 //!
 //! Before a hand is dealt the canister publishes `commitment(seed, hand)`.
-//! After the hand the seed is revealed, and anyone holding the hand id can
-//! recompute the commitment and the exact deck with [`shuffle_deck`].
+//! After the hand the seed is revealed to the hand's players, and a holder of
+//! the published evidence can recompute the commitment and the exact deck with
+//! [`shuffle_deck`].
 //! The byte-level specification is `docs/provably-fair.md`; the shared test
 //! vectors live in `src/poker_frontend/src/fair/vectors.json`.
 //!

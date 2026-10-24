@@ -21,7 +21,9 @@ It is **not** mental poker, and it keeps no card secret from the canister. The c
 seed and the deck in its state while the hand is played. A verifier must still
 trust the canister's code, the Internet Computer subnet that runs it, and the
 management canister's `raw_rand`, which supplies the seed. `raw_rand` output
-carries no public proof of its origin. The
+carries no public proof of its origin. The in-app verifier is served by the
+same operator, so for high assurance, export a hand's evidence and check it
+with a verifier you build or write yourself from this document. The
 [threat model](provably-fair-threat-model.md) lists what this verifiable
 shuffle and hand history do and do not protect against, and the remaining
 trust assumptions.
