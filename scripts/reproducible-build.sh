@@ -6,7 +6,8 @@
 #
 # Writes DIR/poker_backend.wasm.gz (the module that gets installed),
 # DIR/poker_backend.wasm.gz.sha256 and DIR/poker_backend.did, and prints the
-# hash. DIR defaults to out/.
+# hash. DIR defaults to out/ in the repo; a relative DIR is taken from the
+# current directory.
 #
 # The source is the committed HEAD (git archive), not the working tree, so
 # uncommitted edits and checkout line endings can't change the result. The
@@ -17,15 +18,16 @@
 # It doesn't change the output; scripts/check-reproducible.sh varies it to
 # prove that.
 set -euo pipefail
+CALLER_DIR=$PWD
 cd "$(dirname "$0")/.."
 
 OUT=out
 WORK=/build
 while [ $# -gt 0 ]; do
   case "$1" in
-    --out) OUT=${2:?--out needs a directory}; shift 2 ;;
+    --out) OUT=${2:?--out needs a directory}; case "$OUT" in /*) ;; *) OUT=$CALLER_DIR/$OUT ;; esac; shift 2 ;;
     --work-dir) WORK=${2:?--work-dir needs a path}; shift 2 ;;
-    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done

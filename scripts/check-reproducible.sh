@@ -40,7 +40,7 @@ fi
 cmp -s "$A/poker_backend.did" "$B/poker_backend.did" || { echo "the .did files differ" >&2; status=1; }
 
 # Nothing machine- or user-specific may reach the module.
-for needle in "$WORK_A/" "$WORK_B/" "cargo-home" "/usr/local/cargo" "/home/" "/root/" "/mnt/" "/Users/"; do
+for needle in "$WORK_A/" "$WORK_B/" "cargo-home" "/usr/local/" "/home/" "/root/" "/mnt/" "/Users/"; do
   [ -n "$needle" ] || continue
   if grep -q -a -F -- "$needle" "$TMP/a.wasm" "$TMP/b.wasm"; then
     echo "LEAK: the module contains \"$needle\"" >&2
