@@ -209,6 +209,25 @@ impl Env {
     }
 }
 
+/// The IC's module hash is the SHA-256 of the exact bytes installed (for the
+/// reproducible build, the .wasm.gz), which is what releases publish.
+#[test]
+fn module_hash_is_the_sha256_of_the_installed_bytes() {
+    use sha2::{Digest, Sha256};
+    let Some(env) = Env::new() else { return };
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let want = hex(&Sha256::digest(&env.wasm));
+    let status = env.pic.canister_status(env.poker, Some(env.admin)).unwrap();
+    let got = hex(&status.module_hash.expect("installed canister has a module hash"));
+    eprintln!("installed module sha256 {want}, module_hash {got}");
+    assert_eq!(got, want);
+    // integration-test.sh sets this from the build's .sha256 file, so the
+    // module under test is the one that was published.
+    if let Ok(published) = std::env::var("BACKEND_WASM_SHA256") {
+        assert_eq!(got, published.trim());
+    }
+}
+
 #[test]
 fn deposits_withdrawals_and_solvency() {
     let Some(env) = Env::new() else { return };
