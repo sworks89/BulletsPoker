@@ -26,6 +26,7 @@ jobs:
         with:
           # Full history, so we can tell whether the tagged commit is on main.
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Require the tag to point at a commit on main
         run: |
@@ -35,11 +36,8 @@ jobs:
             exit 1
           fi
 
-      - name: Build twice and compare
-        run: scripts/check-reproducible.sh
-
-      - name: Build the release files
-        run: scripts/reproducible-build.sh --out out
+      - name: Build twice, compare, and keep the first build
+        run: scripts/check-reproducible.sh --keep out
 
       - name: Write the release notes
         run: scripts/release-notes.sh "$TAG" out > release-notes.md

@@ -4,8 +4,22 @@
 # container, and fails with a byte-diff summary if the modules differ. It also
 # fails if a build path, the cargo home or a user/home path shows up in the
 # module.
+#
+#   scripts/check-reproducible.sh [--keep DIR]
+#
+# --keep DIR copies the first (checked) build's three files into DIR after the
+# comparison succeeds, so a release publishes bytes that were actually compared.
 set -euo pipefail
+CALLER_DIR=$PWD
 cd "$(dirname "$0")/.."
+
+KEEP=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --keep) KEEP=${2:?--keep needs a directory}; case "$KEEP" in /*) ;; *) KEEP=$CALLER_DIR/$KEEP ;; esac; shift 2 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -49,6 +63,10 @@ for needle in "$WORK_A/" "$WORK_B/" "cargo-home" "/usr/local/" "/home/" "/root/"
 done
 
 if [ "$status" -eq 0 ]; then
+  if [ -n "$KEEP" ]; then
+    mkdir -p "$KEEP"
+    cp "$A/poker_backend.wasm.gz" "$A/poker_backend.wasm.gz.sha256" "$A/poker_backend.did" "$KEEP/"
+  fi
   echo "reproducible: $HA  poker_backend.wasm.gz"
 fi
 exit "$status"
