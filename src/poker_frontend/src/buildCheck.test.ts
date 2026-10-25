@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classify, controllersText, hexToBytes, parseReleases, type Release } from './buildCheck';
+import { classify, controllersText, controllersView, hexToBytes, parseReleases, type Release } from './buildCheck';
 
 const H1 = 'a'.repeat(64);
 const H2 = 'b'.repeat(64);
@@ -95,5 +95,29 @@ describe('controllersText', () => {
   });
   it('handles none', () => {
     expect(controllersText([])).toBe('none');
+  });
+});
+
+describe('controllersView', () => {
+  it('an unreadable result is not "none"', () => {
+    expect(controllersView(null)).toEqual({ kind: 'unreadable' });
+  });
+  it('a genuinely empty list is its own case', () => {
+    expect(controllersView([])).toEqual({ kind: 'none' });
+  });
+  it('lists controllers', () => {
+    expect(controllersView(['x'])).toEqual({ kind: 'list', items: ['x'] });
+  });
+});
+
+describe('stricter release parsing', () => {
+  it('requires the wasm asset', () => {
+    expect(parseReleases([rel('v1', H1, { assets: [] }), rel('v2', H2, { assets: [{ name: 'other.did' }] }), rel('v3', H3, { assets: undefined })])).toEqual([]);
+  });
+  it('skips a malformed published_at', () => {
+    expect(parseReleases([rel('v1', H1, { published_at: 'not a date' })])).toEqual([]);
+  });
+  it('no parsed releases is unknown, not none', () => {
+    expect(classify(bytes(H1), [], 'ic').kind).toBe('unknown');
   });
 });

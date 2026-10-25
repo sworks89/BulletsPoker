@@ -3,12 +3,12 @@ import { CanisterStatus, HttpAgent } from '@icp-sdk/core/agent';
 import { safeGetCanisterEnv } from '@icp-sdk/core/agent/canister-env';
 import { Principal } from '@icp-sdk/core/principal';
 import { backendId } from '../ic';
-import { classify, controllersText, hexToBytes, parseReleases, shortPrincipal, type BadgeState, type Release } from '../buildCheck';
+import { classify, controllersView, hexToBytes, parseReleases, shortPrincipal, type BadgeState, type Release } from '../buildCheck';
 
 const RELEASES_API = 'https://api.github.com/repos/sworks89/BulletsPoker/releases';
 const DOC_URL = 'https://github.com/sworks89/BulletsPoker/blob/main/docs/reproducible-builds.md';
 const CACHE_KEY = 'bp.releases.v1';
-const CACHE_MS = 10 * 60 * 1000;
+const CACHE_MS = 2 * 60 * 1000;
 
 /** Same decision as ic.ts: a page served from localhost is a local network. */
 function network(): 'ic' | 'local' {
@@ -27,6 +27,7 @@ async function fetchReleases(): Promise<Release[]> {
   const res = await fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' } });
   if (!res.ok) throw new Error(`GitHub ${res.status}`);
   const json: unknown = await res.json();
+  if (!Array.isArray(json)) throw new Error('unexpected releases response');
   try {
     sessionStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), json }));
   } catch { /* ignore */ }
@@ -34,8 +35,9 @@ async function fetchReleases(): Promise<Release[]> {
 }
 
 /** Module hash and controllers from the IC's certified read_state, verified by the agent. */
-async function readLive(): Promise<{ hash: Uint8Array | null; controllers: string[] }> {
-  const rootKey = safeGetCanisterEnv()?.IC_ROOT_KEY;
+async function readLive(net: 'ic' | 'local'): Promise<{ hash: Uint8Array | null; controllers: string[] | null }> {
+  // On mainnet pin the agent's built-in IC root key rather than trusting the cookie.
+  const rootKey = net === 'ic' ? undefined : safeGetCanisterEnv()?.IC_ROOT_KEY;
   const agent = await HttpAgent.create({ rootKey });
   const status = await CanisterStatus.request({
     canisterId: Principal.fromText(backendId),
@@ -46,7 +48,7 @@ async function readLive(): Promise<{ hash: Uint8Array | null; controllers: strin
   const ctl = status.get('controllers');
   return {
     hash: typeof mh === 'string' ? hexToBytes(mh) : null,
-    controllers: Array.isArray(ctl) ? (ctl as Principal[]).map((p) => p.toText()) : [],
+    controllers: Array.isArray(ctl) ? (ctl as Principal[]).map((p) => p.toText()) : null,
   };
 }
 
@@ -75,7 +77,7 @@ function describe(s: BadgeState, releaseUrl: (tag: string) => string | undefined
  */
 export function BuildBadge() {
   const [state, setState] = useState<BadgeState | null>(null);
-  const [controllers, setControllers] = useState<string[] | null>(null);
+  const [controllers, setControllers] = useState<string[] | null | undefined>(undefined);
   const [releases, setReleases] = useState<Release[]>([]);
 
   useEffect(() => {
@@ -88,7 +90,7 @@ export function BuildBadge() {
       }
       try {
         if (!backendId) throw new Error('no backend id');
-        const [live, rs] = await Promise.all([readLive(), fetchReleases()]);
+        const [live, rs] = await Promise.all([readLive(net), fetchReleases()]);
         if (!alive) return;
         setReleases(rs);
         setControllers(live.controllers);
@@ -105,24 +107,29 @@ export function BuildBadge() {
   return (
     <div className={`build-badge build-${state.kind}`} data-testid="build-badge">
       <div>{describe(state, urlOf)}</div>
-      {controllers && state.kind !== 'local' && (
-        <div>
-          The owner can still upgrade this code (controllers:{' '}
-          {controllers.length
-            ? controllers.map((p, i) => (
-                <span key={p}>
-                  {i > 0 && ', '}
-                  <span title={p}>{shortPrincipal(p)}</span>
-                </span>
-              ))
-            : <span title={controllersText([])}>none</span>}
-          ).
-        </div>
-      )}
+      {controllers !== undefined && state.kind !== 'local' && <ControllersLine controllers={controllers} />}
       <div>
         Shown by this website; covers the game canister only.{' '}
         <a href={DOC_URL} target="_blank" rel="noopener noreferrer">Check it yourself</a>
       </div>
+    </div>
+  );
+}
+
+function ControllersLine({ controllers }: { controllers: string[] | null }) {
+  const v = controllersView(controllers);
+  if (v.kind === 'unreadable') return <div>Couldn't read who can upgrade this code.</div>;
+  if (v.kind === 'none') return <div>No controllers: this code can't be upgraded.</div>;
+  return (
+    <div>
+      The owner can still upgrade this code (controllers:{' '}
+      {v.items.map((p, i) => (
+        <span key={p}>
+          {i > 0 && ', '}
+          <span title={p}>{shortPrincipal(p)}</span>
+        </span>
+      ))}
+      ).
     </div>
   );
 }

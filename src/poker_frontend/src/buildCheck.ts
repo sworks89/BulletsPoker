@@ -50,11 +50,12 @@ export function parseReleases(json: unknown): Release[] {
   for (const r of json) {
     if (!isObj(r) || r.draft !== false || r.prerelease !== false) continue;
     const hash = bodyHash(r.body);
-    if (!hash || typeof r.tag_name !== 'string' || typeof r.published_at !== 'string') continue;
+    if (!hash || typeof r.tag_name !== 'string' || typeof r.published_at !== 'string' || Number.isNaN(Date.parse(r.published_at))) continue;
     let assetDigest: string | undefined;
     let conflict = false;
     const asset = Array.isArray(r.assets) ? r.assets.find((a) => isObj(a) && a.name === ASSET) : undefined;
-    if (isObj(asset) && asset.digest !== undefined && asset.digest !== null) {
+    if (!isObj(asset)) continue; // the wasm asset must be part of the release
+    if (asset.digest !== undefined && asset.digest !== null) {
       const m = typeof asset.digest === 'string' ? /^sha256:([0-9a-f]{64})$/.exec(asset.digest) : null;
       if (m) {
         assetDigest = m[1];
@@ -77,6 +78,7 @@ export function parseReleases(json: unknown): Release[] {
 
 export function classify(liveHash: Uint8Array | null, releases: Release[], network: 'ic' | 'local'): BadgeState {
   if (network === 'local') return { kind: 'local' };
+  if (releases.length === 0) return { kind: 'unknown', reason: 'no published releases could be read' };
   if (!liveHash || liveHash.length !== 32) return { kind: 'unknown', reason: 'could not read the live module hash' };
   const live = bytesToHex(liveHash);
   const usable = releases
@@ -94,4 +96,12 @@ export function shortPrincipal(p: string): string {
 
 export function controllersText(principals: string[]): string {
   return principals.length ? principals.map(shortPrincipal).join(', ') : 'none';
+}
+
+export type ControllersView = { kind: 'unreadable' } | { kind: 'none' } | { kind: 'list'; items: string[] };
+
+/** null means the read failed: never present that as "no controllers". */
+export function controllersView(controllers: string[] | null): ControllersView {
+  if (controllers === null) return { kind: 'unreadable' };
+  return controllers.length === 0 ? { kind: 'none' } : { kind: 'list', items: controllers };
 }
