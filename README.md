@@ -142,6 +142,18 @@ icp deploy -e ic   # the backend defaults to the real ICP ledger
 
 Only controllers can call the `admin_*` methods (create tables, add recurring tournaments, add store items, view house stats, withdraw the treasury). Six tables, from micro to high stakes, and the default store catalogue are created at install time.
 
+## Reproducible builds
+
+The game canister (`poker_backend`) builds to identical bytes on any machine:
+`scripts/reproducible-build.sh` (Docker) produces `poker_backend.wasm.gz`, and
+each `v*` tag gets a GitHub Release with its SHA-256, which is also the module
+hash the Internet Computer reports. Mainnet is upgraded only to a published
+release (`scripts/deploy-release.sh`). The app footer shows whether the live
+canister matches a release, but it is drawn by this website, so the strongest
+check is to rebuild and compare yourself. See
+[docs/reproducible-builds.md](docs/reproducible-builds.md) for the commands and
+for what a match does and doesn't prove.
+
 ## Operations
 
 **Storage and upgrades.** Users, usernames, notes, direct messages, hand histories and the ledger-operation log live directly in stable memory (`src/store.rs`), so upgrades never serialize them. Live game state (tables, tournaments, chats) is bounded and saved as a versioned snapshot in `pre_upgrade`. Rule for future changes: new fields on stored records must be `Option<T>`, or bump `SNAPSHOT_VERSION` and migrate in `State::restore`.

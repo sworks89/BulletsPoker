@@ -318,8 +318,17 @@ after it is recorded. It does not stop a malicious build from calling
 
 The current code takes the first `raw_rand` reply for each request.
 `deal_with_seed` drops a seed only because of the table's state (gone, moved
-on, not ready), never because of the deck the seed gives. Players can rely on
-this only by trusting the deployed code. See Future work: verifiable builds.
+on, not ready), never because of the deck the seed gives.
+
+**Still residual, but code changes are now detectable.** The game canister is
+built reproducibly and its module hash is published with each release
+([`reproducible-builds.md`](reproducible-builds.md)). Anyone can rebuild a
+release and compare it with the module hash the IC reports for the canister,
+so a build that draws many seeds and keeps the best one cannot run unnoticed
+unless it is a published release. A malicious release would itself be public
+and open to review. Players still rely on the code being reviewed and honest:
+a matching hash shows which code runs, not that the code is fair, and
+a controller can upgrade to different code (threat 8).
 
 ### 7. Aborting after unfavourable cards
 
@@ -383,6 +392,17 @@ Stopping the canister also stops every hand in progress.
 - **A controller can change anything.** A controller can install any code, and
   that code can read or rewrite stable memory, including stored records, seeds
   and evidence.
+- **Upgrades are now visible, and mainnet upgrades go through releases.**
+  The owner upgrades mainnet only with `scripts/deploy-release.sh`, which
+  installs a published release after checking its hash. Anyone can compare the
+  live module hash with the releases (`icp canister status <id> -n ic
+  --public`, or the in-app badge, which also lists the controllers). An
+  upgrade to code that is not a published release shows as "does not match any
+  published release". This is a procedure and a check, not a technical block:
+  a controller can still install anything, and nothing makes the site, the
+  badge or the owner's process binding. The badge is shown by the operator's
+  website, so rebuild yourself to check. The hash shows which code runs; it
+  doesn't show that the code is honest, and it can't stop a later upgrade.
 - **The only copy outside the canister is what a player kept.** That is the
   commitment the app stored when it was shown at the table, a commitment copied
   by hand, or an evidence file exported before or after the reveal
@@ -531,22 +551,35 @@ automated collusion detection.
 
 ## Future work
 
+### Done: reproducible builds with published module hashes
+
+The game canister has a deterministic build, a GitHub Release with its SHA-256
+for each `v*` tag, a release-only deploy script for mainnet and an in-app
+badge ([`reproducible-builds.md`](reproducible-builds.md)). For threats 1, 6,
+7 and 8, this lets anyone check which published code the canister runs.
+
+- **What it proves:** the module the IC runs is, byte for byte, the build of a
+  published commit, which anyone can read and rebuild.
+- **What it doesn't prove:** that the code is honest or fair (that takes
+  review), that the frontend that shows the badge is honest, or that the code
+  won't change. The canister is still upgradeable, and the controllers can
+  install any code. The seed is still visible to the subnet's node operators
+  (threat 2), `raw_rand` still has no proof of origin and the verifier still
+  runs on the operator's frontend.
+
+### Not built
+
 These are separate projects. None of them is built.
 
-1. **Reproducible builds with published module hashes (recommended next).**
-   Publish a deterministic build and the hash of the deployed module, so that
-   anyone can check that the running canister is the reviewed code. For
-   threats 1, 6, 7 and 8, this turns "trust the operator" into "check the
-   code". It holds until the code is changed.
-2. **Decentralised control.** Hand control of the canister to an SNS, or
+1. **Decentralised control.** Hand control of the canister to an SNS, or
    remove its controllers (blackhole it), so that a single operator cannot
    install new code.
-3. **Player-contributed entropy.** Players commit to their own random values
+2. **Player-contributed entropy.** Players commit to their own random values
    before the deal and reveal them after. These values are mixed into the
    seed, so the canister alone cannot choose it (threat 6).
-4. **vetKeys encrypted dealing.** Encrypt each hole card to its player with
+3. **vetKeys encrypted dealing.** Encrypt each hole card to its player with
    vetKeys, so that query replies no longer carry plaintext cards. The
    canister still holds the deck.
-5. **Mental poker or a multi-party shuffle.** Players jointly shuffle and
+4. **Mental poker or a multi-party shuffle.** Players jointly shuffle and
    encrypt the deck, so that no single party, the canister included, knows the
    cards (threats 2 and 9).
