@@ -21,6 +21,8 @@ export type BadgeState =
   | { kind: 'local' };
 
 const ASSET = 'poker_backend.wasm.gz';
+/** Releases are built and published by .github/workflows/release.yml as this account. */
+const CI_LOGIN = 'github-actions[bot]';
 const HASH_LINE = /^poker_backend\.wasm\.gz sha256: ([0-9a-f]{64})\s*$/gm;
 const HEX64 = /^[0-9a-f]{64}$/;
 
@@ -36,6 +38,7 @@ export function bytesToHex(b: Uint8Array): string {
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
+const byCi = (v: unknown, key: string): boolean => isObj(v) && isObj(v[key]) && v[key].login === CI_LOGIN;
 
 /** Exactly one hash line, otherwise null (ambiguity is not trusted). */
 function bodyHash(body: unknown): string | null {
@@ -49,12 +52,13 @@ export function parseReleases(json: unknown): Release[] {
   const out: Release[] = [];
   for (const r of json) {
     if (!isObj(r) || r.draft !== false || r.prerelease !== false) continue;
+    if (!byCi(r, 'author')) continue; // a release made by hand is not a CI build
     const hash = bodyHash(r.body);
     if (!hash || typeof r.tag_name !== 'string' || typeof r.published_at !== 'string' || Number.isNaN(Date.parse(r.published_at))) continue;
     let assetDigest: string | undefined;
     let conflict = false;
     const asset = Array.isArray(r.assets) ? r.assets.find((a) => isObj(a) && a.name === ASSET) : undefined;
-    if (!isObj(asset)) continue; // the wasm asset must be part of the release
+    if (!isObj(asset) || !byCi(asset, 'uploader')) continue; // the CI-uploaded wasm asset must be part of the release
     if (asset.digest !== undefined && asset.digest !== null) {
       const m = typeof asset.digest === 'string' ? /^sha256:([0-9a-f]{64})$/.exec(asset.digest) : null;
       if (m) {
@@ -104,4 +108,11 @@ export type ControllersView = { kind: 'unreadable' } | { kind: 'none' } | { kind
 export function controllersView(controllers: string[] | null): ControllersView {
   if (controllers === null) return { kind: 'unreadable' };
   return controllers.length === 0 ? { kind: 'none' } : { kind: 'list', items: controllers };
+}
+
+/** Controllers from the live read; null (unknown) whenever that read failed, whatever the releases did. */
+export function controllersFromRead(
+  r: PromiseSettledResult<{ controllers: string[] | null }>,
+): string[] | null {
+  return r.status === 'fulfilled' ? r.value.controllers : null;
 }

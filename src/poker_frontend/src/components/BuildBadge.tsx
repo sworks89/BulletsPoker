@@ -3,7 +3,7 @@ import { CanisterStatus, HttpAgent } from '@icp-sdk/core/agent';
 import { safeGetCanisterEnv } from '@icp-sdk/core/agent/canister-env';
 import { Principal } from '@icp-sdk/core/principal';
 import { backendId } from '../ic';
-import { classify, controllersView, hexToBytes, parseReleases, shortPrincipal, type BadgeState, type Release } from '../buildCheck';
+import { classify, controllersFromRead, controllersView, hexToBytes, parseReleases, shortPrincipal, type BadgeState, type Release } from '../buildCheck';
 
 const RELEASES_API = 'https://api.github.com/repos/sworks89/BulletsPoker/releases';
 const DOC_URL = 'https://github.com/sworks89/BulletsPoker/blob/main/docs/reproducible-builds.md';
@@ -90,13 +90,19 @@ export function BuildBadge() {
       }
       try {
         if (!backendId) throw new Error('no backend id');
-        const [live, rs] = await Promise.all([readLive(net), fetchReleases()]);
+        // Independent reads: a failure of one must not hide the other.
+        const [live, rel] = await Promise.allSettled([readLive(net), fetchReleases()]);
         if (!alive) return;
-        setReleases(rs);
-        setControllers(live.controllers);
-        setState(classify(live.hash, rs, net));
+        setControllers(controllersFromRead(live));
+        if (live.status === 'rejected') throw live.reason;
+        if (rel.status === 'rejected') throw rel.reason;
+        setReleases(rel.value);
+        setState(classify(live.value.hash, rel.value, net));
       } catch (e) {
-        if (alive) setState({ kind: 'unknown', reason: e instanceof Error ? e.message : 'error' });
+        if (alive) {
+          setControllers((c) => (c === undefined ? null : c));
+          setState({ kind: 'unknown', reason: e instanceof Error ? e.message : 'error' });
+        }
       }
     })();
     return () => { alive = false; };
