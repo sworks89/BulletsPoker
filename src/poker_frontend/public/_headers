@@ -2,7 +2,7 @@
 # CSP: only our own scripts; API calls only to IC boundary nodes (and the local
 # network in development). Internet Identity opens in a popup, so it needs no entry.
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; connect-src 'self' https://icp0.io https://*.icp0.io https://icp-api.io https://ic0.app https://*.ic0.app http://localhost:8000 http://127.0.0.1:8000 http://*.localhost:8000; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests
+  Content-Security-Policy: default-src 'self'; script-src 'self'; connect-src 'self' https://api.github.com https://icp0.io https://*.icp0.io https://icp-api.io https://ic0.app https://*.ic0.app http://localhost:8000 http://127.0.0.1:8000 http://*.localhost:8000; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests
   Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=(), interest-cohort=()
   Strict-Transport-Security: max-age=31536000; includeSubDomains
   X-Frame-Options: DENY

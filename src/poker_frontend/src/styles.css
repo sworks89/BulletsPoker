@@ -685,3 +685,9 @@ input.narrow { width: 80px; flex: none; }
 .verify-rows tr.verify-warn td:nth-child(2) { color: #fbbf24; }
 .verify-voided { color: #fbbf24; }
 .protocol-step { color: var(--muted); font-style: italic; }
+
+.build-badge { margin-top: 10px; font-size: 0.85em; line-height: 1.5; }
+.build-badge::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: currentColor; opacity: 0.6; }
+.build-latest::before { background: #3fb950; opacity: 1; }
+.build-older::before { background: #d29922; opacity: 1; }
+.build-none::before { background: #f85149; opacity: 1; }
