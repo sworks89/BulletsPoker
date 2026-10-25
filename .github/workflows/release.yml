@@ -37,10 +37,10 @@ jobs:
           fi
 
       - name: Build twice, compare, and keep the first build
-        run: scripts/check-reproducible.sh --keep out
+        run: bash scripts/check-reproducible.sh --keep out
 
       - name: Write the release notes
-        run: scripts/release-notes.sh "$TAG" out > release-notes.md
+        run: bash scripts/release-notes.sh "$TAG" out > release-notes.md
 
       - name: Create the release
         env:

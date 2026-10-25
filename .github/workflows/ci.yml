@@ -35,7 +35,7 @@ jobs:
         with:
           path: .pocket-ic
           key: pocket-ic-${{ hashFiles('scripts/integration-test.sh') }}
-      - run: ./scripts/integration-test.sh
+      - run: bash scripts/integration-test.sh
 
   frontend:
     runs-on: ubuntu-latest
@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - run: scripts/check-reproducible.sh
+      - run: bash scripts/check-reproducible.sh
 
   audit:
     # Known-vulnerability scan of both lockfiles. Any finding fails the job.
