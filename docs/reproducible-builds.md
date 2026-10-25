@@ -181,6 +181,10 @@ The test `module_hash_is_the_sha256_of_the_installed_bytes` installs the
 module and checks that the `module_hash` from `canister_status` equals the
 SHA-256 of the file and the hash in `poker_backend.wasm.gz.sha256`.
 
+`bash scripts/test-deploy-release-checks.sh` (needs `icp` and `python3`, e.g. in
+WSL) checks that `deploy-release.sh` refuses a release or asset that wasn't
+built by `github-actions[bot]`. It uses `--from-dir`, so it installs nothing.
+
 ## Deploy a release
 
 The game canister on mainnet is only ever upgraded to a published release,
@@ -201,7 +205,10 @@ Without `--network ic` it targets the local network. It needs `icp`, `curl`,
    `-` are pre-releases).
 2. Reads the release from
    `https://api.github.com/repos/sworks89/BulletsPoker/releases/tags/<tag>`.
-   A draft is not visible there (404), and a draft or pre-release is refused.
+   A draft is not visible there (404), and a draft or pre-release is refused,
+   and so is a release whose author, or whose uploader of any of the three
+   assets, is not `github-actions[bot]` (a release made by hand is not a CI
+   build).
 3. Downloads `poker_backend.wasm.gz`, `poker_backend.wasm.gz.sha256` and
    `poker_backend.did` from the release into a temporary directory. A missing
    asset stops it.
@@ -270,7 +277,9 @@ module hash equals a published release. On the live network it:
   one unauthenticated request, cached for 2 minutes in the tab). GitHub lists
   30 releases per page and the badge reads only that first page, so only the
   latest 30 releases can match;
-- counts a release only if it isn't a draft or pre-release, its body has
+- counts a release only if it isn't a draft or pre-release, it was created by
+  `github-actions[bot]` and its `poker_backend.wasm.gz` asset was uploaded
+  by `github-actions[bot]` (releases made by hand are ignored), its body has
   exactly one `poker_backend.wasm.gz sha256: <hex>` line, and the
   `poker_backend.wasm.gz` asset is part of the release. If GitHub reports a
   digest for that asset and it disagrees with the body (or can't be read), the
@@ -289,15 +298,20 @@ Its states:
 Under it, one line shows the controllers: "The owner can still upgrade this
 code (controllers: ...)", "No controllers: this code can't be upgraded", or
 "Couldn't read who can upgrade this code" when the read failed (an unreadable
-list is never shown as "none").
+list is never shown as "none"). The line is shown in every state except "not
+checked on a local network", including "could not check": a failed release
+lookup doesn't hide the controllers, and a failed controllers read doesn't
+hide the release result.
 
 ### What it does and doesn't prove
 
 - It is drawn by the operator's website. A site that lies could show a green
   badge, so the strongest check is to rebuild yourself and compare with the
   IC's module hash (see "Compare with the live canister").
-- A matching hash proves the running code is the code in the published
-  release, which anyone can rebuild and read. It doesn't prove the code is
+- A matching hash proves the live module equals the module that CI published
+  for that tag (releases not built by CI are ignored). Only rebuilding the tag
+  yourself proves that module came from that source, because the badge trusts
+  GitHub's account of who built the release. It doesn't prove the code is
   honest or fair; that needs review of the source.
 - It doesn't stop future upgrades. While there are controllers, they can
   install different code; the controllers line shows who they are. A new

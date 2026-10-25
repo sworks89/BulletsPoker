@@ -144,7 +144,7 @@ Only controllers can call the `admin_*` methods (create tables, add recurring to
 
 ## Reproducible builds
 
-The game canister (`poker_backend`) builds to identical bytes on any machine:
+The game canister (`poker_backend`) builds to identical bytes in the pinned linux/amd64 Docker image:
 `scripts/reproducible-build.sh` (Docker) produces `poker_backend.wasm.gz`, and
 each `v*` tag gets a GitHub Release with its SHA-256, which is also the module
 hash the Internet Computer reports. Mainnet is upgraded only to a published

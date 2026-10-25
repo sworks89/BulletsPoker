@@ -327,7 +327,9 @@ release and compare it with the module hash the IC reports for the canister,
 so a build that draws many seeds and keeps the best one cannot run unnoticed
 unless it is a published release. A malicious release would itself be public
 and open to review. Players still rely on the code being reviewed and honest:
-a matching hash shows which code runs, not that the code is fair, and
+a matching hash shows that the live module is the one CI published for a tag
+(releases not built by CI are ignored; only rebuilding the tag proves it came
+from that source), not that the code is fair, and
 a controller can upgrade to different code (threat 8).
 
 ### 7. Aborting after unfavourable cards
@@ -401,7 +403,9 @@ Stopping the canister also stops every hand in progress.
   published release". This is a procedure and a check, not a technical block:
   a controller can still install anything, and nothing makes the site, the
   badge or the owner's process binding. The badge is shown by the operator's
-  website, so rebuild yourself to check. The hash shows which code runs; it
+  website, so rebuild yourself to check. A match proves the live module equals
+  the module CI published for that tag; only rebuilding the tag proves it came
+  from that source. Releases not built by CI are ignored. The hash shows which code runs; it
   doesn't show that the code is honest, and it can't stop a later upgrade.
 - **The only copy outside the canister is what a player kept.** That is the
   commitment the app stored when it was shown at the table, a commitment copied
@@ -558,8 +562,10 @@ for each `v*` tag, a release-only deploy script for mainnet and an in-app
 badge ([`reproducible-builds.md`](reproducible-builds.md)). For threats 1, 6,
 7 and 8, this lets anyone check which published code the canister runs.
 
-- **What it proves:** the module the IC runs is, byte for byte, the build of a
-  published commit, which anyone can read and rebuild.
+- **What it proves:** the module the IC runs is, byte for byte, the module CI
+  published for a tag (releases not built by CI are ignored). Only rebuilding
+  the tag yourself proves that module came from that source, which anyone can
+  read.
 - **What it doesn't prove:** that the code is honest or fair (that takes
   review), that the frontend that shows the badge is honest, or that the code
   won't change. The canister is still upgradeable, and the controllers can
