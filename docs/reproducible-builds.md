@@ -121,3 +121,60 @@ BACKEND_WASM=out/poker_backend.wasm.gz scripts/integration-test.sh
 The test `module_hash_is_the_sha256_of_the_installed_bytes` installs the
 module and checks that the `module_hash` from `canister_status` equals the
 SHA-256 of the file and the hash in `poker_backend.wasm.gz.sha256`.
+
+## Deploy a release
+
+The game canister on mainnet is only ever upgraded to a published release,
+with `scripts/deploy-release.sh`, run by the owner on their own machine with
+their own `icp` identity (in WSL on Windows). CI never deploys and never holds
+a controller key.
+
+```bash
+scripts/deploy-release.sh v1.4.0 --network ic                    # current icp identity
+scripts/deploy-release.sh v1.4.0 --network ic --identity owner   # or a named one
+```
+
+Without `--network ic` it targets the local network. It needs `icp`, `curl`,
+`python3`, `sha256sum` and `gzip`; it doesn't need `gh`. It:
+
+1. Refuses to run in CI (`CI` set to anything but `false`, or `GITHUB_ACTIONS`
+   set), and refuses a tag that isn't a plain release tag (`v1.4.0`; tags with
+   `-` are pre-releases).
+2. Reads the release from
+   `https://api.github.com/repos/sworks89/BulletsPoker/releases/tags/<tag>`.
+   A draft is not visible there (404), and a draft or pre-release is refused.
+3. Downloads `poker_backend.wasm.gz`, `poker_backend.wasm.gz.sha256` and
+   `poker_backend.did` from the release into a temporary directory. A missing
+   asset stops it.
+4. Checks that the SHA-256 of `poker_backend.wasm.gz` equals the hash in the
+   `.sha256` asset, the release body line `poker_backend.wasm.gz sha256: <hex>`
+   (exactly one such line) and GitHub's own `digest` of the asset, when the API
+   reports one; and that the file is a gzipped wasm module.
+5. Resolves the `poker_backend` canister ID for the environment from icp-cli's
+   ID mapping for this project (`icp canister status poker_backend -e ic
+   --id-only`). If this checkout has no `ic` mapping, for example because the
+   canister was never deployed with icp-cli from it, the script refuses; it has
+   no flag to name a canister ID by hand. It then reads the canister's status: the live module hash and
+   the controllers. It refuses the anonymous identity and any identity that
+   isn't a controller, and refuses a canister with no module (it only
+   upgrades). If the live hash already equals the release, it stops there.
+6. Shows the network, canister ID, identity, live module hash and new module
+   hash, and asks you to type `deploy <tag>`. On mainnet the answer must come
+   from a terminal, so it can't be piped in.
+7. Runs `icp canister install poker_backend -e ic --mode upgrade --wasm <file>`
+   with no install arguments: `post_upgrade` takes none and `icp.yaml` sets
+   none, so this is what `icp deploy -e ic` sends on an upgrade. `InitArgs` is
+   never sent. There is no `--yes`, so icp's own Candid compatibility prompt
+   still applies.
+8. Reads the module hash back and fails, with a non-zero exit, unless it
+   equals the release hash.
+
+It never builds and never installs a local file. The only exception is
+`--from-dir DIR`, **for testing only**: it takes `DIR/release.json` (in the
+GitHub API format) and the three assets from `DIR` instead of downloading
+them, and it is refused with `--network ic`. For example, on a local network:
+
+```bash
+scripts/check-reproducible.sh --keep /tmp/rel   # then write /tmp/rel/release.json
+scripts/deploy-release.sh v9.9.9 --from-dir /tmp/rel --identity <local controller>
+```
