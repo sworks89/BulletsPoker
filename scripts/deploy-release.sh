@@ -35,6 +35,8 @@ DID=poker_backend.did
 ANONYMOUS=2vxsx-fae
 
 die() { echo "deploy-release: REFUSED: $*" >&2; exit 1; }
+# After the install has started, a stop is a failure, not a refusal: the canister's state may have changed.
+fail() { echo "deploy-release: FAILED: $*" >&2; exit 1; }
 usage() { echo "usage: scripts/deploy-release.sh <tag> [--network ic] [--identity NAME]" >&2; exit 2; }
 
 # Never in CI: the controller key must never be there.
@@ -121,6 +123,9 @@ assert isinstance(r.get("tag_name"), str)
 assert isinstance(r.get("draft"), bool) and isinstance(r.get("prerelease"), bool)
 body = r.get("body") or ""
 assert isinstance(body, str)
+def login(o):
+    u = o.get("login") if isinstance(o, dict) else None
+    return u if isinstance(u, str) else ""
 assets = r.get("assets")
 assert isinstance(assets, list)
 by_name = {}
@@ -131,6 +136,7 @@ lines = [
     "TAG_NAME=" + r["tag_name"],
     "DRAFT=" + str(r["draft"]).lower(),
     "PRERELEASE=" + str(r["prerelease"]).lower(),
+    "AUTHOR=" + login(r.get("author")),
 ]
 for i, n in enumerate(names):
     found = by_name.get(n, [])
@@ -143,6 +149,7 @@ for i, n in enumerate(names):
     assert isinstance(url, str) and isinstance(digest, str)
     lines.append(f"ASSET{i}=present")
     lines.append(f"URL{i}=" + url)
+    lines.append(f"UPLOADER{i}=" + login(a.get("uploader")))
     lines.append(f"DIGEST{i}=" + digest)
 for l in lines:
     assert "\n" not in l and "\r" not in l
@@ -156,10 +163,15 @@ meta() { sed -n "s/^$1=//p" "$TMP/meta.txt"; }
 [ "$(meta TAG_NAME)" = "$TAG" ] || die "the release JSON is for tag '$(meta TAG_NAME)', not $TAG"
 [ "$(meta DRAFT)" = false ] || die "$TAG is a draft release"
 [ "$(meta PRERELEASE)" = false ] || die "$TAG is a pre-release"
+# Only what the release workflow built and published counts. A release made or
+# edited by hand (even by a repository writer) is not deployed.
+CI_LOGIN='github-actions[bot]'
+[ "$(meta AUTHOR)" = "$CI_LOGIN" ]   || die "$TAG was not built by CI: its author is '$(meta AUTHOR)', not $CI_LOGIN; releases not built by CI are not deployed"
 
 i=0
 for f in "$WASM" "$SUM" "$DID"; do
   [ "$(meta "ASSET$i")" = present ] || die "release asset $f is missing (or listed more than once) in $TAG"
+  [ "$(meta "UPLOADER$i")" = "$CI_LOGIN" ]     || die "$f was not built by CI: it was uploaded by '$(meta "UPLOADER$i")', not $CI_LOGIN; releases not built by CI are not deployed"
   i=$((i + 1))
 done
 i=0
@@ -214,8 +226,8 @@ if [ -n "$IDENTITY" ]; then
 fi
 
 CANISTER_ID=$(icp canister status "$CANISTER" "${ENV_ARGS[@]}" --id-only) \
-  || die "no $CANISTER canister ID for the $NETWORK environment in this project"
-[ -n "$CANISTER_ID" ] || die "no $CANISTER canister ID for the $NETWORK environment"
+  || die "no $CANISTER canister ID for the $NETWORK environment in this project. Record the existing canister once with: icp canister link $CANISTER <canister-id> -e $NETWORK  (confirm the ID independently first, e.g. on the IC dashboard; every deploy trusts it). See docs/reproducible-builds.md, 'Link the canister (once)'."
+[ -n "$CANISTER_ID" ] || die "no $CANISTER canister ID for the $NETWORK environment; link it with: icp canister link $CANISTER <canister-id> -e $NETWORK (confirm the ID independently first). See docs/reproducible-builds.md, 'Link the canister (once)'."
 
 # Prints "<module hash or none> <controller> <controller> ..." from a status read.
 live_status() {
@@ -286,9 +298,9 @@ read -r ANSWER || true
 # init's InitArgs must never be resent. No --yes, so icp's own Candid
 # compatibility prompt still applies.
 icp canister install "$CANISTER" "${ENV_ARGS[@]}" "${ID_ARGS[@]}" --mode upgrade --wasm "$TMP/$WASM" \
-  || die "icp canister install failed; check the live module hash before retrying"
+  || fail "icp canister install failed; check the canister's module hash before retrying (icp canister status $CANISTER -e $NETWORK)"
 
-STATUS=$(live_status) || die "installed, but could not read the module hash back; check it with: icp canister status $CANISTER -e $NETWORK"
+STATUS=$(live_status) || fail "the install may have completed, but the module hash could not be read back; check it with: icp canister status $CANISTER -e $NETWORK"
 read -r AFTER _ <<<"$STATUS"
 if [ "$AFTER" != "$HASH" ]; then
   echo "deploy-release: FAILED: the live module hash is $AFTER, not the release hash $HASH" >&2

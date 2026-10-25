@@ -49,6 +49,9 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
 fi
 
 COMMIT=$(git rev-parse HEAD)
+# The build uses the committed tree, not the working copy. Say so when build
+# inputs differ (line-ending-only differences are ignored).
+git -c core.autocrlf=true diff --quiet HEAD -- Cargo.toml Cargo.lock rust-toolchain.toml src/poker_backend build/reproducible   || echo "warning: building committed HEAD; uncommitted changes are not included" >&2
 SOURCE_DATE_EPOCH=$(git log -1 --format=%ct HEAD)
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
