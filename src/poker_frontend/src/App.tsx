@@ -20,6 +20,7 @@ import { VerifyEvidence } from './components/VerifyEvidence';
 import { Avatar } from './art/Avatar';
 import { shouldOfferRegistration } from './startup';
 import { pauseBanner } from './pause';
+import { BuildBadge } from './components/BuildBadge';
 
 const NAV: { name: View['name']; label: string }[] = [
   { name: 'lobby', label: 'Lobby' },
@@ -153,6 +154,7 @@ function Shell() {
         <button className="btn-reset link" onClick={() => go({ name: 'verify' })}>
           Verify a hand file
         </button>
+        <BuildBadge />
       </footer>
 
       {principal && !profile && shouldOfferRegistration(profileLoad) && <Register />}
