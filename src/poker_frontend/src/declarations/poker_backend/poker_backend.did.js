@@ -830,6 +830,7 @@ export const idlFactory = ({ IDL }) => {
     'get_jackpots' : IDL.Func([], [JackpotInfo], ['query']),
     'get_leaderboard' : IDL.Func([], [IDL.Vec(LeaderboardEntry)], ['query']),
     'get_leaderboards' : IDL.Func([], [IDL.Vec(BoardView)], ['query']),
+    'get_min_return_buy_in' : IDL.Func([IDL.Nat64], [IDL.Nat64], ['query']),
     'get_my_ledger_ops' : IDL.Func([], [IDL.Vec(LedgerOp)], ['query']),
     'get_my_profile' : IDL.Func([], [IDL.Opt(Profile)], ['query']),
     'get_my_roles' : IDL.Func([], [Roles], ['query']),
