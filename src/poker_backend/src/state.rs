@@ -1626,6 +1626,9 @@ impl State {
     pub fn leaderboard(&self, limit: usize) -> Vec<LeaderboardEntry> {
         self.leaders
             .iter()
+            // Before v0.1.1 chip and tournament hands also added entries, all at
+            // zero ICP net; a zero entry has no ICP result to rank.
+            .filter(|(_, net)| *net != 0)
             .take(limit)
             .filter_map(|(p, _)| {
                 let u = self.users.get(p)?;
@@ -1956,11 +1959,11 @@ impl State {
         if t.seat_of(&caller).is_some() {
             return Err("You're already at this table".into());
         }
-        let (min, max) = (t.config.min_buy_in, t.config.max_buy_in);
+        let required = self.min_return_buy_in(table, &caller, now);
+        let (min, max) = (t.config.min_buy_in, t.config.max_buy_in.max(required));
         if buy_in < min || buy_in > max {
             return Err(format!("Buy in between {} and {}", fmt_amount(currency, min), fmt_amount(currency, max)));
         }
-        let required = self.min_return_buy_in(table, &caller, now);
         if buy_in < required {
             return Err(format!(
                 "You left this game less than 30 minutes ago with {}: buy back in for at least that much",
@@ -2085,15 +2088,18 @@ impl State {
             return Err(format!("You can play at most {MAX_CASH_SEATS} cash tables at once"));
         }
         let cfg = &self.tables[&game].config;
-        if buy_in < cfg.min_buy_in || buy_in > cfg.max_buy_in {
-            return Err(format!(
-                "Buy in between {} and {}",
-                fmt_amount(cfg.currency, cfg.min_buy_in),
-                fmt_amount(cfg.currency, cfg.max_buy_in)
-            ));
-        }
         let currency = cfg.currency;
         let required = self.min_return_buy_in(game, &caller, now);
+        // Coming back within 30 minutes means bringing back what you left with,
+        // even above the table max (as a seat click already allows).
+        let max = cfg.max_buy_in.max(required);
+        if buy_in < cfg.min_buy_in || buy_in > max {
+            return Err(format!(
+                "Buy in between {} and {}",
+                fmt_amount(currency, cfg.min_buy_in),
+                fmt_amount(currency, max)
+            ));
+        }
         if buy_in < required {
             return Err(format!(
                 "You left this game less than 30 minutes ago with {}: buy back in for at least that much",
@@ -2322,7 +2328,10 @@ impl State {
                     u.stats.hands_won += 1;
                     u.xp += 2;
                 }
-                leader_updates.push((pr.player, u.stats.net_winnings));
+                // The board ranks ICP net winnings: only ICP cash hands move it.
+                if currency == Currency::Icp && !in_tournament {
+                    leader_updates.push((pr.player, u.stats.net_winnings));
+                }
             }
         }
         for (p, net) in leader_updates {
@@ -6866,6 +6875,50 @@ pub(crate) mod tests {
         assert_eq!(listed, vec![7, 6, 5]);
         // The real cap.
         assert_eq!(FAIR_HANDS_PER_USER, 5_000);
+    }
+
+    #[test]
+    fn leaderboard_lists_only_icp_results() {
+        let mut s = setup();
+        // A play-chip session puts nobody on the ICP board.
+        let chip_table = 1;
+        s.join_table(p(1), chip_table, 0, 1_000, None, 0).unwrap();
+        s.join_table(p(2), chip_table, 1, 1_000, None, 0).unwrap();
+        play_hands(&mut s, chip_table, 3, SEC);
+        assert!(s.leaderboard(100).is_empty(), "chip-only players are not on the ICP board");
+        // An entry left over from before the fix, at 0 ICP, isn't shown either.
+        s.leaders.push((p(3), 0));
+        assert!(s.leaderboard(100).is_empty());
+
+        let icp_table = 7;
+        let buy = s.tables[&icp_table].config.max_buy_in;
+        s.join_table(p(1), icp_table, 0, buy, None, 0).unwrap();
+        s.join_table(p(2), icp_table, 1, buy, None, 0).unwrap();
+        play_hands(&mut s, icp_table, 3, 100 * SEC);
+        let board: Vec<Principal> = s.leaderboard(100).iter().map(|e| e.id).collect();
+        assert!(!board.is_empty() && board.iter().all(|q| *q == p(1) || *q == p(2)), "ICP players rank: {board:?}");
+    }
+
+    #[test]
+    fn lobby_join_and_auto_sit_take_back_more_than_the_max() {
+        let mut s = setup();
+        let table = 1; // a chip game, so the test players can afford big stacks
+        let max = s.tables[&table].config.max_buy_in;
+        s.join_table(p(1), table, 0, max, None, 0).unwrap();
+        s.join_table(p(2), table, 1, max, None, 0).unwrap();
+        let i = s.tables[&table].seat_of(&p(1)).unwrap();
+        s.tables.get_mut(&table).unwrap().seats[i].as_mut().unwrap().stack = max * 3;
+        s.leave_table(p(1), table, SEC).unwrap();
+        let game = s.game_of(table);
+        assert_eq!(s.min_return_buy_in(game, &p(1), 2 * SEC), max * 3);
+        // The lobby's Join used to refuse anything above the table max, which a
+        // player coming back with a big stack must bring.
+        assert!(s.join_game(p(1), game, max, 2 * SEC).unwrap_err().contains("buy back in"));
+        assert!(s.join_game(p(1), game, max * 3 + 1, 2 * SEC).is_err(), "no more than the larger of max and what you left with");
+        s.join_game(p(1), game, max * 3, 2 * SEC).unwrap();
+        s.leave_table(p(1), table, 3 * SEC).unwrap();
+        // Auto-sit takes the same amount.
+        assert!(s.auto_sit(p(1), table, Some(max * 3), 4 * SEC).is_ok());
     }
 }
 
