@@ -2042,7 +2042,10 @@ impl State {
                     break;
                 };
                 let e = q.remove(i).unwrap();
-                let outcome = match self.join_table(e.player, id, seat, e.buy_in, None, now) {
+                // A buy-in above the max, queued to bring back a bigger stack,
+                // comes down to the max once the 30-minute window has passed.
+                let cap = self.tables[&id].config.max_buy_in.max(self.min_return_buy_in(id, &e.player, now));
+                let outcome = match self.join_table(e.player, id, seat, e.buy_in.min(cap), None, now) {
                     Ok(()) => AutoSitStatus::Seated { table: id },
                     Err(reason) => AutoSitStatus::Dropped { reason },
                 };
@@ -6897,6 +6900,20 @@ pub(crate) mod tests {
         play_hands(&mut s, icp_table, 3, 100 * SEC);
         let board: Vec<Principal> = s.leaderboard(100).iter().map(|e| e.id).collect();
         assert!(!board.is_empty() && board.iter().all(|q| *q == p(1) || *q == p(2)), "ICP players rank: {board:?}");
+    }
+
+    #[test]
+    fn auto_sit_above_the_max_sits_with_the_max_once_the_return_window_ends() {
+        let mut s = full_hu();
+        let max = s.tables[&HU].config.max_buy_in;
+        s.cashouts.insert((s.game_of(HU), p(3)), (max * 3, 0));
+        assert!(queued(1)(&s.auto_sit(p(3), HU, Some(max * 3), SEC).unwrap()));
+        let later = RETURN_WINDOW_NS + SEC;
+        s.auto_sit_ping(p(3), HU, later);
+        s.leave_table(p(2), HU, later).unwrap();
+        s.tick(later);
+        let i = s.tables[&HU].seat_of(&p(3)).expect("seated, not dropped");
+        assert_eq!(s.tables[&HU].seats[i].as_ref().unwrap().stack, max);
     }
 
     #[test]
