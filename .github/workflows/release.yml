@@ -1,0 +1,59 @@
+name: Release
+
+# Publishes a GitHub Release for a version tag: the reproducibly built game
+# canister module, its SHA-256 and its Candid file. This is the only workflow
+# with write access, and the only one that can publish. It uses just the
+# built-in GITHUB_TOKEN; there is no controller key or other secret in CI.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Full history, so we can tell whether the tagged commit is on main.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the tag to point at a commit on main
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "::error::$TAG ($(git rev-parse HEAD)) is not a commit on main"
+            exit 1
+          fi
+
+      - name: Build twice, compare, and keep the first build
+        run: bash scripts/check-reproducible.sh --keep out
+
+      - name: Write the release notes
+        run: bash scripts/release-notes.sh "$TAG" out > release-notes.md
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A tag with a "-" (v1.2.0-rc1) is a pre-release. Never a draft.
+          flags=()
+          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$TAG" \
+            --verify-tag \
+            --title "$TAG" \
+            --notes-file release-notes.md \
+            "${flags[@]}" \
+            out/poker_backend.wasm.gz \
+            out/poker_backend.wasm.gz.sha256 \
+            out/poker_backend.did

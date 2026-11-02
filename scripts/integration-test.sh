@@ -3,6 +3,8 @@
 # real ICP ledger canister on a local replica.
 # Downloads the PocketIC server and ledger wasm once into .pocket-ic/.
 set -euo pipefail
+# A BACKEND_WASM given relative to the caller's directory.
+if [ -n "${BACKEND_WASM:-}" ]; then BACKEND_WASM=$(cd "$(dirname "$BACKEND_WASM")" && pwd)/$(basename "$BACKEND_WASM"); fi
 cd "$(dirname "$0")/.."
 
 POCKET_IC_VERSION=16.1.0
@@ -59,9 +61,18 @@ if [ ! -f "$LEDGER" ]; then
 fi
 verify "$LEDGER" "$LEDGER_SHA256"
 
-cargo build --release --target wasm32-unknown-unknown -p poker_backend
+# BACKEND_WASM may name a module to test instead, e.g. the reproducible build's
+# out/poker_backend.wasm.gz; its .sha256 file, if present, is checked too.
+if [ -n "${BACKEND_WASM:-}" ]; then
+  if [ -f "$BACKEND_WASM.sha256" ]; then
+    export BACKEND_WASM_SHA256="$(cut -d' ' -f1 "$BACKEND_WASM.sha256")"
+  fi
+else
+  cargo build --release --target wasm32-unknown-unknown -p poker_backend
+  BACKEND_WASM="$PWD/target/wasm32-unknown-unknown/release/poker_backend.wasm"
+fi
 
 export POCKET_IC_BIN="$PWD/$BIN"
 export LEDGER_WASM="$PWD/$DIR/icp-ledger-$LEDGER_RELEASE.wasm.gz"
-export BACKEND_WASM="$PWD/target/wasm32-unknown-unknown/release/poker_backend.wasm"
+export BACKEND_WASM
 cargo test -p poker_backend --test integration -- --nocapture --test-threads 1 "$@"

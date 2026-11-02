@@ -6,3 +6,4 @@ dist/
 .pocket-ic/
 .env
 .superpowers/
+out/
