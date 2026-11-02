@@ -15,6 +15,8 @@ import { leaderboardMedal } from '../rewards';
 import { ItemArt } from '../art/ItemArt';
 import { BadBeatTag, ChipBurst, RainCloud, THROW_FX, useSeatFx } from '../fx/SeatFx';
 import { handReactions } from '../fx/poker';
+import { showdownHighlight } from '../fx/motion';
+import { useCardMotion, useShuffle } from '../fx/useCardMotion';
 import { giftArrivals } from '../fx/gifts';
 import { WatchBar } from './WatchBar';
 import { Burst, Mark } from '../fx/marks';
@@ -44,15 +46,37 @@ interface GiftFlight {
 /** Most a time bank can hold (matches the backend). */
 const TIME_BANK_MS = 30_000;
 
-export function Card({ c, back, small }: { c?: number; back?: string; small?: boolean }) {
+/**
+ * A playing card, face up (`c`) or face down. At the table, `fx` names it for
+ * the card animations, `cover` is the back shown while it turns over, and
+ * `mark` highlights or dims it at a showdown.
+ */
+export function Card({ c, back, small, fx, cover, mark }: { c?: number; back?: string; small?: boolean; fx?: string; cover?: string; mark?: 'win' | 'dim' }) {
   const { profile } = useApp();
+  const extra = `${small ? 'sm' : ''} ${mark ?? ''}`;
   if (c === undefined) {
-    return <div className={`card back ${small ? 'sm' : ''}`} style={{ background: back || '#b91c1c' }} />;
+    return <div data-fx={fx} className={`card back ${extra}`} style={{ background: back || '#b91c1c' }} />;
   }
   return (
-    <div className={`card ${suitClass(c, profile?.settings.four_color_deck ?? false)} ${small ? 'sm' : ''}`}>
+    <div
+      data-fx={fx}
+      className={`card ${suitClass(c, profile?.settings.four_color_deck ?? false)} ${extra}`}
+      style={cover ? ({ '--back': cover } as CSSProperties) : undefined}
+    >
       <span className="rank">{cardRank(c)}</span>
       <span className="suit">{cardSuit(c)}</span>
+      {fx && <span className="cover" />}
+    </div>
+  );
+}
+
+/** The deck between hands, riffled once when it appears. */
+function Deck({ back }: { back?: string }) {
+  return (
+    <div className="deck" aria-hidden style={back ? ({ '--back': back } as CSSProperties) : undefined}>
+      {Array.from({ length: 10 }, (_, i) => (
+        <span key={i} className="dk" style={{ '--i': i, '--s': i % 2 ? 1 : -1, '--o': 9 - i } as CSSProperties} />
+      ))}
     </div>
   );
 }
@@ -111,6 +135,9 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
   const [dismissedHit, setDismissedHit] = useState<string>('');
   const seenThrows = useRef<Set<bigint> | null>(null);
   const settings = profile?.settings;
+  const feltRef = useRef<HTMLDivElement>(null);
+  useCardMotion(feltRef, view, visible);
+  const shuffling = useShuffle(view, visible);
 
   const load = refresh;
 
@@ -299,6 +326,16 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
   // In tab mode, point to another open table that is waiting on you.
   const elsewhere = compact ? undefined : open.filter((o) => o !== id).map((o) => views.get(String(o))).find((v) => isMyTurn(v));
   const winnerSeats = new Set(result?.winners.map((w) => w.seat) ?? []);
+  // At a showdown the winning five stand out and the other cards dim.
+  const highlight = result
+    ? showdownHighlight({
+        board: bytes(result.board),
+        shown: result.shown.map((x) => ({ seat: x.seat, cards: bytes(x.cards) })),
+        winners: result.winners,
+      })
+    : null;
+  const boardMark = (i: number) => (highlight ? (highlight.board.has(i) ? 'win' : 'dim') : undefined);
+  const holeMark = (seat: number, k: number) => (highlight ? (highlight.seats.get(seat)?.has(k) ? 'win' : 'dim') : undefined);
   // Won without a showdown: the winner may show their cards until the next deal.
   const canShow =
     !!result && result.shown.length === 0 && result.winners.length === 1 && mySeat !== undefined && result.winners[0].seat === mySeat;
@@ -449,13 +486,14 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
 
         {view.restricted && <UnlockRoom id={id} onDone={load} />}
 
-        <div className="felt-wrap">
+        <div className={`felt-wrap ${shuffling ? 'shuffling' : ''}`} ref={feltRef}>
           <div className="felt">
             <div className="felt-logo">♠ BULLETS ♠</div>
-            <div className="board">
+            <div className="board" data-fx="board">
               {bytes(view.board).map((c, i) => (
-                <Card key={i} c={c} />
+                <Card key={i} c={c} fx={`board-${i}`} mark={boardMark(i)} />
               ))}
+              {shuffling && <Deck back={me?.card_back} />}
               {Array.from({ length: 5 - view.board.length }, (_, i) => (
                 <div key={`e${i}`} className="card slot" />
               ))}
@@ -521,9 +559,9 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
               >
                 <div className="hole">
                   {cards.length > 0
-                    ? cards.map((c, k) => <Card key={k} c={c} small={i !== mySeat} />)
+                    ? cards.map((c, k) => <Card key={k} c={c} small={i !== mySeat} fx={`hole-${i}-${k}`} cover={s.card_back} mark={holeMark(i, k)} />)
                     : s.has_cards
-                      ? [0, 1].map((k) => <Card key={k} back={s.card_back} small />)
+                      ? [0, 1].map((k) => <Card key={k} back={s.card_back} small fx={`hole-${i}-${k}`} mark={holeMark(i, k)} />)
                       : null}
                 </div>
                 <Avatar

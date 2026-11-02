@@ -33,17 +33,27 @@ function score5(cards: number[]): number {
   return s;
 }
 
-/** Best five-card score from 5–7 cards. */
-export function handScore(cards: number[]): number {
-  let best = -1;
+/** The best five cards of 5–7, and their score. */
+function best(cards: number[]): { score: number; five: number[] } {
+  let top = { score: -1, five: [] as number[] };
   const n = cards.length;
   for (let a = 0; a < n; a++)
     for (let b = a + 1; b < n; b++)
       for (let c = b + 1; c < n; c++)
         for (let d = c + 1; d < n; d++)
-          for (let e = d + 1; e < n; e++) best = Math.max(best, score5([cards[a], cards[b], cards[c], cards[d], cards[e]]));
-  return best;
+          for (let e = d + 1; e < n; e++) {
+            const five = [cards[a], cards[b], cards[c], cards[d], cards[e]];
+            const score = score5(five);
+            if (score > top.score) top = { score, five };
+          }
+  return top;
 }
+
+/** Best five-card score from 5–7 cards. */
+export const handScore = (cards: number[]): number => best(cards).score;
+
+/** The five cards that make the best hand from 5–7 cards. */
+export const bestFive = (cards: number[]): number[] => best(cards).five;
 
 export type Reaction = 'badBeat' | 'win' | 'bigWin';
 
