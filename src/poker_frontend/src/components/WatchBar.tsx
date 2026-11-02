@@ -88,6 +88,7 @@ export function WatchBar({ view, onChange }: { view: TableView; onChange: () => 
         <BuyInPicker
           title="Auto-sit buy-in"
           limits={view.config}
+          returnMin={view.my_min_buy_in}
           confirm="Wait for a seat"
           initial={lastBuyIn()}
           onClose={() => setPicking(false)}

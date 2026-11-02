@@ -664,6 +664,14 @@ fn join_game(game: u64, buy_in: u64) -> R<u64> {
     with_mut(|s| s.join_game(p, game, buy_in, now()))
 }
 
+/// The smallest buy-in you may join this game with now: the stack you left it
+/// with in the last 30 minutes, else 0. You may bring that much even above the max.
+#[query]
+fn get_min_return_buy_in(game: u64) -> u64 {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.min_return_buy_in(game, &p, now()))
+}
+
 /// Waits for a seat at a table: you're seated automatically, with this buy-in,
 /// when one opens. `None` leaves the line. Keep calling `auto_sit_ping` while
 /// you watch, or you're dropped from the line.

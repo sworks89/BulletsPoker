@@ -1383,6 +1383,11 @@ export interface _SERVICE {
    */
   'get_leaderboards' : ActorMethod<[], Array<BoardView>>,
   /**
+   * The smallest buy-in you may join this game with now: the stack you left it
+   * with in the last 30 minutes, else 0. You may bring that much even above the max.
+   */
+  'get_min_return_buy_in' : ActorMethod<[bigint], bigint>,
+  /**
    * Your recent deposits and withdrawals, newest first.
    */
   'get_my_ledger_ops' : ActorMethod<[], Array<LedgerOp>>,
