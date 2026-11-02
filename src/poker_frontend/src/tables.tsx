@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useApp, usePoll } from './context';
 import { backendId, unwrap } from './ic';
 import { defaultStore, recordSeen } from './fair/seen';
+import { freshest } from './freshViews';
 import { LEAVE_CONFIRM, alreadyLeaving, leavesAfterHand } from './leave';
 import type { TableView } from './ic';
 import { isMyTurn } from './turn';
@@ -282,7 +283,7 @@ export function TablesProvider({ children }: { children: ReactNode }) {
     if (vs.length) setClockOffset(Date.now() - Number(vs[0].now / 1_000_000n));
     // Keep this device's copy of each live hand's commitment for the verifier.
     recordSeen(defaultStore(), backendId, vs);
-    setViews(new Map(vs.map((v) => [String(v.id), v])));
+    setViews((held) => freshest(held, vs));
   }, [backend, open]);
 
   usePoll(refresh, 1000, [refresh]);
