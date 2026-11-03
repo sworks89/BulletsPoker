@@ -177,6 +177,44 @@ main { padding: 18px 0; }
 .card.slot { background: rgba(255,255,255,0.06); box-shadow: none; border: 1px dashed rgba(255,255,255,0.2); animation: none; }
 @keyframes deal { from { transform: translateY(-20px) scale(0.8); opacity: 0; } to { transform: none; opacity: 1; } }
 
+/* Table card motion: dealing and turning are driven from fx/useCardMotion.ts;
+   these are the resting states (showdown marks, the shuffle) and the card back
+   shown while a card turns over. */
+.felt-wrap .card { position: relative; animation: none; transition: opacity 0.25s, translate 0.25s, box-shadow 0.25s; }
+.felt-wrap .card .cover { position: absolute; inset: 0; border-radius: inherit; border: 3px solid #fff; opacity: 0; pointer-events: none; background: repeating-linear-gradient(45deg, rgba(255,255,255,0.15) 0 4px, transparent 4px 8px) var(--back, #b91c1c); }
+.felt-wrap .card.win { translate: 0 -6px; box-shadow: 0 0 0 2px var(--accent), 0 0 12px var(--accent); }
+.felt-wrap .card.dim { opacity: 0.45; }
+/* The board and face-down hands clear for the shuffle; hands that were shown stay until the deal. */
+.felt-wrap.shuffling .board .card, .felt-wrap.shuffling .hole .card.back { opacity: 0; }
+.felt .board { position: relative; }
+.deck { position: absolute; left: 50%; top: 50%; width: 52px; height: 74px; margin: -37px 0 0 -26px; pointer-events: none; }
+.deck .dk {
+  position: absolute; inset: 0; border-radius: 6px; border: 3px solid #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.4);
+  background: repeating-linear-gradient(45deg, rgba(255,255,255,0.15) 0 4px, transparent 4px 8px) var(--back, #b91c1c);
+  translate: calc(var(--i) * -0.4px) calc(var(--i) * -0.6px);
+  /* Split into two halves, riffle back together card by card, square up: about 1.1s. */
+  animation:
+    riffle-split 0.3s ease-out both,
+    riffle-merge 0.22s ease-in calc(0.3s + var(--o) * 45ms) forwards,
+    riffle-tap 0.16s ease calc(0.925s) forwards;
+}
+@keyframes riffle-split { from { transform: none; } to { transform: translateX(calc(var(--s) * 90%)) rotate(calc(var(--s) * 8deg)); } }
+@keyframes riffle-merge {
+  from { transform: translateX(calc(var(--s) * 90%)) rotate(calc(var(--s) * 8deg)); }
+  50% { transform: translateX(calc(var(--s) * 30%)) translateY(-20%) rotate(calc(var(--s) * 3deg)); }
+  to { transform: none; }
+}
+@keyframes riffle-tap { from { transform: none; } 50% { transform: scaleY(0.94); } to { transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .felt-wrap .card { transition: none; }
+  .deck .dk { animation: none; }
+}
+/* The deck matches the board cards' size wherever they shrink. */
+@media (max-width: 1000px) {
+  .deck { width: 40px; height: 58px; margin: -29px 0 0 -20px; }
+}
+.table-page.compact .deck { width: 34px; height: 48px; margin: -24px 0 0 -17px; }
+
 .seat { position: absolute; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 2px; width: 130px; cursor: pointer; transition: opacity 0.2s; }
 .seat.empty { width: 90px; height: 60px; border: 2px dashed #3a4866; border-radius: 12px; justify-content: center; background: rgba(0,0,0,0.25); cursor: default; }
 .seat.folded .hole, .seat.away { opacity: 0.45; }
