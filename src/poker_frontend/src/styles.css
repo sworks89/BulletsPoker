@@ -212,6 +212,8 @@ main { padding: 18px 0; }
 /* The deck matches the board cards' size wherever they shrink. */
 @media (max-width: 1000px) {
   .deck { width: 40px; height: 58px; margin: -29px 0 0 -20px; }
+  .felt-wrap { --chip: 16px; --chip-step: 2px; }
+  .tc-amt { font-size: 11px; padding: 0 6px; }
 }
 .table-page.compact .deck { width: 34px; height: 48px; margin: -24px 0 0 -17px; }
 
@@ -229,8 +231,22 @@ main { padding: 18px 0; }
 .timer { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); transition: width 0.25s linear; }
 .action-tag { font-size: 11px; background: #23304a; padding: 1px 8px; border-radius: 999px; color: #cbd5e1; }
 .dealer { position: absolute; top: 30px; right: 4px; width: 22px; height: 22px; border-radius: 50%; background: #fff; color: #111; font-weight: 900; font-size: 12px; display: grid; place-items: center; box-shadow: 0 1px 4px rgba(0,0,0,0.5); }
-.bet { position: absolute; bottom: -26px; display: flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; background: rgba(0,0,0,0.5); padding: 1px 8px; border-radius: 999px; }
-.chip-stack { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); border: 2px dashed #fff; }
+/* Chips on the felt: stacks colored by value (fx/chips.ts), bets in front of each seat, the pot under the board. */
+.felt-wrap { --chip: 20px; --chip-h: calc(var(--chip) * 0.42); --chip-step: 2.5px; }
+.tc-pile { display: flex; align-items: flex-end; gap: 4px; pointer-events: none; }
+.tc-stack { display: flex; align-items: flex-end; gap: 1px; }
+.tc-col { position: relative; width: var(--chip); height: calc(var(--chip-h) + (var(--n) - 1) * var(--chip-step)); }
+.tc-col .tc-chip { position: absolute; left: 0; bottom: calc(var(--k) * var(--chip-step)); }
+.tc-chip {
+  display: block; width: var(--chip); height: var(--chip-h); border-radius: 50%; box-sizing: border-box;
+  background: radial-gradient(ellipse at 50% 45%, color-mix(in srgb, var(--c) 70%, #fff) 0 34%, var(--c) 36%);
+  border: 2px dashed var(--e, rgba(255,255,255,0.9));
+  box-shadow: 0 var(--chip-step) 0 color-mix(in srgb, var(--c) 55%, #000), 0 3px 4px rgba(0,0,0,0.35);
+}
+.tc-amt { align-self: center; font-size: 12px; font-weight: 700; color: #fff; background: rgba(0,0,0,0.55); padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+.bet-pile { position: absolute; translate: -50% -50%; z-index: 1; }
+.pot-chips { min-height: calc(var(--chip-h) + 3 * var(--chip-step)); display: flex; align-items: flex-end; }
+.tc-flying { position: absolute; translate: -50% -50%; z-index: 5; pointer-events: none; }
 
 .action-bar { margin-top: 18px; min-height: 76px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .action-bar .btn { padding: 12px 22px; font-size: 16px; }
@@ -290,6 +306,9 @@ main { padding: 18px 0; }
   .felt { inset: 14% 4%; border-width: 8px; }
   .felt-logo { display: none; }
   .seat { width: 84px; }
+  /* Bets sit just under their seats here (fx/chips.ts betSpot), so keep them to one small stack. */
+  .felt-wrap { --chip: 13px; --chip-step: 2px; }
+  .bet-pile .tc-col:not(:first-child) { display: none; }
   .nameplate { min-width: 76px; padding: 2px 4px; }
   .nameplate .name, .nameplate .stack { font-size: 11px; }
   .page-grid { grid-template-columns: 1fr; }
@@ -500,7 +519,8 @@ main { padding: 18px 0; }
 .table-page.compact .lvl, .table-page.compact .action-tag { font-size: 9px; }
 .table-page.compact .seat.empty { width: 56px; height: 36px; }
 .table-page.compact .dealer { width: 16px; height: 16px; font-size: 9px; top: 18px; }
-.table-page.compact .bet { font-size: 10px; bottom: -18px; }
+.table-page.compact .felt-wrap { --chip: 13px; --chip-step: 2px; }
+.table-page.compact .tc-amt { font-size: 10px; padding: 0 6px; }
 .table-page.compact .pot { font-size: 12px; min-height: 0; }
 .table-page.compact .result { font-size: 11px; padding: 3px 8px; }
 .table-page.compact .action-bar { margin-top: 10px; min-height: 0; padding: 6px; gap: 6px; }
