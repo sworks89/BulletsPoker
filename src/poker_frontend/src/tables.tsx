@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { addClockSample, clockOffset as bestOffset, type ClockSample } from './clock';
 import { useApp, usePoll } from './context';
 import { backendId, unwrap } from './ic';
 import { defaultStore, recordSeen } from './fair/seen';
@@ -75,6 +76,7 @@ export function TablesProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState<bigint[]>(() => load<string[]>('bp.openTables', []).map((s) => BigInt(s)));
   const [views, setViews] = useState<Map<string, TableView>>(new Map());
   const [clockOffset, setClockOffset] = useState(0);
+  const clockSamples = useRef<ClockSample[]>([]);
   const [layout, setLayoutState] = useState<Layout>(() => load<Layout>('bp.layout', 'tabs'));
   const [autoFocus, setAutoFocusState] = useState<boolean>(() => load('bp.autoFocus', true));
   const active = view.name === 'table' ? view.id : null;
@@ -280,7 +282,11 @@ export function TablesProvider({ children }: { children: ReactNode }) {
     failures.current = 0;
     setReconnecting(false);
     requested.current = ids;
-    if (vs.length) setClockOffset(Date.now() - Number(vs[0].now / 1_000_000n));
+    if (vs.length) {
+      const at = Date.now();
+      clockSamples.current = addClockSample(clockSamples.current, { at, offset: at - Number(vs[0].now / 1_000_000n) });
+      setClockOffset(bestOffset(clockSamples.current));
+    }
     // Keep this device's copy of each live hand's commitment for the verifier.
     recordSeen(defaultStore(), backendId, vs);
     setViews((held) => freshest(held, vs));
