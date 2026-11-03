@@ -5,6 +5,7 @@ import { type IDL } from '@icp-sdk/core/candid';
 import { Principal } from '@icp-sdk/core/principal';
 import { idlFactory } from './declarations/poker_backend/poker_backend.did.js';
 import type { _SERVICE } from './declarations/poker_backend/poker_backend.did';
+import { derivationOriginFor } from './domains';
 
 export type Backend = ActorSubclass<_SERVICE>;
 export type * from './declarations/poker_backend/poker_backend.did';
@@ -24,8 +25,12 @@ export const ledgerId = 'ryjl3-tyaaa-aaaaa-aaaba-cai';
 // signatures, so its delegations work against a locally deployed backend too.
 // The client mints delegations by calling the II canister, which only exists on
 // mainnet, so its agent always targets mainnet (with the mainnet root key) even
-// when the page itself is served by a local network.
-export const authClient = new AuthClient({ agentOptions: { host: 'https://icp-api.io' } });
+// when the page itself is served by a local network. On a custom domain players
+// sign in as the canister address, keeping their accounts (domains.ts).
+export const authClient = new AuthClient({
+  agentOptions: { host: 'https://icp-api.io' },
+  derivationOrigin: typeof location === 'undefined' ? undefined : derivationOriginFor(location.hostname),
+});
 
 // Minimal ICRC-1/ICRC-2 interface of the ICP ledger, used to approve deposits.
 const ledgerIdl: IDL.InterfaceFactory = ({ IDL }) => {
