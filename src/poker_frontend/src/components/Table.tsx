@@ -75,7 +75,7 @@ function Deck({ back }: { back?: string }) {
   return (
     <div className="deck" aria-hidden style={back ? ({ '--back': back } as CSSProperties) : undefined}>
       {Array.from({ length: 10 }, (_, i) => (
-        <span key={i} className="dk" style={{ '--i': i, '--s': i % 2 ? 1 : -1, '--o': 9 - i } as CSSProperties} />
+        <span key={i} className="dk" style={{ '--i': i, '--s': i % 2 ? 1 : -1, '--o': i } as CSSProperties} />
       ))}
     </div>
   );
@@ -491,7 +491,7 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
             <div className="felt-logo">♠ BULLETS ♠</div>
             <div className="board" data-fx="board">
               {bytes(view.board).map((c, i) => (
-                <Card key={i} c={c} fx={`board-${i}`} mark={boardMark(i)} />
+                <Card key={i} c={c} fx={`board-${i}`} cover={me?.card_back} mark={boardMark(i)} />
               ))}
               {shuffling && <Deck back={me?.card_back} />}
               {Array.from({ length: 5 - view.board.length }, (_, i) => (

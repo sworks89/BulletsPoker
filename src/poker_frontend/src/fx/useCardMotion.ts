@@ -83,9 +83,11 @@ export function useCardMotion(root: RefObject<HTMLElement | null>, view: TableVi
       const card = find(`hole-${seat}-${k}`);
       if (card) slideIn(card, deck, i * DEAL_STAGGER_MS, next.faceUp.includes(seat));
     });
+    // A board that arrives with the deal (a missed poll) comes out after it.
+    const afterDeal = m.deal.length * 2 * DEAL_STAGGER_MS;
     m.board.forEach((b, i) => {
       const card = find(`board-${b}`);
-      if (card) slideIn(card, deck, i * BOARD_STAGGER_MS, true);
+      if (card) slideIn(card, deck, afterDeal + i * BOARD_STAGGER_MS, true);
     });
     m.reveal.forEach((seat, i) => {
       for (const k of [0, 1]) {
@@ -123,5 +125,7 @@ export function useShuffle(view: TableView | null, visible: boolean): boolean {
     const t = setTimeout(() => setOn(true), Math.max(0, e.at + SHUFFLE_AFTER_MS - Date.now()));
     return () => clearTimeout(t);
   }, [hand, over, visible]);
-  return on;
+  // `on` is cleared after the render that brings the next hand; checking `over`
+  // too drops the deck in that same render, so it never overlaps the deal.
+  return on && over;
 }
