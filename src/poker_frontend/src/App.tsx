@@ -55,7 +55,7 @@ function Shell() {
   const staff = roles.admin || roles.moderator;
 
   return (
-    <div className="app">
+    <div className={`app ${view.name === 'table' ? 'at-table' : ''}`}>
       <header className="topbar">
         <button className="brand btn-reset" onClick={() => go({ name: 'lobby' })} aria-label="Bullets Poker, go to lobby">
           <span className="logo">♠</span> Bullets Poker

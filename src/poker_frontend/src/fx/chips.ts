@@ -52,12 +52,12 @@ export const NARROW_BET_DY = 72;
 /**
  * Where a seat's bet sits: `left` and `top` in % of the table, plus `dy` px.
  * The bottom seat is the viewer's, whose full-size cards fill the space toward
- * the middle, so its bet sits beside them. On a narrow screen the seats fill
- * the table, so a bet sits just below its seat.
+ * the middle, so its bet sits beside them on any screen. On a narrow screen
+ * the seats fill the table, so every other bet sits just below its seat.
  */
 export function betSpot(seat: { left: number; top: number }, narrow: boolean): { left: number; top: number; dy: number } {
-  if (narrow) return { ...seat, dy: NARROW_BET_DY };
   if (seat.top >= 85) return { left: seat.left + 13, top: seat.top - 13, dy: 0 };
+  if (narrow) return { ...seat, dy: NARROW_BET_DY };
   return { left: 50 + (seat.left - 50) * BET_REACH_X, top: 50 + (seat.top - 50) * BET_REACH_Y, dy: 0 };
 }
 

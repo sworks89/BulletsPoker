@@ -20,6 +20,7 @@ import { useCardMotion, useShuffle } from '../fx/useCardMotion';
 import { betSpot, chipSnapOf } from '../fx/chips';
 import { ChipPile } from '../fx/ChipPile';
 import { useChipMotion } from '../fx/useChipMotion';
+import { SIDEWAYS_QUERY, UPRIGHT_PHONE_QUERY, browserStorage, type Orientation, canGoFullscreen, dismissHint, hintDismissed, toggleFullscreen, useFullscreen, useMedia } from '../phone';
 import { giftArrivals } from '../fx/gifts';
 import { WatchBar } from './WatchBar';
 import { Burst, Mark } from '../fx/marks';
@@ -132,6 +133,15 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
   useCardMotion(feltRef, view, visible);
   useChipMotion(feltRef, view, visible, (seat) => (view ? seatSpot(view, seat) : { left: 50, top: 50 }), narrowTable());
   const shuffling = useShuffle(view, visible);
+  // A phone held sideways gets its own layout; tiled tables keep theirs.
+  const sideways = useMedia(SIDEWAYS_QUERY) && !compact;
+  // Fullscreen is for phones: sideways, or upright and about to turn.
+  const uprightPhone = useMedia(UPRIGHT_PHONE_QUERY);
+  const touch = useMedia('(pointer: coarse)');
+  const canFullscreen = canGoFullscreen(document, touch) && !compact && (sideways || uprightPhone);
+  const fullscreen = useFullscreen();
+  const [chatOpen, setChatOpen] = useState(false);
+  const [hintOff, setHintOff] = useState(() => hintDismissed(browserStorage));
 
   const load = refresh;
 
@@ -151,6 +161,10 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
   }, [visible]);
 
   const myTurn = isMyTurn(view ?? undefined);
+  // Chat over a sideways table would hide the actions: it closes when your turn comes.
+  useEffect(() => {
+    if (myTurn) setChatOpen(false);
+  }, [myTurn]);
   const lastTurnKey = useRef('');
   useEffect(() => {
     if (!view || !myTurn) return;
@@ -347,7 +361,7 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
 
   return (
     <div
-      className={`table-page ${compact ? 'compact' : ''} ${myTurn ? 'my-turn' : ''}`}
+      className={`table-page ${compact ? 'compact' : ''} ${sideways ? 'sideways' : ''} ${myTurn ? 'my-turn' : ''}`}
       style={visible ? undefined : { display: 'none' }}
       onMouseDown={compact ? () => focus(id) : undefined}
     >
@@ -423,8 +437,34 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
                 Close table
               </button>
             )}
+            {canFullscreen && (
+              <button className="btn ghost" aria-pressed={fullscreen} title={fullscreen ? 'Leave fullscreen' : 'Fullscreen, turned sideways'} onClick={() => void toggleFullscreen(document, screen.orientation as Orientation)}>
+                ⛶<span className="sr-only">{fullscreen ? 'Leave fullscreen' : 'Fullscreen'}</span>
+              </button>
+            )}
+            {sideways && (
+              <button className="btn ghost" aria-expanded={chatOpen} onClick={() => setChatOpen((o) => !o)}>
+                💬<span className="sr-only">Table chat</span>
+              </button>
+            )}
           </div>
         </div>
+
+        {!compact && !hintOff && (
+          <div className="rotate-hint" role="note">
+            <span>↻ Turn your phone sideways for the full table</span>
+            <button
+              className="btn ghost small"
+              aria-label="Dismiss"
+              onClick={() => {
+                dismissHint(browserStorage);
+                setHintOff(true);
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {tourney && (
           <div className="tourney-bar">
@@ -725,8 +765,13 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
       </div>
 
       {!compact && visible && (
-        <aside className="side">
-          <Chat channel={{ Table: id }} title="Table chat" />
+        <aside className={`side ${chatOpen ? 'open' : ''}`} onKeyDown={(e) => e.key === 'Escape' && setChatOpen(false)}>
+          {sideways && (
+            <button className="btn ghost small side-close" onClick={() => setChatOpen(false)}>
+              ✕ Close chat
+            </button>
+          )}
+          <Chat channel={{ Table: id }} title="Table chat" open={!sideways || chatOpen} />
         </aside>
       )}
 
@@ -753,8 +798,7 @@ function giftSpot(view: TableView, i: number, compact: boolean) {
   return compact ? { left: `calc(${p.left} + 24px)`, top: `calc(${p.top} + 8px)` } : { left: `calc(${p.left} + 37px)`, top: `calc(${p.top} + 2px)` };
 }
 
-/** Seat position around the oval, rotated so the viewer sits at the bottom. */
-/** A seat's center, in % of the table. */
+/** A seat's center, in % of the table, around the oval rotated so the viewer sits at the bottom. */
 function seatSpot(view: TableView, i: number) {
   const n = view.seats.length;
   const rotation = view.my_seat[0] ?? 0;
@@ -765,7 +809,7 @@ function seatSpot(view: TableView, i: number) {
 }
 
 /** Narrow screens pull the seats in, and the seats then fill the table. */
-const narrowTable = () => window.innerWidth < 700;
+const narrowTable = () => window.innerWidth < 700 && !matchMedia(SIDEWAYS_QUERY).matches;
 
 const percent = ({ left, top, dy = 0 }: { left: number; top: number; dy?: number }) => ({
   left: `${left}%`,
