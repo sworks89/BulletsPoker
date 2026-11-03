@@ -752,12 +752,12 @@ input.narrow { width: 80px; flex: none; }
 
 /* ---- phones: sideways table, and a hint to turn the phone (phone.ts) ---- */
 .rotate-hint { display: none; }
-@media (orientation: portrait) and (max-width: 700px) {
+@media (orientation: portrait) and (max-width: 700px) and (pointer: coarse) {
   /* The bottom margin leaves room for the top seat, which hangs above the table. */
   .rotate-hint { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 48px; padding: 4px 4px 4px 12px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; font-size: 13px; color: var(--muted); }
 }
 /* Same query as SIDEWAYS_QUERY in phone.ts: the site menu and table strip give the table their height. */
-@media (orientation: landscape) and (max-height: 500px) {
+@media (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
   .app.at-table { padding-left: max(8px, env(safe-area-inset-left, 0px)); padding-right: max(8px, env(safe-area-inset-right, 0px)); }
   .app.at-table .topbar, .app.at-table .table-strip { display: none; }
   .app.at-table main { padding: 4px 0 0; }
@@ -785,8 +785,12 @@ input.narrow { width: 80px; flex: none; }
 .table-page.sideways .bank-chip { align-self: center; }
 .table-page.sideways .side { display: none; }
 .table-page.sideways .side.open {
-  display: flex; position: fixed; z-index: 50; top: 8px; bottom: 8px; right: max(8px, env(safe-area-inset-right, 0px));
-  width: min(340px, 60vw); overflow: auto; padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  display: flex; position: fixed; z-index: 50; top: 8px; bottom: 8px; left: max(8px, env(safe-area-inset-left, 0px));
+  /* On the left, clear of the action column. */
+  width: min(340px, calc(100vw - 230px)); overflow: hidden; padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
   box-shadow: 0 10px 30px rgba(0,0,0,0.6);
 }
+/* The messages scroll inside the overlay, so the text box stays in view. */
+.table-page.sideways .side.open .chat { min-height: 0; flex: 1; display: flex; flex-direction: column; }
+.table-page.sideways .side.open .chat-msgs { min-height: 0; max-height: none; }
 .side-close { align-self: flex-end; }

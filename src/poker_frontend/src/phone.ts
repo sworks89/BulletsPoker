@@ -2,10 +2,14 @@ import { useEffect, useState } from 'react';
 
 /**
  * A phone held sideways: wide and short. The table then gets its own layout
- * (felt filling the height, actions in a column on the right). styles.css
- * repeats this query for the app shell; keep the two in step.
+ * (felt filling the height, actions in a column on the right). Touch screens
+ * only, so a short laptop window keeps the desktop layout. styles.css repeats
+ * these queries; phone.test.ts checks the copies match.
  */
-export const SIDEWAYS_QUERY = '(orientation: landscape) and (max-height: 500px)';
+export const SIDEWAYS_QUERY = '(orientation: landscape) and (max-height: 500px) and (pointer: coarse)';
+
+/** A phone held upright, which gets the hint to turn it sideways. */
+export const UPRIGHT_PHONE_QUERY = '(orientation: portrait) and (max-width: 700px) and (pointer: coarse)';
 
 /** Whether a media query matches, kept up to date as it changes. */
 export function useMedia(query: string): boolean {
@@ -16,8 +20,13 @@ export function useMedia(query: string): boolean {
     const mq = matchMedia(query);
     const on = () => setMatches(mq.matches);
     on();
-    mq.addEventListener('change', on);
-    return () => mq.removeEventListener('change', on);
+    // Safari before 14 only has the older addListener.
+    if (mq.addEventListener) {
+      mq.addEventListener('change', on);
+      return () => mq.removeEventListener('change', on);
+    }
+    mq.addListener(on);
+    return () => mq.removeListener(on);
   }, [query]);
   return matches;
 }
@@ -76,13 +85,20 @@ interface FullscreenDoc {
 /** `screen.orientation`; TypeScript's DOM types leave out `lock`, which only some browsers have. */
 export type Orientation = { lock?(o: 'landscape'): Promise<void> };
 
-/** Enters fullscreen and turns the screen sideways, or leaves fullscreen. */
+/**
+ * Enters fullscreen and turns the screen sideways, or leaves fullscreen. A
+ * refusal is ignored: the table works the same without fullscreen.
+ */
 export async function toggleFullscreen(doc: FullscreenDoc, orientation?: Orientation): Promise<void> {
-  if (doc.fullscreenElement) {
-    await doc.exitFullscreen();
-    return;
+  try {
+    if (doc.fullscreenElement) {
+      await doc.exitFullscreen();
+      return;
+    }
+    await doc.documentElement.requestFullscreen();
+    // Locking only works in fullscreen, and not in every browser; fullscreen alone still helps.
+    await orientation?.lock?.('landscape');
+  } catch {
+    // not allowed here (an embedding page, or the lock): stay as we are
   }
-  await doc.documentElement.requestFullscreen();
-  // Locking only works in fullscreen, and not in every browser; fullscreen alone still helps.
-  await orientation?.lock?.('landscape').catch(() => {});
 }

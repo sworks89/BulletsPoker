@@ -1,10 +1,23 @@
 import { describe, expect, it, vi } from 'vitest';
-import { canGoFullscreen, hintDismissed, dismissHint, toggleFullscreen } from './phone';
+import css from './styles.css?raw';
+import { SIDEWAYS_QUERY, UPRIGHT_PHONE_QUERY, canGoFullscreen, hintDismissed, dismissHint, toggleFullscreen } from './phone';
 
 const memory = () => {
   const m = new Map<string, string>();
   return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) };
 };
+
+describe('phone queries', () => {
+  it('apply to touch screens only, so a short laptop window keeps the desktop layout', () => {
+    expect(SIDEWAYS_QUERY).toContain('(pointer: coarse)');
+    expect(UPRIGHT_PHONE_QUERY).toContain('(pointer: coarse)');
+  });
+
+  it('match the copies in styles.css', () => {
+    expect(css).toContain(`@media ${SIDEWAYS_QUERY}`);
+    expect(css).toContain(`@media ${UPRIGHT_PHONE_QUERY}`);
+  });
+});
 
 describe('rotate hint', () => {
   it('shows until dismissed, then stays dismissed', () => {
@@ -50,6 +63,20 @@ describe('fullscreen', () => {
     const { doc, orientation } = page(false, vi.fn(() => Promise.reject(new Error('not supported'))));
     await expect(toggleFullscreen(doc, orientation)).resolves.toBeUndefined();
     expect(doc.documentElement.requestFullscreen).toHaveBeenCalled();
+  });
+
+  it('goes fullscreen where the screen has no orientation lock (iPad, Firefox)', async () => {
+    const { doc } = page(false);
+    await toggleFullscreen(doc);
+    await toggleFullscreen(doc, {});
+    expect(doc.documentElement.requestFullscreen).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails quietly when the browser refuses fullscreen', async () => {
+    const { doc, orientation } = page(false);
+    doc.documentElement.requestFullscreen = vi.fn(() => Promise.reject(new Error('denied')));
+    await expect(toggleFullscreen(doc, orientation)).resolves.toBeUndefined();
+    expect(orientation.lock).not.toHaveBeenCalled();
   });
 
   it('leaves fullscreen when already in it', async () => {
