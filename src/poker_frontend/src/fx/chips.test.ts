@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { NARROW_BET_DY, betSpot, chipColumns, chipMotionBetween, type ChipSnap } from './chips';
+import type { TableView } from '../ic';
+import { NARROW_BET_DY, betSpot, chipColumns, chipMotionBetween, chipSnapOf, type ChipSnap } from './chips';
 
 const snap = (over: Partial<ChipSnap> = {}): ChipSnap => ({
   hand: 1n,
+  street: 0,
   bets: new Map(),
   collected: 0n,
   over: false,
@@ -71,7 +73,7 @@ describe('chipMotionBetween', () => {
 
   it('sweeps the bets into the pot when a street ends', () => {
     const prev = snap({ bets: new Map([[0, 150n], [1, 150n], [2, 150n]]) });
-    const next = snap({ collected: 450n });
+    const next = snap({ street: 3, collected: 450n });
     expect(chipMotionBetween(prev, next)).toEqual({
       toss: [],
       sweep: [{ seat: 0, amount: 150n }, { seat: 1, amount: 150n }, { seat: 2, amount: 150n }],
@@ -81,7 +83,7 @@ describe('chipMotionBetween', () => {
 
   it('after a sweep, tosses a bet already made on the next street in full', () => {
     const prev = snap({ bets: new Map([[0, 150n], [1, 150n]]) });
-    const next = snap({ collected: 300n, bets: new Map([[1, 200n]]) });
+    const next = snap({ street: 3, collected: 300n, bets: new Map([[1, 200n]]) });
     const m = chipMotionBetween(prev, next);
     expect(m.sweep).toEqual([{ seat: 0, amount: 150n }, { seat: 1, amount: 150n }]);
     expect(m.toss).toEqual([{ seat: 1, amount: 200n, onto: false }]);
@@ -101,6 +103,13 @@ describe('chipMotionBetween', () => {
     });
   });
 
+  it('keeps the bets where they are when a folded player leaves mid-street', () => {
+    // The leaver's seat is hidden but their chips stay in the pot, so the pot grows.
+    const prev = snap({ street: 3, collected: 500n, bets: new Map([[0, 100n], [1, 100n], [2, 300n]]) });
+    const next = snap({ street: 3, collected: 600n, bets: new Map([[0, 100n], [2, 300n]]) });
+    expect(chipMotionBetween(prev, next)).toEqual({ toss: [], sweep: [], push: [] });
+  });
+
   it('pushes only once per hand', () => {
     const over = snap({ collected: 300n, over: true, winners: [{ seat: 0, amount: 300n }] });
     expect(chipMotionBetween(over, over).push).toEqual([]);
@@ -110,6 +119,38 @@ describe('chipMotionBetween', () => {
     const prev = snap({ hand: 1n, bets: new Map([[0, 150n]]) });
     const next = snap({ hand: 2n, over: true, collected: 300n, winners: [{ seat: 0, amount: 300n }] });
     expect(chipMotionBetween(prev, next)).toEqual({ toss: [], sweep: [], push: [] });
+  });
+});
+
+describe('chipSnapOf', () => {
+  const seat = (n: number, bet: bigint) => [{ seat: n, bet }];
+  const view = (phase: string, pot: bigint, bets: bigint[], board = 0, result?: object) =>
+    ({
+      hand_no: 7n,
+      phase: { [phase]: null },
+      pot,
+      board: new Uint8Array(board),
+      seats: [...bets.map((b, i) => seat(i, b)), []],
+      last_result: result ? [result] : [],
+    }) as unknown as TableView;
+  const result = { winners: [{ seat: 1, amount: 380n }] };
+
+  it('counts only chips already in the pot as collected while betting', () => {
+    const s = chipSnapOf(view('Flop', 500n, [100n, 0n, 100n], 3));
+    expect(s).toEqual({ hand: 7n, street: 3, bets: new Map([[0, 100n], [2, 100n]]), collected: 300n, over: false, winners: [] });
+  });
+
+  it('puts the whole pot in and lists the winners when the hand is over', () => {
+    const s = chipSnapOf(view('HandOver', 400n, [0n, 0n], 5, result));
+    expect(s.over).toBe(true);
+    expect(s.collected).toBe(400n);
+    expect(s.winners).toEqual([{ seat: 1, amount: 380n }]);
+  });
+
+  it('shows no pot once the table is waiting for players, though the last result is kept', () => {
+    const s = chipSnapOf(view('Waiting', 400n, [0n, 0n], 5, result));
+    expect(s.collected).toBe(0n);
+    expect(s.over).toBe(false);
   });
 });
 

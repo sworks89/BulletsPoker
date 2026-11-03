@@ -2,6 +2,8 @@
 // and what moves between two views of a table. Like the cards, only changes
 // seen while watching move: the first view shows the table as it is.
 
+import type { TableView } from '../ic';
+
 /** Chip values in units of a fifth of the big blind, smallest first. */
 const TIERS = [1n, 5n, 25n, 100n, 500n, 2500n];
 const MAX_PER_COLUMN = 8;
@@ -62,6 +64,8 @@ export function betSpot(seat: { left: number; top: number }, narrow: boolean): {
 /** The parts of a table view that chip motion depends on. */
 export interface ChipSnap {
   hand: bigint;
+  /** Board cards out, which tells the streets apart. */
+  street: number;
   /** Each seat's bet on this street. */
   bets: Map<number, bigint>;
   /** Chips already in the pot, not counting this street's bets. */
@@ -80,6 +84,26 @@ export interface ChipMotion {
   push: { seat: number; amount: bigint }[];
 }
 
+const BETTING = ['PreFlop', 'Flop', 'Turn', 'River'];
+
+export function chipSnapOf(view: TableView): ChipSnap {
+  const seats = view.seats.flatMap((s) => (s[0] ? [s[0]] : []));
+  const bets = new Map(seats.filter((s) => s.bet > 0n).map((s) => [s.seat, s.bet]));
+  const result = 'HandOver' in view.phase ? view.last_result[0] : undefined;
+  const betting = BETTING.some((p) => p in view.phase);
+  const onStreet = [...bets.values()].reduce((a, b) => a + b, 0n);
+  return {
+    hand: view.hand_no,
+    street: view.board.length,
+    bets,
+    // While betting the view's pot includes this street's bets. Once the table
+    // is waiting for players it still reports the last hand's pot, long paid out.
+    collected: result ? view.pot : betting && view.pot > onStreet ? view.pot - onStreet : 0n,
+    over: !!result,
+    winners: result?.winners.map((w) => ({ seat: w.seat, amount: w.amount })) ?? [],
+  };
+}
+
 const bySeat = (m: Map<number, bigint>) => [...m].filter(([, a]) => a > 0n).sort((a, b) => a[0] - b[0]);
 
 export function chipMotionBetween(prev: ChipSnap | null, next: ChipSnap): ChipMotion {
@@ -89,7 +113,9 @@ export function chipMotionBetween(prev: ChipSnap | null, next: ChipSnap): ChipMo
     if (next.over) return none;
     return { ...none, toss: bySeat(next.bets).map(([seat, amount]) => ({ seat, amount, onto: false })) };
   }
-  const swept = next.collected > prev.collected;
+  // Bets go in when a street ends, not whenever the pot grows: a folded player
+  // who leaves drops out of the view while their chips stay in the pot.
+  const swept = next.street > prev.street || (next.over && !prev.over);
   const toss: ChipMotion['toss'] = [];
   for (const [seat, bet] of bySeat(next.bets)) {
     const before = swept ? 0n : (prev.bets.get(seat) ?? 0n);

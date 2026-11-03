@@ -17,9 +17,9 @@ import { BadBeatTag, ChipBurst, RainCloud, THROW_FX, useSeatFx } from '../fx/Sea
 import { handReactions } from '../fx/poker';
 import { showdownHighlight } from '../fx/motion';
 import { useCardMotion, useShuffle } from '../fx/useCardMotion';
-import { betSpot } from '../fx/chips';
+import { betSpot, chipSnapOf } from '../fx/chips';
 import { ChipPile } from '../fx/ChipPile';
-import { chipSnapOf, useChipMotion } from '../fx/useChipMotion';
+import { useChipMotion } from '../fx/useChipMotion';
 import { giftArrivals } from '../fx/gifts';
 import { WatchBar } from './WatchBar';
 import { Burst, Mark } from '../fx/marks';

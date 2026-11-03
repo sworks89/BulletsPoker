@@ -244,7 +244,7 @@ main { padding: 18px 0; }
   box-shadow: 0 var(--chip-step) 0 color-mix(in srgb, var(--c) 55%, #000), 0 3px 4px rgba(0,0,0,0.35);
 }
 .tc-amt { align-self: center; font-size: 12px; font-weight: 700; color: #fff; background: rgba(0,0,0,0.55); padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
-.bet-pile { position: absolute; translate: -50% -50%; z-index: 1; }
+.bet-pile { position: absolute; translate: -50% -50%; }
 .pot-chips { min-height: calc(var(--chip-h) + 3 * var(--chip-step)); display: flex; align-items: flex-end; }
 .tc-flying { position: absolute; translate: -50% -50%; z-index: 5; pointer-events: none; }
 

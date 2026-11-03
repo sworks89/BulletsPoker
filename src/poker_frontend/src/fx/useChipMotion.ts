@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
 import type { TableView } from '../ic';
-import { betSpot, chipColumns, chipMotionBetween, type ChipSnap } from './chips';
+import { betSpot, chipColumns, chipMotionBetween, chipSnapOf, type ChipSnap } from './chips';
 import { chipNode, pileNode } from './ChipPile';
 
 const TOSS_MS = 320;
@@ -13,21 +13,6 @@ const SWEEP_STAGGER_MS = 70;
 const PUSH_MS = 650;
 
 const reducedMotion = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-export function chipSnapOf(view: TableView): ChipSnap {
-  const seats = view.seats.flatMap((s) => (s[0] ? [s[0]] : []));
-  const bets = new Map(seats.filter((s) => s.bet > 0n).map((s) => [s.seat, s.bet]));
-  const result = 'HandOver' in view.phase ? view.last_result[0] : undefined;
-  const betting = [...bets.values()].reduce((a, b) => a + b, 0n);
-  return {
-    hand: view.hand_no,
-    bets,
-    // While betting the view's pot includes this street's bets.
-    collected: view.pot > betting ? view.pot - betting : 0n,
-    over: !!result,
-    winners: result?.winners.map((w) => ({ seat: w.seat, amount: w.amount })) ?? [],
-  };
-}
 
 type Spot = { left: number; top: number };
 
@@ -82,19 +67,19 @@ export function useChipMotion(
       return node;
     };
     const land = (node: HTMLElement) => (a: Animation) =>
-      a.finished.then(
-        () => {
+      a.finished
+        .catch(() => {})
+        .then(() => {
           node.remove();
           flying.current.delete(node);
-        },
-        () => {},
-      );
+        });
 
     // Bets go into the pot first; new bets and the payout follow.
     const sweepMs = m.sweep.length ? SWEEP_MS + (m.sweep.length - 1) * SWEEP_STAGGER_MS : 0;
     m.sweep.forEach(({ seat, amount }, k) => {
       const from = px(betAt(seat));
       const node = fly(pileNode(amount, bb), from);
+      node.classList.add('bet-pile');
       land(node)(
         node.animate([{ transform: 'none' }, { transform: `translate(${pot.x - from.x}px, ${pot.y - from.y}px) scale(0.85)` }], {
           duration: SWEEP_MS,
@@ -105,6 +90,8 @@ export function useChipMotion(
       );
     });
     if (m.sweep.length && potEl) {
+      // A pot that starts with this sweep appears as the chips arrive.
+      if (!before?.collected) potEl.animate([{ opacity: 0 }, { opacity: 0 }], { duration: sweepMs });
       potEl.animate([{ transform: 'scale(1.12)' }, { transform: 'none' }], { duration: 180, delay: sweepMs, easing: 'ease-out' });
     }
 
@@ -121,7 +108,12 @@ export function useChipMotion(
         const spin = (k % 2 ? 1 : -1) * 40;
         land(node)(
           node.animate(
-            [{ transform: `translate(${from.x - to.x}px, ${from.y - to.y}px) rotate(${spin}deg) scale(0.9)`, opacity: 1 }, { transform: 'none', opacity: 1 }],
+            // Hidden until thrown, so chips don't wait on the seat while earlier ones fly.
+            [
+              { transform: `translate(${from.x - to.x}px, ${from.y - to.y}px) rotate(${spin}deg) scale(0.9)`, opacity: 0 },
+              { opacity: 1, offset: 0.15 },
+              { transform: 'none', opacity: 1 },
+            ],
             { duration: TOSS_MS, delay: start + k * TOSS_STAGGER_MS, easing: 'cubic-bezier(.2,.7,.3,1)', fill: 'both' },
           ),
         );
