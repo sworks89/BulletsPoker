@@ -99,7 +99,7 @@ main { padding: 18px 0; }
 .avatar .gift { position: absolute; right: -24px; bottom: 2px; width: 30px; height: 30px; font-size: 22px; z-index: 2; animation: pop 0.4s ease; }
 .avatar .gift .item-art { width: 100%; height: 100%; filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.5)); }
 .avatar.sm .gift { display: none; }
-.table-page.compact .avatar .gift { width: 16px; height: 16px; right: -16px; bottom: -2px; font-size: 13px; }
+.table-page:is(.compact, .sideways) .avatar .gift { width: 16px; height: 16px; right: -16px; bottom: -2px; font-size: 13px; }
 .avatar .gift.flying { visibility: hidden; }
 .avatar .gift.landed { animation: giftPop 0.5s cubic-bezier(.2,1.6,.4,1); }
 .avatar .gift.fading { animation: fadeOut 0.5s forwards; }
@@ -215,7 +215,7 @@ main { padding: 18px 0; }
   .felt-wrap { --chip: 16px; --chip-step: 2px; }
   .tc-amt { font-size: 11px; padding: 0 6px; }
 }
-.table-page.compact .deck { width: 34px; height: 48px; margin: -24px 0 0 -17px; }
+.table-page:is(.compact, .sideways) .deck { width: 34px; height: 48px; margin: -24px 0 0 -17px; }
 
 .seat { position: absolute; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 2px; width: 130px; cursor: pointer; transition: opacity 0.2s; }
 .seat.empty { width: 90px; height: 60px; border: 2px dashed #3a4866; border-radius: 12px; justify-content: center; background: rgba(0,0,0,0.25); cursor: default; }
@@ -499,37 +499,37 @@ main { padding: 18px 0; }
 .tile { border: 2px solid transparent; border-radius: 12px; padding: 4px; min-width: 0; }
 .tile.focused { border-color: rgba(245,185,26,.5); }
 .table-page.compact { display: block; }
-.table-page.compact .table-header { margin-bottom: 4px; gap: 6px; font-size: 13px; }
-.table-page.compact .table-header .btn { padding: 4px 8px; font-size: 12px; }
-.table-page.compact .table-header .muted { display: none; }
-.table-page.compact .tourney-bar { font-size: 12px; padding: 4px 8px; gap: 8px; }
-.table-page.compact .host-line { display: none; }
+.table-page:is(.compact, .sideways) .table-header { margin-bottom: 4px; gap: 6px; font-size: 13px; }
+.table-page:is(.compact, .sideways) .table-header .btn { padding: 4px 8px; font-size: 12px; }
+.table-page:is(.compact, .sideways) .table-header .muted { display: none; }
+.table-page:is(.compact, .sideways) .tourney-bar { font-size: 12px; padding: 4px 8px; gap: 8px; }
+.table-page:is(.compact, .sideways) .host-line { display: none; }
 .table-page.compact .felt-wrap { min-height: 0; aspect-ratio: 16 / 10; }
-.table-page.compact .felt { border-width: 8px; }
-.table-page.compact .felt-logo { display: none; }
-.table-page.compact .card { width: 34px; height: 48px; }
-.table-page.compact .card .rank, .table-page.compact .card .suit { font-size: 14px; }
-.table-page.compact .card.sm { width: 24px; height: 34px; }
-.table-page.compact .card.sm .rank, .table-page.compact .card.sm .suit { font-size: 10px; }
-.table-page.compact .seat { width: 78px; }
-.table-page.compact .seat .avatar { width: 32px; height: 32px; font-size: 18px; border-width: 1px; }
-.table-page.compact .seat .hole { min-height: 34px; margin-bottom: -10px; }
-.table-page.compact .nameplate { min-width: 70px; padding: 1px 4px; }
-.table-page.compact .nameplate .name, .table-page.compact .nameplate .stack { font-size: 10px; }
-.table-page.compact .lvl, .table-page.compact .action-tag { font-size: 9px; }
-.table-page.compact .seat.empty { width: 56px; height: 36px; }
-.table-page.compact .dealer { width: 16px; height: 16px; font-size: 9px; top: 18px; }
-.table-page.compact .felt-wrap { --chip: 13px; --chip-step: 2px; }
-.table-page.compact .tc-amt { font-size: 10px; padding: 0 6px; }
-.table-page.compact .pot { font-size: 12px; min-height: 0; }
-.table-page.compact .result { font-size: 11px; padding: 3px 8px; }
+.table-page:is(.compact, .sideways) .felt { border-width: 8px; }
+.table-page:is(.compact, .sideways) .felt-logo { display: none; }
+.table-page:is(.compact, .sideways) .card { width: 34px; height: 48px; }
+.table-page:is(.compact, .sideways) .card .rank, .table-page:is(.compact, .sideways) .card .suit { font-size: 14px; }
+.table-page:is(.compact, .sideways) .card.sm { width: 24px; height: 34px; }
+.table-page:is(.compact, .sideways) .card.sm .rank, .table-page:is(.compact, .sideways) .card.sm .suit { font-size: 10px; }
+.table-page:is(.compact, .sideways) .seat { width: 78px; }
+.table-page:is(.compact, .sideways) .seat .avatar { width: 32px; height: 32px; font-size: 18px; border-width: 1px; }
+.table-page:is(.compact, .sideways) .seat .hole { min-height: 34px; margin-bottom: -10px; }
+.table-page:is(.compact, .sideways) .nameplate { min-width: 70px; padding: 1px 4px; }
+.table-page:is(.compact, .sideways) .nameplate .name, .table-page:is(.compact, .sideways) .nameplate .stack { font-size: 10px; }
+.table-page:is(.compact, .sideways) .lvl, .table-page:is(.compact, .sideways) .action-tag { font-size: 9px; }
+.table-page:is(.compact, .sideways) .seat.empty { width: 56px; height: 36px; }
+.table-page:is(.compact, .sideways) .dealer { width: 16px; height: 16px; font-size: 9px; top: 18px; }
+.table-page:is(.compact, .sideways) .felt-wrap { --chip: 13px; --chip-step: 2px; }
+.table-page:is(.compact, .sideways) .tc-amt { font-size: 10px; padding: 0 6px; }
+.table-page:is(.compact, .sideways) .pot { font-size: 12px; min-height: 0; }
+.table-page:is(.compact, .sideways) .result { font-size: 11px; padding: 3px 8px; }
 .table-page.compact .action-bar { margin-top: 10px; min-height: 0; padding: 6px; gap: 6px; }
-.table-page.compact .action-bar .btn { padding: 7px 12px; font-size: 13px; }
-.table-page.compact .action-bar > .muted { font-size: 12px; }
+.table-page:is(.compact, .sideways) .action-bar .btn { padding: 7px 12px; font-size: 13px; }
+.table-page:is(.compact, .sideways) .action-bar > .muted { font-size: 12px; }
 .table-page.compact .raise { min-width: 160px; gap: 4px; }
-.table-page.compact .raise .chip { padding: 2px 6px; font-size: 11px; }
-.table-page.compact.my-turn .action-bar { border-color: var(--accent); box-shadow: 0 0 12px rgba(245,185,26,.35); }
-.table-page.compact .flying { font-size: 24px; }
+.table-page:is(.compact, .sideways) .raise .chip { padding: 2px 6px; font-size: 11px; }
+.table-page:is(.compact, .sideways).my-turn .action-bar { border-color: var(--accent); box-shadow: 0 0 12px rgba(245,185,26,.35); }
+.table-page:is(.compact, .sideways) .flying { font-size: 24px; }
 
 @media (max-width: 1100px) {
   .tile-area { grid-template-columns: 1fr; }
@@ -549,7 +549,7 @@ main { padding: 18px 0; }
 .avatar.note-purple { box-shadow: 0 0 0 3px #a855f7; }
 .avatar.note-plain { box-shadow: 0 0 0 2px #94a3b8; }
 .note-mark { position: absolute; left: -10px; bottom: -4px; font-size: 14px; z-index: 2; }
-.table-page.compact .note-mark { font-size: 10px; left: -7px; bottom: -3px; }
+.table-page:is(.compact, .sideways) .note-mark { font-size: 10px; left: -7px; bottom: -3px; }
 .note-editor { display: flex; flex-direction: column; gap: 6px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
 .note-editor h4 { margin: 0; }
 .note-editor textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; resize: vertical; }
@@ -749,3 +749,48 @@ input.narrow { width: 80px; flex: none; }
 .build-latest::before { background: #3fb950; opacity: 1; }
 .build-older::before { background: #d29922; opacity: 1; }
 .build-none::before { background: #f85149; opacity: 1; }
+
+/* ---- phones: sideways table, and a hint to turn the phone (phone.ts) ---- */
+.rotate-hint { display: none; }
+@media (orientation: portrait) and (max-width: 700px) and (pointer: coarse) {
+  /* The bottom margin leaves room for the top seat, which hangs above the table. */
+  .rotate-hint { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 48px; padding: 4px 4px 4px 12px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; font-size: 13px; color: var(--muted); }
+}
+/* Same query as SIDEWAYS_QUERY in phone.ts: the site menu and table strip give the table their height. */
+@media (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
+  .app.at-table { padding-left: max(8px, env(safe-area-inset-left, 0px)); padding-right: max(8px, env(safe-area-inset-right, 0px)); }
+  .app.at-table .topbar, .app.at-table .table-strip { display: none; }
+  .app.at-table main { padding: 4px 0 0; }
+}
+.table-page.sideways { grid-template-columns: minmax(0, 1fr) 188px; column-gap: 8px; row-gap: 2px; align-items: stretch; }
+.table-page.sideways .table-main { display: contents; }
+.table-page.sideways .table-main > * { grid-column: 1 / -1; }
+.table-page.sideways .table-header { margin-bottom: 0; flex-wrap: nowrap; }
+.table-page.sideways .table-header > div:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.table-page.sideways .table-header .row { flex: none; flex-wrap: nowrap; }
+.table-page.sideways .felt-wrap {
+  grid-column: 1; width: 100%; aspect-ratio: auto; min-height: 0; margin: 0;
+  /* Room above and below for the top and bottom seats, which hang off the felt. */
+  height: calc(100vh - 72px); height: calc(100dvh - 72px); margin-bottom: 24px;
+}
+.table-page.sideways .felt { inset: 16% 9% 14%; }
+.table-page.sideways .action-bar {
+  grid-column: 2; margin: 0; min-height: 0; padding: 8px; gap: 6px; overflow-y: auto;
+  flex-direction: column; flex-wrap: nowrap; align-items: stretch; justify-content: center;
+}
+.table-page.sideways .action-bar .btn { width: 100%; padding: 10px 8px; }
+.table-page.sideways .action-bar > .muted { font-size: 12px; text-align: center; }
+.table-page.sideways .raise { min-width: 0; flex: none; }
+.table-page.sideways .raise .row { flex-wrap: wrap; justify-content: center; }
+.table-page.sideways .bank-chip { align-self: center; }
+.table-page.sideways .side { display: none; }
+.table-page.sideways .side.open {
+  display: flex; position: fixed; z-index: 50; top: 8px; bottom: 8px; left: max(8px, env(safe-area-inset-left, 0px));
+  /* On the left, clear of the action column. */
+  width: min(340px, calc(100vw - 230px)); overflow: hidden; padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+}
+/* The messages scroll inside the overlay, so the text box stays in view. */
+.table-page.sideways .side.open .chat { min-height: 0; flex: 1; display: flex; flex-direction: column; }
+.table-page.sideways .side.open .chat-msgs { min-height: 0; max-height: none; }
+.side-close { align-self: flex-end; }

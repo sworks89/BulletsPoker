@@ -10,7 +10,8 @@ export function mergeMessages(old: ChatMessage[], fresh: ChatMessage[]): ChatMes
 
 const QUICK = ['👍', '😂', '🔥', 'nh', 'gg', 'ty', '😭', '🤔'];
 
-export function Chat({ channel, title }: { channel: Channel; title: string }) {
+/** `open` is false while the chat is hidden (a sideways phone's closed overlay); opening it scrolls to the newest. */
+export function Chat({ channel, title, open = true }: { channel: Channel; title: string; open?: boolean }) {
   const { backend, profile, run } = useApp();
   const [msgs, setMsgs] = useState<ChatMessage[]>([]);
   const [text, setText] = useState('');
@@ -37,7 +38,7 @@ export function Chat({ channel, title }: { channel: Channel; title: string }) {
 
   useEffect(() => {
     box.current?.scrollTo({ top: box.current.scrollHeight });
-  }, [msgs.length]);
+  }, [msgs.length, open]);
 
   const send = async (t: string) => {
     if (!t.trim()) return;

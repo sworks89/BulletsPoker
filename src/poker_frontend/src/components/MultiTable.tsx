@@ -8,7 +8,7 @@ import { Chat } from './Chat';
 /** Strip of open tables, shown on every page so you never miss your turn. */
 export function TableStrip() {
   const { view, go } = useApp();
-  const { open, active, views, clockOffset, layout, autoFocus, focus, closeTable, setLayout, setAutoFocus, notices, dismissNotice } = useTables();
+  const { open, active, views, clockOffset, layout, canTile, autoFocus, focus, closeTable, setLayout, setAutoFocus, notices, dismissNotice } = useTables();
   const [, tick] = useState(0);
   useEffect(() => {
     const t = setInterval(() => tick((x) => x + 1), 500);
@@ -73,12 +73,16 @@ export function TableStrip() {
         </button>
       )}
       <div className="strip-controls">
-        <button aria-pressed={layout === 'tabs'} className={`chip ${layout === 'tabs' ? 'active' : ''}`} onClick={() => setLayout('tabs')} title="One table at a time">
-          ▭ Tabs
-        </button>
-        <button aria-pressed={layout === 'tile'} className={`chip ${layout === 'tile' ? 'active' : ''}`} onClick={() => setLayout('tile')} title="All tables side by side">
-          ⊞ Tile
-        </button>
+        {canTile && (
+          <>
+            <button aria-pressed={layout === 'tabs'} className={`chip ${layout === 'tabs' ? 'active' : ''}`} onClick={() => setLayout('tabs')} title="One table at a time">
+              ▭ Tabs
+            </button>
+            <button aria-pressed={layout === 'tile'} className={`chip ${layout === 'tile' ? 'active' : ''}`} onClick={() => setLayout('tile')} title="All tables side by side">
+              ⊞ Tile
+            </button>
+          </>
+        )}
         {layout === 'tabs' && (
           <label className="small muted strip-auto" title="Switch to a table as soon as it's your turn there">
             <input type="checkbox" checked={autoFocus} onChange={(e) => setAutoFocus(e.target.checked)} /> Auto-switch

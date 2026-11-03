@@ -6,6 +6,7 @@ import { freshest } from './freshViews';
 import { LEAVE_CONFIRM, alreadyLeaving, leavesAfterHand } from './leave';
 import type { TableView } from './ic';
 import { isMyTurn } from './turn';
+import { PHONE_QUERY, layoutFor, useMedia } from './phone';
 import { afterClosing, defersToSeatSync, isSeated, reconcileSeats } from './tablesNav';
 
 export { isMyTurn };
@@ -29,6 +30,8 @@ interface TablesState {
   /** Server clock minus local clock (ms), for action timers. */
   clockOffset: number;
   layout: Layout;
+  /** Tiling is offered except on phones, where tiled tables are too small to play. */
+  canTile: boolean;
   autoFocus: boolean;
   openTable: (id: bigint) => void;
   closeTable: (id: bigint) => void;
@@ -320,10 +323,14 @@ export function TablesProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [views]);
 
+  // Phones always show one table at a time; the saved choice is for other devices.
+  const phone = useMedia(PHONE_QUERY);
+  const shownLayout = layoutFor(layout, phone);
+
   // Auto-focus: in tab mode, jump to a table where it's your turn (unless the current one also needs you).
   const lastJump = useRef<string>('');
   useEffect(() => {
-    if (!autoFocus || layout !== 'tabs' || active === null) return;
+    if (!autoFocus || shownLayout !== 'tabs' || active === null) return;
     if (isMyTurn(views.get(String(active)))) return;
     const waiting = open.map((id) => views.get(String(id))).find((v) => isMyTurn(v));
     if (!waiting) return;
@@ -331,7 +338,7 @@ export function TablesProvider({ children }: { children: ReactNode }) {
     if (key === lastJump.current) return;
     lastJump.current = key;
     goTable(waiting.id);
-  }, [views, autoFocus, layout, active, open, goTable]);
+  }, [views, autoFocus, shownLayout, active, open, goTable]);
 
   // Browser tab title shows how many tables are waiting on you.
   const waitingCount = open.filter((id) => isMyTurn(views.get(String(id)))).length;
@@ -345,7 +352,8 @@ export function TablesProvider({ children }: { children: ReactNode }) {
       active,
       views,
       clockOffset,
-      layout,
+      layout: shownLayout,
+      canTile: !phone,
       autoFocus,
       openTable,
       closeTable,
@@ -363,7 +371,7 @@ export function TablesProvider({ children }: { children: ReactNode }) {
       refresh,
       reconnecting: reconnecting && open.length > 0,
     }),
-    [open, active, views, clockOffset, layout, autoFocus, openTable, closeTable, notices, dismissNotice, go, refresh, reconnecting],
+    [open, active, views, clockOffset, shownLayout, phone, autoFocus, openTable, closeTable, notices, dismissNotice, go, refresh, reconnecting],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
