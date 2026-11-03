@@ -167,6 +167,8 @@ describe('betSpot', () => {
 
   it('puts the bottom seat’s bet beside its cards, which fill the space toward the middle', () => {
     expect(betSpot({ left: 50, top: 90 }, false)).toEqual({ left: 63, top: 77, dy: 0 });
+    // Below the seat would be on top of the action buttons.
+    expect(betSpot({ left: 50, top: 90 }, true)).toEqual({ left: 63, top: 77, dy: 0 });
   });
 
   it('on a narrow screen, where seats fill the table, puts a bet just below its seat', () => {
