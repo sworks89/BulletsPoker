@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import css from './styles.css?raw';
-import { SIDEWAYS_QUERY, UPRIGHT_PHONE_QUERY, canGoFullscreen, hintDismissed, dismissHint, toggleFullscreen } from './phone';
+import { PHONE_QUERY, SIDEWAYS_QUERY, UPRIGHT_PHONE_QUERY, canGoFullscreen, layoutFor, hintDismissed, dismissHint, toggleFullscreen } from './phone';
 
 const memory = () => {
   const m = new Map<string, string>();
@@ -16,6 +16,22 @@ describe('phone queries', () => {
   it('match the copies in styles.css', () => {
     expect(css).toContain(`@media ${SIDEWAYS_QUERY}`);
     expect(css).toContain(`@media ${UPRIGHT_PHONE_QUERY}`);
+  });
+});
+
+describe('table layout on phones', () => {
+  it('is always tabs on a phone, whatever was saved', () => {
+    expect(layoutFor('tile', true)).toBe('tabs');
+    expect(layoutFor('tabs', true)).toBe('tabs');
+  });
+
+  it('follows the saved choice elsewhere', () => {
+    expect(layoutFor('tile', false)).toBe('tile');
+    expect(layoutFor('tabs', false)).toBe('tabs');
+  });
+
+  it('counts a phone either way up', () => {
+    expect(PHONE_QUERY).toBe(`${SIDEWAYS_QUERY}, ${UPRIGHT_PHONE_QUERY}`);
   });
 });
 

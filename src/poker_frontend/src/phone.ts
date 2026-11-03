@@ -11,6 +11,18 @@ export const SIDEWAYS_QUERY = '(orientation: landscape) and (max-height: 500px) 
 /** A phone held upright, which gets the hint to turn it sideways. */
 export const UPRIGHT_PHONE_QUERY = '(orientation: portrait) and (max-width: 700px) and (pointer: coarse)';
 
+/** A phone, either way up. */
+export const PHONE_QUERY = `${SIDEWAYS_QUERY}, ${UPRIGHT_PHONE_QUERY}`;
+
+/**
+ * How open tables are shown: phones always get one table at a time, since
+ * tiled tables are too small to play on a phone screen. The saved choice is
+ * kept for other devices.
+ */
+export function layoutFor<L extends 'tabs' | 'tile'>(saved: L, phone: boolean): 'tabs' | L {
+  return phone ? 'tabs' : saved;
+}
+
 /** Whether a media query matches, kept up to date as it changes. */
 export function useMedia(query: string): boolean {
   const get = () => typeof matchMedia === 'function' && matchMedia(query).matches;
