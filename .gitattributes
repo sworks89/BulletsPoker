@@ -3,3 +3,6 @@
 *.did text eol=lf
 src/poker_frontend/src/declarations/** text eol=lf
 src/poker_frontend/src/fair/vectors.json text eol=lf
+# Served as-is by the frontend canister: the HTTP gateways read ic-domains line by line.
+src/poker_frontend/public/.well-known/** text eol=lf
+src/poker_frontend/public/_headers text eol=lf
