@@ -17,6 +17,9 @@ import { BadBeatTag, ChipBurst, RainCloud, THROW_FX, useSeatFx } from '../fx/Sea
 import { handReactions } from '../fx/poker';
 import { showdownHighlight } from '../fx/motion';
 import { useCardMotion, useShuffle } from '../fx/useCardMotion';
+import { betSpot, chipSnapOf } from '../fx/chips';
+import { ChipPile } from '../fx/ChipPile';
+import { useChipMotion } from '../fx/useChipMotion';
 import { giftArrivals } from '../fx/gifts';
 import { WatchBar } from './WatchBar';
 import { Burst, Mark } from '../fx/marks';
@@ -81,16 +84,6 @@ function Deck({ back }: { back?: string }) {
   );
 }
 
-function Chips({ value, currency }: { value: bigint; currency: CurrencyV }) {
-  if (value === 0n) return null;
-  return (
-    <div className="bet">
-      <span className="chip-stack" />
-      {amount(value, currency)}
-    </div>
-  );
-}
-
 /** Which currency to pay for an item with at a table: the table's own if the item supports it. */
 export function payCurrency(item: StoreItem, tableCurrency: CurrencyV): CurrencyV {
   if (isChips(tableCurrency) && item.chip_price > 0n) return CHIPS;
@@ -137,6 +130,7 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
   const settings = profile?.settings;
   const feltRef = useRef<HTMLDivElement>(null);
   useCardMotion(feltRef, view, visible);
+  useChipMotion(feltRef, view, visible, (seat) => (view ? seatSpot(view, seat) : { left: 50, top: 50 }), narrowTable());
   const shuffling = useShuffle(view, visible);
 
   const load = refresh;
@@ -323,6 +317,7 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
   };
 
   const result = phase === 'HandOver' ? view.last_result[0] : undefined;
+  const chips = chipSnapOf(view);
   // In tab mode, point to another open table that is waiting on you.
   const elsewhere = compact ? undefined : open.filter((o) => o !== id).map((o) => views.get(String(o))).find((v) => isMyTurn(v));
   const winnerSeats = new Set(result?.winners.map((w) => w.seat) ?? []);
@@ -498,6 +493,9 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
                 <div key={`e${i}`} className="card slot" />
               ))}
             </div>
+            <div className="pot-chips" data-fx="pot">
+              {!chips.over && chips.collected > 0n && <ChipPile amount={chips.collected} bigBlind={view.config.big_blind} />}
+            </div>
             <div className="pot">
               {view.pot > 0n ? `Pot ${amountWithUnit(view.pot, currency)}` : phase === 'Waiting' ? 'Waiting for players…' : ''}
             </div>
@@ -608,8 +606,23 @@ export function TablePage({ id, visible = true, compact = false }: { id: bigint;
                   s.last_action[0] && <div className="action-tag">{s.last_action[0]}</div>
                 )}
                 {view.button === i && phase !== 'Waiting' && <div className="dealer">D</div>}
-                <Chips value={s.bet} currency={currency} />
               </div>
+            );
+          })}
+
+          {view.seats.map((slot, i) => {
+            const s = slot[0];
+            if (!s || s.bet === 0n) return null;
+            return (
+              <ChipPile
+                key={`bet-${i}`}
+                className="bet-pile"
+                fx={`bet-${i}`}
+                amount={s.bet}
+                bigBlind={view.config.big_blind}
+                label={amount(s.bet, currency)}
+                style={percent(betSpot(seatSpot(view, i), narrowTable()))}
+              />
             );
           })}
 
@@ -741,13 +754,26 @@ function giftSpot(view: TableView, i: number, compact: boolean) {
 }
 
 /** Seat position around the oval, rotated so the viewer sits at the bottom. */
-function seatPos(view: TableView, i: number) {
+/** A seat's center, in % of the table. */
+function seatSpot(view: TableView, i: number) {
   const n = view.seats.length;
   const rotation = view.my_seat[0] ?? 0;
   const k = (i - rotation + n) % n;
   const angle = Math.PI / 2 + (k * 2 * Math.PI) / n;
-  const rx = window.innerWidth < 700 ? 36 : 43;
-  return { left: `${50 + rx * Math.cos(angle)}%`, top: `${50 + 40 * Math.sin(angle)}%` };
+  const rx = narrowTable() ? 36 : 43;
+  return { left: 50 + rx * Math.cos(angle), top: 50 + 40 * Math.sin(angle) };
+}
+
+/** Narrow screens pull the seats in, and the seats then fill the table. */
+const narrowTable = () => window.innerWidth < 700;
+
+const percent = ({ left, top, dy = 0 }: { left: number; top: number; dy?: number }) => ({
+  left: `${left}%`,
+  top: dy ? `calc(${top}% + ${dy}px)` : `${top}%`,
+});
+
+function seatPos(view: TableView, i: number) {
+  return percent(seatSpot(view, i));
 }
 
 function BuyIn({ view, seat, onClose, onDone }: { view: TableView; seat: number; onClose: () => void; onDone: () => Promise<void> }) {
