@@ -8,3 +8,9 @@
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
   Referrer-Policy: same-origin
+
+# Internet Identity reads this from the canister address to let the custom
+# domains sign players in as it (src/domains.ts).
+/.well-known/ii-alternative-origins
+  Content-Type: application/json
+  Access-Control-Allow-Origin: *
