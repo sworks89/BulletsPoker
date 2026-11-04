@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { StoreItem } from './ic';
-import { avatarCards, ownsItem } from './store';
+import { avatarCards, deckOf, ownsItem } from './store';
 import './art/Avatar';
 
 function avatar(id: number, icon: string, pair?: number, price = 10_000_000n): StoreItem {
@@ -42,5 +42,21 @@ describe('avatar cards in the store', () => {
 
   it('shows a version on its own when its partner is missing from the list', () => {
     expect(avatarCards([avatar(2, '🪓', 3)]).map((card) => card.map((i) => i.id))).toEqual([[2]]);
+  });
+});
+
+describe('the deck a player sees', () => {
+  const deck = (id: number, icon: string): StoreItem => ({ ...avatar(id, icon, undefined, 0n), kind: { CardFront: null } });
+  const items = new Map([deck(40, 'deck-classic'), deck(44, 'deck-gold'), deck(45, 'deck-hologram')].map((i) => [i.id, i]));
+
+  it('is the equipped deck', () => {
+    expect(deckOf(44, items)).toBe('gold');
+  });
+
+  it('falls back to the classic deck before decks exist, or for a style this app cannot draw', () => {
+    expect(deckOf(0, items)).toBe('classic');
+    expect(deckOf(undefined, items)).toBe('classic');
+    expect(deckOf(45, items)).toBe('classic');
+    expect(deckOf(3, new Map([[3, avatar(3, '🤠')]]))).toBe('classic');
   });
 });

@@ -325,6 +325,34 @@ main { padding: 18px 0; }
 /* ---- tier 1: play chips, four-color deck, throwables, history, settings ---- */
 .card.clubs4 { color: #15803d; }
 .card.diamonds4 { color: #2563eb; }
+
+/* ---- decks (store card fronts): each restyles the face-up .card ---- */
+/* Jumbo sizes its index to the card (container units), so it has to beat every layout's px sizes. */
+.card.deck-jumbo { container-type: size; justify-content: space-between; padding: 4% 0 12%; }
+:root .card.deck-jumbo .rank { font-size: 62cqw; font-weight: 900; letter-spacing: -0.06em; }
+:root .card.deck-jumbo.ten .rank { font-size: 50cqw; margin-top: 5cqh; }
+:root .card.deck-jumbo .suit { font-size: 42cqw; }
+.card.deck-neon { background: linear-gradient(160deg, #1a1b3a, #0b0c1d); color: #43e6ff; box-shadow: 0 0 0 1px #2b2d5c inset, 0 2px 6px rgba(0,0,0,0.6); }
+.card.deck-neon.red { color: #ff4fa8; }
+.card.deck-neon.clubs4 { color: #6dff7a; }
+.card.deck-neon.diamonds4 { color: #ffb23d; }
+.card.deck-neon .rank, .card.deck-neon .suit { text-shadow: 0 0 0.12em currentColor, 0 0 0.35em currentColor; }
+.card.deck-pixel { background: #f6f0dc; color: #1f1f1f; border-radius: 2px; box-shadow: 0 0 0 2px #222 inset, 2px 2px 0 rgba(0,0,0,0.55); }
+.card.deck-pixel .rank { font-family: 'Courier New', monospace; font-weight: 900; }
+.card.deck-pixel.ten .rank { letter-spacing: -0.12em; }
+.card.deck-pixel .suit svg { display: block; width: 0.9em; height: 0.9em; }
+.card.deck-pixel.red { color: #d42a2a; }
+.card.deck-pixel.clubs4 { color: #1f8a3a; }
+.card.deck-pixel.diamonds4 { color: #2456c9; }
+.card.deck-gold { position: relative; background: linear-gradient(160deg, #fffaf0, #f1e3bf); color: #1c1917; box-shadow: 0 0 0 1.5px #c99a2e inset, 0 0 0 3px #fffaf0 inset, 0 0 0 4px #d9b24f inset, 0 2px 6px rgba(0,0,0,0.5); }
+.card.deck-gold .rank { font-family: Georgia, 'Times New Roman', serif; font-weight: 700; }
+.card.deck-gold.red { color: #9b1c1c; }
+.card.deck-gold.clubs4 { color: #166534; }
+.card.deck-gold.diamonds4 { color: #1e40af; }
+.card.deck-gold::before { content: ''; position: absolute; left: 30%; right: 30%; top: 9%; height: 1px; background: linear-gradient(90deg, transparent, #c99a2e, transparent); }
+.card.deck-gold::after { content: ''; position: absolute; left: 50%; top: 9%; width: 4px; height: 4px; margin: -2px; background: #c99a2e; rotate: 45deg; }
+.deck-sample { display: flex; gap: 4px; }
+.deck-sample .card { animation: none; }
 .tag.chips { background: #3b1f5c; color: #e9d5ff; }
 .chip-price { color: #c4b5fd; }
 .btn.chips-btn { background: linear-gradient(180deg, #c4b5fd, #8b5cf6); color: #1e0b3a; }

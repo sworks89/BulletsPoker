@@ -5,12 +5,14 @@ import { CHIPS, ICP, icp, type CurrencyV } from '../format';
 import { Avatar } from '../art/Avatar';
 import { ItemArt } from '../art/ItemArt';
 import { artFor } from '../art/registry';
-import { avatarCards, ownsItem } from '../store';
+import { avatarCards, deckOf, ownsItem } from '../store';
+import { Card } from './Table';
 
-type Kind = 'Avatar' | 'CardBack' | 'Gift' | 'Throwable';
+type Kind = 'Avatar' | 'CardBack' | 'CardFront' | 'Gift' | 'Throwable';
 const SECTIONS: { kind: Kind; title: string; note: string }[] = [
   { kind: 'Avatar', title: 'Avatars', note: 'Show off at the table.' },
   { kind: 'CardBack', title: 'Card backs', note: 'What opponents see when you hold cards.' },
+  { kind: 'CardFront', title: 'Decks', note: 'How you see every card. Only you see your deck, and the four-colour setting works with all of them.' },
   { kind: 'Gift', title: 'Table gifts', note: 'Click a player at a table to send one. Gifts show on their seat for 10 minutes.' },
   { kind: 'Throwable', title: 'Throwables', note: 'Click a player while you are seated to throw one. Everyone at the table sees it fly.' },
 ];
@@ -38,8 +40,8 @@ function ItemCard({
   onBuy: (i: StoreItem, currency: CurrencyV) => void;
   onEquip: (i: StoreItem) => void;
 }) {
-  const { profile } = useApp();
-  const equipped = (i: StoreItem) => profile?.avatar === i.id || profile?.card_back === i.id;
+  const { profile, items } = useApp();
+  const equipped = (i: StoreItem) => profile?.avatar === i.id || profile?.card_back === i.id || profile?.card_front === i.id;
   const [shown, setShown] = useState(() => Math.max(0, versions.findIndex(equipped)));
   const i = versions[shown] ?? versions[0];
   const usable = kind === 'Gift' || kind === 'Throwable';
@@ -47,6 +49,13 @@ function ItemCard({
     <div className={`item ${equipped(i) ? 'equipped' : ''}`}>
       {kind === 'CardBack' ? (
         <div className="card back" style={{ background: i.icon }} />
+      ) : kind === 'CardFront' ? (
+        <div className="deck-sample">
+          {/* A♠ 10♦ K♥ */}
+          {[51, 33, 46].map((c) => (
+            <Card key={c} c={c} small deck={deckOf(i.id, items)} />
+          ))}
+        </div>
       ) : kind === 'Avatar' ? (
         <Avatar icon={i.icon} size="lg" />
       ) : (
