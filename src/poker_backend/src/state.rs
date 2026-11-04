@@ -210,6 +210,8 @@ pub struct User {
     pub has_deposited: Option<bool>,
     /// How many entries this player has in `stores.fair_hands`; `None` = 0.
     pub fair_hand_count: Option<u32>,
+    /// The equipped deck; `None` = the store's free classic deck.
+    pub card_front: Option<u32>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq)]
@@ -218,6 +220,8 @@ pub enum ItemKind {
     CardBack,
     Gift,
     Throwable,
+    /// A deck style: how the owner sees every card's face.
+    CardFront,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -528,6 +532,8 @@ pub struct Profile {
     pub next_daily_amount: u64,
     pub avatar: u32,
     pub card_back: u32,
+    /// The equipped deck (0 while the store has none).
+    pub card_front: u32,
     pub inventory: Vec<u32>,
     pub friends: Vec<Principal>,
     pub friend_requests: Vec<Principal>,
@@ -790,6 +796,11 @@ fn default_items() -> Vec<ItemSpec> {
         (CardBack, "Midnight", E8S / 50, 50_000, "#1e3a8a", "Deep blue backs"),
         (CardBack, "Emerald", E8S / 50, 50_000, "#047857", "Felt-green backs"),
         (CardBack, "Gold Foil", E8S / 5, 0, "#ca8a04", "Shine on every deal"),
+        (CardFront, "Classic", 0, 0, "deck-classic", "The house deck"),
+        (CardFront, "Jumbo", 0, 0, "deck-jumbo", "Huge ranks, easy on a phone"),
+        (CardFront, "Neon", E8S / 50, 50_000, "deck-neon", "Glowing suits on black"),
+        (CardFront, "Retro Pixel", E8S / 50, 50_000, "deck-pixel", "8-bit suits"),
+        (CardFront, "Gold Luxe", E8S / 5, 0, "deck-gold", "Cream cards with gold edges"),
         (Gift, "Beer", E8S / 1000, 500, "🍺", "Buy the table a round"),
         (Gift, "Coffee", E8S / 1000, 500, "☕", "For the long session"),
         (Gift, "Rose", E8S / 500, 1_000, "🌹", "Show some love"),
@@ -1067,6 +1078,7 @@ impl State {
                 deposit_fails: None,
                 has_deposited: None,
                 fair_hand_count: None,
+                card_front: None,
             },
         );
         Ok(self.profile(&caller).unwrap())
@@ -1086,6 +1098,7 @@ impl State {
             next_daily_amount: daily_amount(u.daily_streak + 1),
             avatar: u.avatar,
             card_back: u.card_back,
+            card_front: u.card_front.unwrap_or_else(|| self.first_free(ItemKind::CardFront)),
             inventory: u.inventory.clone(),
             friends: u.friends.iter().copied().collect(),
             friend_requests: u.friend_requests.iter().copied().collect(),
@@ -1275,6 +1288,7 @@ impl State {
         match item.kind {
             ItemKind::Avatar => u.avatar = id,
             ItemKind::CardBack => u.card_back = id,
+            ItemKind::CardFront => u.card_front = Some(id),
             ItemKind::Gift | ItemKind::Throwable => return Err("That item can't be equipped".into()),
         }
         Ok(())
@@ -3489,6 +3503,50 @@ pub(crate) mod tests {
         for name in ["Cool Cat", "Robot", "Alien", "Shark", "Dragon", "Unicorn"] {
             assert_eq!(named(name).pair, None, "{name}");
         }
+    }
+
+    #[test]
+    fn decks_cost_the_same_as_card_backs() {
+        let s = setup();
+        let deck = |icon: &str| {
+            let i = s.items.values().find(|i| i.icon == icon).unwrap_or_else(|| panic!("{icon}"));
+            assert_eq!(i.kind, ItemKind::CardFront, "{icon}");
+            (i.name.as_str(), i.price, i.chip_price)
+        };
+        assert_eq!(deck("deck-classic"), ("Classic", 0, 0));
+        assert_eq!(deck("deck-jumbo"), ("Jumbo", 0, 0));
+        assert_eq!(deck("deck-neon"), ("Neon", E8S / 50, 50_000));
+        assert_eq!(deck("deck-pixel"), ("Retro Pixel", E8S / 50, 50_000));
+        assert_eq!(deck("deck-gold"), ("Gold Luxe", E8S / 5, 0));
+    }
+
+    #[test]
+    fn players_start_on_the_classic_deck_and_can_switch() {
+        let mut s = setup();
+        let id = |icon: &str| s.items.values().find(|i| i.icon == icon).unwrap().id;
+        let (classic, jumbo, neon) = (id("deck-classic"), id("deck-jumbo"), id("deck-neon"));
+        assert_eq!(s.profile(&p(1)).unwrap().card_front, classic);
+
+        s.equip(p(1), jumbo).unwrap(); // free decks need no purchase
+        assert_eq!(s.profile(&p(1)).unwrap().card_front, jumbo);
+
+        assert!(s.equip(p(1), neon).is_err());
+        s.buy_item(p(1), neon, Currency::Icp).unwrap();
+        s.equip(p(1), neon).unwrap();
+        let profile = s.profile(&p(1)).unwrap();
+        assert_eq!((profile.card_front, profile.card_back), (neon, s.first_free(ItemKind::CardBack)));
+    }
+
+    #[test]
+    fn a_live_store_without_decks_gets_them() {
+        let mut s = setup();
+        s.items.retain(|_, i| i.kind != ItemKind::CardFront);
+        assert_eq!(s.profile(&p(1)).unwrap().card_front, 0); // no deck yet: the app draws its classic cards
+        let report = s.add_default_items();
+        assert_eq!(report.len(), 5, "{report:?}");
+        assert!(report.iter().all(|l| l.starts_with("Added")));
+        let classic = s.items.values().find(|i| i.icon == "deck-classic").unwrap().id;
+        assert_eq!(s.profile(&p(1)).unwrap().card_front, classic);
     }
 
     #[test]
@@ -6305,6 +6363,7 @@ pub(crate) mod tests {
         let back: User = candid::decode_one(&candid::encode_one(&old).unwrap()).unwrap();
         assert_eq!((back.username.as_str(), back.balance), ("player1", 10 * E8S));
         assert!(back.rewards.is_none());
+        assert_eq!(back.card_front, None);
         // ...and reads as a zero account that can start earning.
         s.users.insert(p(1), back);
         let v = s.rewards_view(&p(1), SEC);

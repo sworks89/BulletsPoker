@@ -25,6 +25,7 @@ import { giftArrivals } from '../fx/gifts';
 import { WatchBar } from './WatchBar';
 import { Burst, Mark } from '../fx/marks';
 import { LEAVE_CONFIRM, leaveLabel, leavesAfterHand } from '../leave';
+import { deckOf, type Deck } from '../store';
 
 /** How long a thrown item flies, and how long its mark stays (spec: ~0.7s, ~4s plus the wipe). */
 const THROW_FLIGHT_MS = 700;
@@ -50,25 +51,61 @@ interface GiftFlight {
 /** Most a time bank can hold (matches the backend). */
 const TIME_BANK_MS = 30_000;
 
+// 9×9 pixel suits for the Retro Pixel deck, in card order: clubs, diamonds, hearts, spades.
+const PIXEL_SUITS = [
+  ['...###...', '...###...', '.#.###.#.', '#########', '#########', '.#..#..#.', '....#....', '...###...', '.........'],
+  ['....#....', '...###...', '..#####..', '.#######.', '#########', '.#######.', '..#####..', '...###...', '....#....'],
+  ['.##...##.', '####.####', '#########', '#########', '.#######.', '..#####..', '...###...', '....#....', '.........'],
+  ['....#....', '...###...', '..#####..', '.#######.', '#########', '#########', '.##.#.##.', '....#....', '...###...'],
+];
+
+function PixelSuit({ c }: { c: number }) {
+  const path = PIXEL_SUITS[c % 4].flatMap((row, y) => [...row].map((p, x) => (p === '#' ? `M${x} ${y}h1v1h-1z` : ''))).join('');
+  return (
+    <svg viewBox="0 0 9 9" shapeRendering="crispEdges" aria-hidden="true">
+      <path d={path} fill="currentColor" />
+    </svg>
+  );
+}
+
 /**
  * A playing card, face up (`c`) or face down. At the table, `fx` names it for
  * the card animations, `cover` is the back shown while it turns over, and
- * `mark` highlights or dims it at a showdown.
+ * `mark` highlights or dims it at a showdown. Face-up cards are drawn in the
+ * viewer's own deck, or in `deck` (the store's previews).
  */
-export function Card({ c, back, small, fx, cover, mark }: { c?: number; back?: string; small?: boolean; fx?: string; cover?: string; mark?: 'win' | 'dim' }) {
-  const { profile } = useApp();
+export function Card({
+  c,
+  back,
+  small,
+  fx,
+  cover,
+  mark,
+  deck,
+}: {
+  c?: number;
+  back?: string;
+  small?: boolean;
+  fx?: string;
+  cover?: string;
+  mark?: 'win' | 'dim';
+  deck?: Deck;
+}) {
+  const { profile, items } = useApp();
   const extra = `${small ? 'sm' : ''} ${mark ?? ''}`;
   if (c === undefined) {
     return <div data-fx={fx} className={`card back ${extra}`} style={{ background: back || '#b91c1c' }} />;
   }
+  const style = deck ?? deckOf(profile?.card_front, items);
+  const rank = cardRank(c);
   return (
     <div
       data-fx={fx}
-      className={`card ${suitClass(c, profile?.settings.four_color_deck ?? false)} ${extra}`}
+      className={`card deck-${style} ${rank === '10' ? 'ten' : ''} ${suitClass(c, profile?.settings.four_color_deck ?? false)} ${extra}`}
       style={cover ? ({ '--back': cover } as CSSProperties) : undefined}
     >
-      <span className="rank">{cardRank(c)}</span>
-      <span className="suit">{cardSuit(c)}</span>
+      <span className="rank">{rank}</span>
+      <span className="suit">{style === 'pixel' ? <PixelSuit c={c} /> : cardSuit(c)}</span>
       {fx && <span className="cover" />}
     </div>
   );

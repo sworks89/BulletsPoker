@@ -168,10 +168,11 @@ impl Env {
     fn register(&self, who: Principal, name: &str) {
         let challenge: poker_backend::signup::SignupChallenge = self.query(who, "get_signup_challenge", encode_args(()).unwrap());
         let nonce = poker_backend::signup::solve(&who, challenge.difficulty);
-        // Without the proof-of-work, sign-up is refused.
-        let r: R<Profile> = self.update(who, "register", encode_args((name.to_string(), None::<u64>)).unwrap());
+        // Without the proof-of-work, sign-up is refused. The profile isn't read, so this
+        // also works against an older release whose profile has fewer fields.
+        let r: R<candid::Reserved> = self.update(who, "register", encode_args((name.to_string(), None::<u64>)).unwrap());
         assert!(r.is_err() || challenge.difficulty == 0);
-        let r: R<Profile> = self.update(who, "register", encode_args((name.to_string(), Some(nonce))).unwrap());
+        let r: R<candid::Reserved> = self.update(who, "register", encode_args((name.to_string(), Some(nonce))).unwrap());
         r.unwrap();
     }
 
@@ -361,7 +362,7 @@ fn icp_hands_and_an_upgrade_mid_game() {
 /// poker_backend.wasm.gz) keeps what players bought, and the store then
 /// catches up with the avatars added since, in one admin call.
 #[test]
-fn upgrading_from_the_previous_release_adds_the_new_avatars() {
+fn upgrading_from_the_previous_release_adds_the_decks() {
     let Ok(previous) = std::env::var("PREVIOUS_WASM") else {
         eprintln!("skipping: set PREVIOUS_WASM to the previous release's module");
         return;
@@ -378,26 +379,33 @@ fn upgrading_from_the_previous_release_adds_the_new_avatars() {
     r.unwrap();
 
     env.pic.upgrade_canister(env.poker, env.wasm.clone(), encode_args(()).unwrap(), Some(env.admin)).unwrap();
+    // Before the decks are added, a profile has none and the app draws its classic cards.
+    let p: Option<Profile> = env.query(alice, "get_my_profile", encode_args(()).unwrap());
+    assert_eq!(p.unwrap().card_front, 0);
     // Admins only: the ingress filter turns everyone else away.
     assert!(env.pic.update_call(env.poker, alice, "admin_add_default_items", encode_args(()).unwrap()).is_err());
     let report: R<Vec<String>> = env.update(env.admin, "admin_add_default_items", encode_args(()).unwrap());
     let report = report.unwrap();
-    assert_eq!(report.iter().filter(|l| l.starts_with("Added")).count(), 20, "{report:?}");
-    assert_eq!(report.iter().filter(|l| l.starts_with("Paired")).count(), 12, "{report:?}");
+    assert_eq!(report.len(), 5, "{report:?}");
+    assert!(report.iter().all(|l| l.starts_with("Added")), "{report:?}");
 
     let after = store(&env);
-    assert_eq!(after.len(), before.len() + 20);
+    assert_eq!(after.len(), before.len() + 5);
     assert_eq!(id_of(&after, "Cowboy"), cowboy);
-    let cowgirl = id_of(&after, "Cowgirl");
+    let (classic, gold) = (id_of(&after, "Classic"), id_of(&after, "Gold Luxe"));
     let p: Option<Profile> = env.query(alice, "get_my_profile", encode_args(()).unwrap());
     let p = p.unwrap();
+    // Alice signed up before decks existed: she has the classic one, and kept her Cowboy.
+    assert_eq!(p.card_front, classic);
     assert!(p.inventory.contains(&cowboy));
-    assert_eq!(p.balance, E8S - E8S / 20);
-    // Alice bought the Cowboy before the Cowgirl existed, and owns her too.
-    let r: R<()> = env.update(alice, "equip", encode_one(cowgirl).unwrap());
+    let r: R<()> = env.update(alice, "buy_item", encode_args((gold, Currency::Icp)).unwrap());
     r.unwrap();
-    let r: R<()> = env.update(alice, "buy_item", encode_args((cowgirl, Currency::Icp)).unwrap());
-    assert!(r.is_err(), "already owned");
+    let r: R<()> = env.update(alice, "equip", encode_one(gold).unwrap());
+    r.unwrap();
+    let p: Option<Profile> = env.query(alice, "get_my_profile", encode_args(()).unwrap());
+    let p = p.unwrap();
+    assert_eq!(p.card_front, gold);
+    assert_eq!(p.balance, E8S - E8S / 20 - E8S / 5);
 
     let again: R<Vec<String>> = env.update(env.admin, "admin_add_default_items", encode_args(()).unwrap());
     assert_eq!(again.unwrap(), Vec::<String>::new());

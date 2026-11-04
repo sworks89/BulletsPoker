@@ -17,6 +17,7 @@ export const idlFactory = ({ IDL }) => {
     'Throwable' : IDL.Null,
     'Avatar' : IDL.Null,
     'Gift' : IDL.Null,
+    'CardFront' : IDL.Null,
   });
   const StoreItem = IDL.Record({
     'id' : IDL.Nat32,
@@ -397,6 +398,7 @@ export const idlFactory = ({ IDL }) => {
     'id' : IDL.Principal,
     'xp' : IDL.Nat64,
     'ban' : IDL.Opt(Ban),
+    'card_front' : IDL.Nat32,
     'status' : IDL.Text,
     'friend_requests' : IDL.Vec(IDL.Principal),
     'chat_muted_until' : IDL.Nat64,

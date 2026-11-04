@@ -347,7 +347,13 @@ export interface InitArgs {
 export type ItemKind = { 'CardBack' : null } |
   { 'Throwable' : null } |
   { 'Avatar' : null } |
-  { 'Gift' : null };
+  { 'Gift' : null } |
+  {
+    /**
+     * A deck style: how the owner sees every card's face.
+     */
+    'CardFront' : null
+  };
 export interface JackpotHit {
   'winner_cards' : Uint8Array | number[],
   'total' : bigint,
@@ -616,6 +622,10 @@ export interface Profile {
   'id' : Principal,
   'xp' : bigint,
   'ban' : [] | [Ban],
+  /**
+   * The equipped deck (0 while the store has none).
+   */
+  'card_front' : number,
   'status' : string,
   'friend_requests' : Array<Principal>,
   'chat_muted_until' : bigint,

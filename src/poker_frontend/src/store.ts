@@ -22,3 +22,14 @@ export function avatarCards(avatars: StoreItem[]): StoreItem[][] {
   }
   return cards;
 }
+
+/** The deck styles this app draws; a store deck's icon is `deck-<style>`. */
+export const DECKS = ['classic', 'jumbo', 'neon', 'pixel', 'gold'] as const;
+export type Deck = (typeof DECKS)[number];
+
+/** The style of the deck with id `id`: the classic deck when there is none, or it is one this app can't draw. */
+export function deckOf(id: number | undefined, items: ReadonlyMap<number, StoreItem>): Deck {
+  const icon = id === undefined ? undefined : items.get(id)?.icon;
+  const style = icon?.startsWith('deck-') ? icon.slice(5) : undefined;
+  return (DECKS as readonly string[]).includes(style ?? '') ? (style as Deck) : 'classic';
+}
