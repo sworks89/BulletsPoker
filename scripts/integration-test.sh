@@ -2,6 +2,8 @@
 # Runs the PocketIC integration tests: the real poker canister against the
 # real ICP ledger canister on a local replica.
 # Downloads the PocketIC server and ledger wasm once into .pocket-ic/.
+# PREVIOUS_WASM=<the previous release's poker_backend.wasm.gz> also runs the
+# test that upgrades from that release (skipped without it).
 set -euo pipefail
 # A BACKEND_WASM given relative to the caller's directory.
 if [ -n "${BACKEND_WASM:-}" ]; then BACKEND_WASM=$(cd "$(dirname "$BACKEND_WASM")" && pwd)/$(basename "$BACKEND_WASM"); fi

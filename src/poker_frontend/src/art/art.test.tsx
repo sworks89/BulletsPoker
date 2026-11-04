@@ -5,10 +5,22 @@ import { Avatar } from './Avatar';
 import { ItemArt } from './ItemArt';
 
 const AVATARS = ['🙂', '😎', '🤖', '🤠', '👽', '🥷', '🦈', '🐉', '🦄', '👑'];
+// The icons of the second set, exactly as the backend's catalogue writes them.
+const CHARACTERS = ['😊', '🐴', '🌸', '💍', '⚓', '🦜', '🪐', '🚀', '🪓', '🪖', '🏯', '🎎', '🧙', '🧹', '🧛', '🩸', '🔱', '🧜', '🤴', '👸'];
 
 describe('avatar art', () => {
   it('has art for every default avatar', () => {
-    for (const e of AVATARS) expect(artFor(e)?.kind, e).toBe('avatar');
+    for (const e of [...AVATARS, ...CHARACTERS]) expect(artFor(e)?.kind, e).toBe('avatar');
+  });
+
+  it('keys every new avatar by a single code point, so the admin call cannot get it subtly wrong', () => {
+    for (const e of CHARACTERS) expect([...e], e).toHaveLength(1);
+  });
+
+  it('says which version each avatar of a male and female pair is', () => {
+    for (const e of ['🙂', '🤠', '🥷', '👑', '⚓', '🪐', '🪓', '🏯', '🧙', '🧛', '🔱', '🤴']) expect(artFor(e)?.look, e).toBe('male');
+    for (const e of ['😊', '🐴', '🌸', '💍', '🦜', '🚀', '🪖', '🎎', '🧹', '🩸', '🧜', '👸']) expect(artFor(e)?.look, e).toBe('female');
+    for (const e of ['😎', '🤖', '👽', '🦈', '🐉', '🦄']) expect(artFor(e)?.look, e).toBeUndefined();
   });
 
   it('falls back to the emoji for an unknown item', () => {
@@ -18,7 +30,7 @@ describe('avatar art', () => {
   });
 
   it('gives each rendered avatar its own svg ids', () => {
-    for (const e of AVATARS) {
+    for (const e of [...AVATARS, ...CHARACTERS]) {
       const html = renderToStaticMarkup(
         <div>
           <Avatar icon={e} />

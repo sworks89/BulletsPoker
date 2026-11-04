@@ -734,39 +734,41 @@ export type ReportStatus = { 'Open' : null } |
   };
 export type Result = { 'Ok' : null } |
   { 'Err' : string };
-export type Result_1 = { 'Ok' : number } |
+export type Result_1 = { 'Ok' : Array<string> } |
   { 'Err' : string };
-export type Result_10 = { 'Ok' : Array<LedgerOp> } |
+export type Result_10 = { 'Ok' : LedgerOp } |
   { 'Err' : string };
-export type Result_11 = { 'Ok' : AutoSitStatus } |
+export type Result_11 = { 'Ok' : Array<LedgerOp> } |
   { 'Err' : string };
-export type Result_12 = { 'Ok' : LeaveResult } |
+export type Result_12 = { 'Ok' : AutoSitStatus } |
   { 'Err' : string };
-export type Result_13 = { 'Ok' : ModPlayerView } |
+export type Result_13 = { 'Ok' : LeaveResult } |
   { 'Err' : string };
-export type Result_14 = { 'Ok' : ReportPage } |
+export type Result_14 = { 'Ok' : ModPlayerView } |
   { 'Err' : string };
-export type Result_15 = { 'Ok' : Array<Report> } |
+export type Result_15 = { 'Ok' : ReportPage } |
   { 'Err' : string };
-export type Result_16 = { 'Ok' : Profile } |
+export type Result_16 = { 'Ok' : Array<Report> } |
   { 'Err' : string };
-export type Result_17 = { 'Ok' : SpinRecord } |
+export type Result_17 = { 'Ok' : Profile } |
   { 'Err' : string };
-export type Result_2 = { 'Ok' : Array<AuditEntry> } |
+export type Result_18 = { 'Ok' : SpinRecord } |
   { 'Err' : string };
-export type Result_3 = { 'Ok' : [bigint, bigint] } |
+export type Result_2 = { 'Ok' : number } |
   { 'Err' : string };
-export type Result_4 = { 'Ok' : SolvencyReport } |
+export type Result_3 = { 'Ok' : Array<AuditEntry> } |
   { 'Err' : string };
-export type Result_5 = { 'Ok' : bigint } |
+export type Result_4 = { 'Ok' : [bigint, bigint] } |
   { 'Err' : string };
-export type Result_6 = { 'Ok' : AdminConfig } |
+export type Result_5 = { 'Ok' : SolvencyReport } |
   { 'Err' : string };
-export type Result_7 = { 'Ok' : Metrics } |
+export type Result_6 = { 'Ok' : bigint } |
   { 'Err' : string };
-export type Result_8 = { 'Ok' : HouseStats } |
+export type Result_7 = { 'Ok' : AdminConfig } |
   { 'Err' : string };
-export type Result_9 = { 'Ok' : LedgerOp } |
+export type Result_8 = { 'Ok' : Metrics } |
+  { 'Err' : string };
+export type Result_9 = { 'Ok' : HouseStats } |
   { 'Err' : string };
 /**
  * What the rewards screen shows for a player.
@@ -945,6 +947,11 @@ export interface StoreItem {
   'icon' : string,
   'kind' : ItemKind,
   'name' : string,
+  /**
+   * The other version of an avatar that comes as a man and a woman. Owning
+   * either counts as owning both. Admins set it with `admin_pair_items`.
+   */
+  'pair' : [] | [number],
   'description' : string,
   'available' : boolean,
   /**
@@ -1263,36 +1270,45 @@ export interface _SERVICE {
    * Takes the one-time add-on at the end of a tournament's rebuy period.
    */
   'addon_tournament' : ActorMethod<[bigint], Result>,
-  'admin_add_item' : ActorMethod<[StoreItem], Result_1>,
+  /**
+   * Adds the default catalogue items the store doesn't have yet and pairs the
+   * default male and female avatars. Safe to repeat. Returns one line per change.
+   */
+  'admin_add_default_items' : ActorMethod<[], Result_1>,
+  'admin_add_item' : ActorMethod<[StoreItem], Result_2>,
   /**
    * Adds a recurring tournament (a sit-and-go or a scheduled event).
    */
-  'admin_add_tournament' : ActorMethod<[TournamentTemplate], Result_1>,
+  'admin_add_tournament' : ActorMethod<[TournamentTemplate], Result_2>,
   /**
    * Privileged actions (admins and moderators), newest first.
    */
-  'admin_audit_log' : ActorMethod<[number], Result_2>,
+  'admin_audit_log' : ActorMethod<[number], Result_3>,
   /**
    * Recomputes the sum of ICP balances by scanning every user, to verify the running total.
    */
-  'admin_audit_wallet_total' : ActorMethod<[], Result_3>,
+  'admin_audit_wallet_total' : ActorMethod<[], Result_4>,
   /**
    * Compares the canister's ICP balance with everything it owes. A shortfall
    * pauses withdrawals automatically. Also runs every 10 minutes on its own.
    */
-  'admin_check_solvency' : ActorMethod<[], Result_4>,
-  'admin_create_table' : ActorMethod<[TableConfig], Result_5>,
-  'admin_get_config' : ActorMethod<[], Result_6>,
-  'admin_get_metrics' : ActorMethod<[], Result_7>,
-  'admin_house_stats' : ActorMethod<[], Result_8>,
+  'admin_check_solvency' : ActorMethod<[], Result_5>,
+  'admin_create_table' : ActorMethod<[TableConfig], Result_6>,
+  'admin_get_config' : ActorMethod<[], Result_7>,
+  'admin_get_metrics' : ActorMethod<[], Result_8>,
+  'admin_house_stats' : ActorMethod<[], Result_9>,
+  /**
+   * Sells two avatars as one (a male and a female version): owning either counts as owning both.
+   */
+  'admin_pair_items' : ActorMethod<[number, number], Result>,
   /**
    * Settles an unknown op after checking the ledger by hand (beyond the 24h retry window).
    */
-  'admin_resolve_op' : ActorMethod<[bigint, boolean, [] | [bigint]], Result_9>,
+  'admin_resolve_op' : ActorMethod<[bigint, boolean, [] | [bigint]], Result_10>,
   /**
    * Re-sends an unknown op right away (it's deduplicated by the ledger).
    */
-  'admin_retry_op' : ActorMethod<[bigint], Result_9>,
+  'admin_retry_op' : ActorMethod<[bigint], Result_10>,
   /**
    * Moves ICP from the house treasury into the bad-beat jackpot.
    */
@@ -1318,21 +1334,21 @@ export interface _SERVICE {
   /**
    * Ledger operations whose outcome is unknown and need attention.
    */
-  'admin_unresolved_ops' : ActorMethod<[], Result_10>,
+  'admin_unresolved_ops' : ActorMethod<[], Result_11>,
   /**
    * Withdraws house revenue (rake and store sales) from the treasury.
    */
-  'admin_withdraw_treasury' : ActorMethod<[Account, bigint], Result_5>,
+  'admin_withdraw_treasury' : ActorMethod<[Account, bigint], Result_6>,
   /**
    * Waits for a seat at a table: you're seated automatically, with this buy-in,
    * when one opens. `None` leaves the line. Keep calling `auto_sit_ping` while
    * you watch, or you're dropped from the line.
    */
-  'auto_sit' : ActorMethod<[bigint, [] | [bigint]], Result_11>,
+  'auto_sit' : ActorMethod<[bigint, [] | [bigint]], Result_12>,
   /**
    * Keeps you in a table's auto-sit line and reports whether you were seated or dropped.
    */
-  'auto_sit_ping' : ActorMethod<[bigint], Result_11>,
+  'auto_sit_ping' : ActorMethod<[bigint], Result_12>,
   /**
    * Blocks (or unblocks) a player: hides their chat and stops DMs, friend
    * requests, gifts and throws between you.
@@ -1342,22 +1358,22 @@ export interface _SERVICE {
   /**
    * Claims the daily free play-chip bonus (bigger on consecutive days).
    */
-  'claim_daily_chips' : ActorMethod<[], Result_5>,
+  'claim_daily_chips' : ActorMethod<[], Result_6>,
   /**
    * Deposit via plain transfer: send ICP to your deposit account (see
    * `get_deposit_info`) from any wallet or exchange, then call this. Returns the amount credited.
    */
-  'claim_deposit' : ActorMethod<[], Result_5>,
+  'claim_deposit' : ActorMethod<[], Result_6>,
   'close_room' : ActorMethod<[bigint], Result>,
   /**
    * Creates your own table. Hosts of ICP tables earn 20% of the rake it generates.
    */
-  'create_room' : ActorMethod<[RoomArgs], Result_5>,
+  'create_room' : ActorMethod<[RoomArgs], Result_6>,
   /**
    * Deposit via ICRC-2: the caller first approves this canister for
    * `amount + fee` on the ICP ledger, then calls this. Returns the new balance.
    */
-  'deposit' : ActorMethod<[bigint], Result_5>,
+  'deposit' : ActorMethod<[bigint], Result_6>,
   'equip' : ActorMethod<[number], Result>,
   'find_user' : ActorMethod<[string], [] | [PublicProfile]>,
   'get_chat' : ActorMethod<[Channel, bigint], Array<ChatMessage>>,
@@ -1443,12 +1459,12 @@ export interface _SERVICE {
    * Joins a game: a free seat at its fullest table, or a new copy of it when every
    * table is full. Returns the id of the table you were seated at.
    */
-  'join_game' : ActorMethod<[bigint, bigint], Result_5>,
+  'join_game' : ActorMethod<[bigint, bigint], Result_6>,
   /**
    * `password` is only needed for password-protected player rooms.
    */
   'join_table' : ActorMethod<[bigint, number, bigint, [] | [string]], Result>,
-  'leave_table' : ActorMethod<[bigint], Result_12>,
+  'leave_table' : ActorMethod<[bigint], Result_13>,
   'list_medals' : ActorMethod<[], Array<MedalDef>>,
   'list_store' : ActorMethod<[], Array<StoreItem>>,
   'list_tables' : ActorMethod<[], Array<TableSummary>>,
@@ -1457,7 +1473,7 @@ export interface _SERVICE {
    * Suspends a player for `hours` (0 = permanent). They keep access to withdrawals.
    */
   'mod_ban' : ActorMethod<[Principal, number, string], Result>,
-  'mod_get_player' : ActorMethod<[Principal], Result_13>,
+  'mod_get_player' : ActorMethod<[Principal], Result_14>,
   /**
    * Mutes a player in every chat for `hours` (0 lifts the mute).
    */
@@ -1465,11 +1481,11 @@ export interface _SERVICE {
   /**
    * The open-report queue, oldest first: up to `limit` (max 50) after report `after`.
    */
-  'mod_open_reports' : ActorMethod<[[] | [bigint], number], Result_14>,
+  'mod_open_reports' : ActorMethod<[[] | [bigint], number], Result_15>,
   /**
    * The latest reports, open or resolved.
    */
-  'mod_recent_reports' : ActorMethod<[number], Result_15>,
+  'mod_recent_reports' : ActorMethod<[number], Result_16>,
   'mod_resolve_report' : ActorMethod<[bigint, ModAction, string], Result>,
   'mod_unban' : ActorMethod<[Principal], Result>,
   /**
@@ -1479,7 +1495,7 @@ export interface _SERVICE {
   /**
    * Creates your profile. `pow` is a nonce solving `get_signup_challenge`.
    */
-  'register' : ActorMethod<[string, [] | [bigint]], Result_16>,
+  'register' : ActorMethod<[string, [] | [bigint]], Result_17>,
   'register_tournament' : ActorMethod<[bigint], Result>,
   'remove_friend' : ActorMethod<[Principal], Result>,
   /**
@@ -1488,7 +1504,7 @@ export interface _SERVICE {
    */
   'report_player' : ActorMethod<
     [Principal, ReportReason, string, [] | [Channel]],
-    Result_5
+    Result_6
   >,
   'respond_friend_request' : ActorMethod<[Principal, boolean], Result>,
   'send_chat' : ActorMethod<[Channel, string], Result>,
@@ -1512,7 +1528,7 @@ export interface _SERVICE {
   /**
    * Spins the oldest banked Fish Buffet spin for ICP cashback.
    */
-  'spin_wheel' : ActorMethod<[], Result_17>,
+  'spin_wheel' : ActorMethod<[], Result_18>,
   'throw_item' : ActorMethod<[bigint, Principal, number, Currency], Result>,
   'top_up' : ActorMethod<[bigint, bigint], Result>,
   /**
@@ -1525,7 +1541,7 @@ export interface _SERVICE {
   /**
    * Sends `amount` e8s to `to`. The ledger fee is charged on top. Returns the block index.
    */
-  'withdraw' : ActorMethod<[Account, bigint], Result_5>,
+  'withdraw' : ActorMethod<[Account, bigint], Result_6>,
 }
 export declare const idlFactory: IDL.InterfaceFactory;
 export declare const init: (args: { IDL: typeof IDL }) => IDL.Type[];

@@ -6,8 +6,8 @@
 use candid::{decode_one, encode_args, encode_one, CandidType, Deserialize, Nat, Principal};
 use icrc_ledger_types::icrc1::account::Account;
 use pocket_ic::{PocketIc, PocketIcBuilder};
-use poker_backend::state::{HouseStats, LeaveResult, Profile, TableView};
-use poker_backend::table::Action;
+use poker_backend::state::{HouseStats, LeaveResult, Profile, StoreItem, TableView};
+use poker_backend::table::{Action, Currency};
 use poker_backend::wallet::{LedgerOp, OpStatus, PauseFlags, SolvencyReport};
 use std::time::Duration;
 
@@ -103,6 +103,12 @@ struct Env {
 impl Env {
     /// None when the integration-test binaries aren't available.
     fn new() -> Option<Env> {
+        Env::starting_from(None)
+    }
+
+    /// Like `new`, but installs the module at `first` (another release) instead
+    /// of BACKEND_WASM; `wasm` is still BACKEND_WASM, ready to upgrade to.
+    fn starting_from(first: Option<String>) -> Option<Env> {
         let (Ok(ledger_wasm), Ok(backend_wasm)) = (std::env::var("LEDGER_WASM"), std::env::var("BACKEND_WASM")) else {
             eprintln!("skipping: run ./scripts/integration-test.sh");
             return None;
@@ -132,8 +138,9 @@ impl Env {
         let poker = pic.create_canister_with_settings(Some(admin), None);
         pic.add_cycles(poker, 10_000_000_000_000);
         let wasm = std::fs::read(backend_wasm).unwrap();
+        let installed = first.map_or_else(|| wasm.clone(), |path| std::fs::read(path).unwrap());
         let args = Some(InitArgs { ledger: Some(ledger), ledger_fee: Some(FEE) });
-        pic.install_canister(poker, wasm.clone(), encode_one(args).unwrap(), Some(admin));
+        pic.install_canister(poker, installed, encode_one(args).unwrap(), Some(admin));
         Some(Env { pic, ledger, poker, admin, wasm })
     }
 
@@ -348,6 +355,54 @@ fn icp_hands_and_an_upgrade_mid_game() {
     let report = env.solvency();
     assert!(report.ok, "{report:?}");
     assert_eq!(report.surplus, 0);
+}
+
+/// Upgrading from the previous release (PREVIOUS_WASM, e.g. v0.1.5's
+/// poker_backend.wasm.gz) keeps what players bought, and the store then
+/// catches up with the avatars added since, in one admin call.
+#[test]
+fn upgrading_from_the_previous_release_adds_the_new_avatars() {
+    let Ok(previous) = std::env::var("PREVIOUS_WASM") else {
+        eprintln!("skipping: set PREVIOUS_WASM to the previous release's module");
+        return;
+    };
+    let Some(env) = Env::starting_from(Some(previous)) else { return };
+    let alice = principal(1);
+    env.register(alice, "alice");
+    env.approve_and_deposit(alice, E8S).unwrap();
+    let store = |env: &Env| -> Vec<StoreItem> { env.query(alice, "list_store", encode_args(()).unwrap()) };
+    let id_of = |items: &[StoreItem], name: &str| items.iter().find(|i| i.name == name).unwrap().id;
+    let before = store(&env);
+    let cowboy = id_of(&before, "Cowboy");
+    let r: R<()> = env.update(alice, "buy_item", encode_args((cowboy, Currency::Icp)).unwrap());
+    r.unwrap();
+
+    env.pic.upgrade_canister(env.poker, env.wasm.clone(), encode_args(()).unwrap(), Some(env.admin)).unwrap();
+    // Admins only: the ingress filter turns everyone else away.
+    assert!(env.pic.update_call(env.poker, alice, "admin_add_default_items", encode_args(()).unwrap()).is_err());
+    let report: R<Vec<String>> = env.update(env.admin, "admin_add_default_items", encode_args(()).unwrap());
+    let report = report.unwrap();
+    assert_eq!(report.iter().filter(|l| l.starts_with("Added")).count(), 20, "{report:?}");
+    assert_eq!(report.iter().filter(|l| l.starts_with("Paired")).count(), 12, "{report:?}");
+
+    let after = store(&env);
+    assert_eq!(after.len(), before.len() + 20);
+    assert_eq!(id_of(&after, "Cowboy"), cowboy);
+    let cowgirl = id_of(&after, "Cowgirl");
+    let p: Option<Profile> = env.query(alice, "get_my_profile", encode_args(()).unwrap());
+    let p = p.unwrap();
+    assert!(p.inventory.contains(&cowboy));
+    assert_eq!(p.balance, E8S - E8S / 20);
+    // Alice bought the Cowboy before the Cowgirl existed, and owns her too.
+    let r: R<()> = env.update(alice, "equip", encode_one(cowgirl).unwrap());
+    r.unwrap();
+    let r: R<()> = env.update(alice, "buy_item", encode_args((cowgirl, Currency::Icp)).unwrap());
+    assert!(r.is_err(), "already owned");
+
+    let again: R<Vec<String>> = env.update(env.admin, "admin_add_default_items", encode_args(()).unwrap());
+    assert_eq!(again.unwrap(), Vec::<String>::new());
+    let report = env.solvency();
+    assert!(report.ok, "{report:?}");
 }
 
 #[test]
