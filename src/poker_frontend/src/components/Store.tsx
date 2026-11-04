@@ -1,8 +1,11 @@
+import { useState } from 'react';
 import { useApp } from '../context';
 import { unwrap, type StoreItem } from '../ic';
 import { CHIPS, ICP, icp, type CurrencyV } from '../format';
 import { Avatar } from '../art/Avatar';
 import { ItemArt } from '../art/ItemArt';
+import { artFor } from '../art/registry';
+import { avatarCards, ownsItem } from '../store';
 
 type Kind = 'Avatar' | 'CardBack' | 'Gift' | 'Throwable';
 const SECTIONS: { kind: Kind; title: string; note: string }[] = [
@@ -23,11 +26,82 @@ function Prices({ item }: { item: StoreItem }) {
   );
 }
 
+/** One store card: an item, or both versions of a paired avatar with a switch between them. */
+function ItemCard({
+  versions,
+  kind,
+  onBuy,
+  onEquip,
+}: {
+  versions: StoreItem[];
+  kind: Kind;
+  onBuy: (i: StoreItem, currency: CurrencyV) => void;
+  onEquip: (i: StoreItem) => void;
+}) {
+  const { profile } = useApp();
+  const equipped = (i: StoreItem) => profile?.avatar === i.id || profile?.card_back === i.id;
+  const [shown, setShown] = useState(() => Math.max(0, versions.findIndex(equipped)));
+  const i = versions[shown] ?? versions[0];
+  const usable = kind === 'Gift' || kind === 'Throwable';
+  return (
+    <div className={`item ${equipped(i) ? 'equipped' : ''}`}>
+      {kind === 'CardBack' ? (
+        <div className="card back" style={{ background: i.icon }} />
+      ) : kind === 'Avatar' ? (
+        <Avatar icon={i.icon} size="lg" />
+      ) : (
+        <ItemArt icon={i.icon} className="item-icon" />
+      )}
+      {versions.length > 1 && (
+        <div className="look-switch" role="group" aria-label="Version">
+          {versions.map((v, n) => {
+            const look = artFor(v.icon)?.look;
+            return (
+              <button
+                key={v.id}
+                className={n === shown ? 'active' : ''}
+                aria-pressed={n === shown}
+                title={look ? `${look === 'male' ? 'Male' : 'Female'}: ${v.name}` : v.name}
+                onClick={() => setShown(n)}
+              >
+                {look === 'male' ? '♂' : look === 'female' ? '♀' : v.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <div className="item-name">{i.name}</div>
+      <div className="muted small">{i.description}</div>
+      <Prices item={i} />
+      {versions.length > 1 && !(i.price === 0n && i.chip_price === 0n) && <div className="muted small">Buy once, wear either</div>}
+      {profile &&
+        !usable &&
+        (equipped(i) ? (
+          <span className="tag">Equipped</span>
+        ) : ownsItem(i, profile.inventory) ? (
+          <button className="btn small ghost" onClick={() => onEquip(i)}>
+            Equip
+          </button>
+        ) : (
+          <div className="buy-row">
+            {i.price > 0n && (
+              <button className="btn small" onClick={() => onBuy(i, ICP)}>
+                Buy · ICP
+              </button>
+            )}
+            {i.chip_price > 0n && (
+              <button className="btn small chips-btn" onClick={() => onBuy(i, CHIPS)}>
+                Buy · chips
+              </button>
+            )}
+          </div>
+        ))}
+    </div>
+  );
+}
+
 export function Store() {
   const { backend, items, profile, run, refreshProfile } = useApp();
-
-  const owned = (i: StoreItem) => (i.price === 0n && i.chip_price === 0n) || (profile?.inventory.includes(i.id) ?? false);
-  const equipped = (i: StoreItem) => profile?.avatar === i.id || profile?.card_back === i.id;
 
   const buy = async (i: StoreItem, currency: CurrencyV) => {
     const r = await run(async () => unwrap(await backend.buy_item(i.id, currency)), `Bought ${i.name}!`);
@@ -50,55 +124,21 @@ export function Store() {
           </span>
         </div>
       )}
-      {SECTIONS.map((sec) => (
-        <section key={sec.kind} className="panel">
-          <div className="panel-title">{sec.title}</div>
-          <p className="muted small">{sec.note}</p>
-          <div className="item-grid">
-            {[...items.values()]
-              .filter((i) => sec.kind in i.kind)
-              .map((i) => {
-                const usable = sec.kind === 'Gift' || sec.kind === 'Throwable';
-                return (
-                  <div key={i.id} className={`item ${equipped(i) ? 'equipped' : ''}`}>
-                    {sec.kind === 'CardBack' ? (
-                      <div className="card back" style={{ background: i.icon }} />
-                    ) : sec.kind === 'Avatar' ? (
-                      <Avatar icon={i.icon} size="lg" />
-                    ) : (
-                      <ItemArt icon={i.icon} className="item-icon" />
-                    )}
-                    <div className="item-name">{i.name}</div>
-                    <div className="muted small">{i.description}</div>
-                    <Prices item={i} />
-                    {profile &&
-                      !usable &&
-                      (equipped(i) ? (
-                        <span className="tag">Equipped</span>
-                      ) : owned(i) ? (
-                        <button className="btn small ghost" onClick={() => equip(i)}>
-                          Equip
-                        </button>
-                      ) : (
-                        <div className="row gap">
-                          {i.price > 0n && (
-                            <button className="btn small" onClick={() => buy(i, ICP)}>
-                              Buy · ICP
-                            </button>
-                          )}
-                          {i.chip_price > 0n && (
-                            <button className="btn small chips-btn" onClick={() => buy(i, CHIPS)}>
-                              Buy · chips
-                            </button>
-                          )}
-                        </div>
-                      ))}
-                  </div>
-                );
-              })}
-          </div>
-        </section>
-      ))}
+      {SECTIONS.map((sec) => {
+        const all = [...items.values()].filter((i) => sec.kind in i.kind);
+        const cards = sec.kind === 'Avatar' ? avatarCards(all) : all.map((i) => [i]);
+        return (
+          <section key={sec.kind} className="panel">
+            <div className="panel-title">{sec.title}</div>
+            <p className="muted small">{sec.note}</p>
+            <div className="item-grid">
+              {cards.map((versions) => (
+                <ItemCard key={versions[0].id} versions={versions} kind={sec.kind} onBuy={buy} onEquip={equip} />
+              ))}
+            </div>
+          </section>
+        );
+      })}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { useApp, usePoll } from '../context';
 import { unwrap, type LeaderboardEntry, type RewardsView, type Settings } from '../ic';
 import { icp } from '../format';
 import { Avatar } from '../art/Avatar';
+import { ownsItem } from '../store';
 import { Dialog } from './Dialog';
 import { leaderboardMedal } from '../rewards';
 import { clearRememberedRef, peekRememberedRef, rememberRef, takeRememberedRef } from '../referrals';
@@ -18,7 +19,7 @@ export function ProfilePage() {
   const base = 50 * (lvl - 1) ** 2;
   const next = 50 * lvl ** 2;
   const pct = Math.min(100, ((Number(profile.xp) - base) / (next - base)) * 100);
-  const avatars = [...items.values()].filter((i) => 'Avatar' in i.kind && (i.price === 0n || profile.inventory.includes(i.id)));
+  const avatars = [...items.values()].filter((i) => 'Avatar' in i.kind && ownsItem(i, profile.inventory));
 
   return (
     <div className="page-grid">
