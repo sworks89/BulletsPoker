@@ -11,10 +11,14 @@ export interface ArtProps {
   uid: string;
 }
 
+/** Which version of an avatar that comes as a man and a woman (see the store item's `pair`). */
+export type Look = 'male' | 'female';
+
 export interface ArtEntry {
   kind: ArtKind;
   name: string;
   Svg: (p: ArtProps) => ReactElement;
+  look?: Look;
 }
 
 const art = new Map<string, ArtEntry>();

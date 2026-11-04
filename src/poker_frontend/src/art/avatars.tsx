@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { registerArt, type ArtProps } from './registry';
+import { registerArt, type ArtProps, type Look } from './registry';
 
 // The ten store avatars, drawn in one outlined-cartoon style: ink outlines,
 // gradient shading, a round coloured background. Each draws its four faces
@@ -31,8 +31,8 @@ export function Frame({ uid, bg, children, defs }: { uid: string; bg: [string, s
   );
 }
 
-/** The four expressions, placed by eye and mouth position. */
-function Face({
+/** The four expressions, placed by eye and mouth position. `lashes` adds eyelashes, `fangs` two fangs under the smile. */
+export function Face({
   lx,
   rx,
   y,
@@ -40,6 +40,8 @@ function Face({
   eye = 5,
   ink = INK,
   mouth = true,
+  lashes = false,
+  fangs = false,
 }: {
   lx: number;
   rx: number;
@@ -48,9 +50,20 @@ function Face({
   eye?: number;
   ink?: string;
   mouth?: boolean;
+  lashes?: boolean;
+  fangs?: boolean;
 }) {
   const cx = (lx + rx) / 2;
   const line = { stroke: ink, strokeWidth: 3, fill: 'none', strokeLinecap: 'round', strokeLinejoin: 'round' } as const;
+  // A lid line over each eye ending in a flick at the outer corner (out = -1 for the left eye, 1 for the right).
+  const lash = (x: number, out: number, top: number) => {
+    const y0 = top + eye * 0.7;
+    return `M${x - out * eye * 0.85} ${y0} Q${x} ${top - eye * 0.55} ${x + out * eye * 0.85} ${y0} l${out * 3.5} -3`;
+  };
+  const lashLine = { ...line, strokeWidth: 2 };
+  const fang = (x: number, top: number) => (
+    <path key={x} d={`M${x - 2.5} ${top} l2.5 5 l2.5 -5z`} fill="#fff" stroke={ink} strokeWidth={1.5} strokeLinejoin="round" />
+  );
   return (
     <>
       <g className="face-normal">
@@ -61,8 +74,10 @@ function Face({
               <circle cx={x - eye * 0.25} cy={y - eye * 0.4} r={eye * 0.32} fill="#fff" />
             </g>
           ))}
+          {lashes && <path d={lash(lx, -1, y - eye) + lash(rx, 1, y - eye)} {...lashLine} />}
         </g>
         {mouth && <path d={`M${cx - 8} ${mouthY} q8 7 16 0`} {...line} />}
+        {mouth && fangs && [fang(cx - 4.5, mouthY + 2.2), fang(cx + 4.5, mouthY + 2.2)]}
       </g>
       <g className="face-hit">
         <path d={`M${lx - 5} ${y - 4} l8 4 l-8 4 M${rx + 5} ${y - 4} l-8 4 l8 4`} {...line} strokeWidth={3.5} />
@@ -76,10 +91,12 @@ function Face({
       </g>
       <g className="face-happy">
         <path d={`M${lx - 5} ${y + 2} q5 -8 10 0 M${rx - 5} ${y + 2} q5 -8 10 0`} {...line} strokeWidth={3.5} />
+        {lashes && <path d={`M${lx - 5} ${y + 2} l-3 -3 M${rx + 5} ${y + 2} l3 -3`} {...lashLine} />}
         {mouth && (
           <>
             <path d={`M${cx - 11} ${mouthY - 2} q11 16 22 0z`} fill="#7f1d1d" stroke={ink} strokeWidth={2.5} strokeLinejoin="round" />
             <ellipse cx={cx} cy={mouthY + 4} rx={5} ry={2.5} fill="#fb7185" />
+            {fangs && [fang(cx - 6, mouthY - 2), fang(cx + 6, mouthY - 2)]}
           </>
         )}
       </g>
@@ -297,16 +314,16 @@ function Crown({ uid }: ArtProps) {
   );
 }
 
-const AVATARS: [string, string, (p: ArtProps) => ReturnType<typeof Rookie>][] = [
-  ['🙂', 'Rookie', Rookie],
+const AVATARS: [string, string, (p: ArtProps) => ReturnType<typeof Rookie>, Look?][] = [
+  ['🙂', 'Rookie', Rookie, 'male'],
   ['😎', 'Cool Cat', CoolCat],
   ['🤖', 'Robot', Robot],
-  ['🤠', 'Cowboy', Cowboy],
+  ['🤠', 'Cowboy', Cowboy, 'male'],
   ['👽', 'Alien', Alien],
-  ['🥷', 'Ninja', Ninja],
+  ['🥷', 'Ninja', Ninja, 'male'],
   ['🦈', 'Shark', Shark],
   ['🐉', 'Dragon', Dragon],
   ['🦄', 'Unicorn', Unicorn],
-  ['👑', 'Crown', Crown],
+  ['👑', 'Crown', Crown, 'male'],
 ];
-for (const [icon, name, Svg] of AVATARS) registerArt(icon, { kind: 'avatar', name, Svg });
+for (const [icon, name, Svg, look] of AVATARS) registerArt(icon, { kind: 'avatar', name, Svg, look });
