@@ -233,6 +233,9 @@ pub struct StoreItem {
     pub icon: String,
     pub description: String,
     pub available: bool,
+    /// The other version of an avatar that comes as a man and a woman. Owning
+    /// either counts as owning both. Admins set it with `admin_pair_items`.
+    pub pair: Option<u32>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq)]
@@ -763,6 +766,26 @@ fn default_items() -> Vec<ItemSpec> {
         (Avatar, "Dragon", E8S / 4, 0, "🐉", "Hoards every pot"),
         (Avatar, "Unicorn", E8S / 4, 0, "🦄", "Rare as a royal flush"),
         (Avatar, "Crown", E8S, 0, "👑", "Table royalty"),
+        (Avatar, "Lucky", 0, 0, "😊", "Beginner's luck, every hand"),
+        (Avatar, "Cowgirl", E8S / 20, 100_000, "🐴", "Rides the river"),
+        (Avatar, "Kunoichi", E8S / 10, 250_000, "🌸", "Strikes before the flop"),
+        (Avatar, "Queen", E8S, 0, "💍", "Rules the table"),
+        (Avatar, "Pirate", E8S / 20, 100_000, "⚓", "Plunders every pot"),
+        (Avatar, "Pirate", E8S / 20, 100_000, "🦜", "Plunders every pot"),
+        (Avatar, "Astronaut", E8S / 20, 100_000, "🪐", "Shoots for the moon"),
+        (Avatar, "Astronaut", E8S / 20, 100_000, "🚀", "Shoots for the moon"),
+        (Avatar, "Viking", E8S / 10, 250_000, "🪓", "Raids the blinds"),
+        (Avatar, "Shieldmaiden", E8S / 10, 250_000, "🪖", "Raids the blinds"),
+        (Avatar, "Samurai", E8S / 10, 250_000, "🏯", "Honour before the fold"),
+        (Avatar, "Samurai", E8S / 10, 250_000, "🎎", "Honour before the fold"),
+        (Avatar, "Wizard", E8S / 10, 250_000, "🧙", "Conjures the nuts"),
+        (Avatar, "Witch", E8S / 10, 250_000, "🧹", "Conjures the nuts"),
+        (Avatar, "Vampire", E8S / 10, 250_000, "🧛", "Bleeds the table dry"),
+        (Avatar, "Vampire", E8S / 10, 250_000, "🩸", "Bleeds the table dry"),
+        (Avatar, "Merman", E8S / 4, 0, "🔱", "Swims with the sharks"),
+        (Avatar, "Mermaid", E8S / 4, 0, "🧜", "Swims with the sharks"),
+        (Avatar, "Prince", E8S / 4, 0, "🤴", "Born to the high stakes"),
+        (Avatar, "Princess", E8S / 4, 0, "👸", "Born to the high stakes"),
         (CardBack, "Classic Red", 0, 0, "#b91c1c", "The house deck"),
         (CardBack, "Midnight", E8S / 50, 50_000, "#1e3a8a", "Deep blue backs"),
         (CardBack, "Emerald", E8S / 50, 50_000, "#047857", "Felt-green backs"),
@@ -784,6 +807,22 @@ fn default_items() -> Vec<ItemSpec> {
         (Throwable, "Bomb", E8S / 500, 1_000, "💣", "Boom"),
     ]
 }
+
+/// Male and female versions of the same avatar, by icon: buying either gives both.
+const AVATAR_PAIRS: [(&str, &str); 12] = [
+    ("🙂", "😊"),
+    ("🤠", "🐴"),
+    ("🥷", "🌸"),
+    ("👑", "💍"),
+    ("⚓", "🦜"),
+    ("🪐", "🚀"),
+    ("🪓", "🪖"),
+    ("🏯", "🎎"),
+    ("🧙", "🧹"),
+    ("🧛", "🩸"),
+    ("🔱", "🧜"),
+    ("🤴", "👸"),
+];
 
 pub fn default_tables() -> Vec<TableConfig> {
     let t = |name: &str, currency: Currency, sb: u64, seats: u8| TableConfig {
@@ -925,18 +964,7 @@ impl State {
             entropy: vec![],
         };
         let mut s = State::from_snapshot(users, stores, snap);
-        for (kind, name, price, chip_price, icon, description) in default_items() {
-            s.add_item(StoreItem {
-                id: 0,
-                name: name.into(),
-                kind,
-                price,
-                chip_price,
-                icon: icon.into(),
-                description: description.into(),
-                available: true,
-            });
-        }
+        s.add_default_items();
         for cfg in default_tables() {
             s.create_table(cfg).unwrap();
         }
@@ -1115,8 +1143,48 @@ impl State {
 
     // --------------------------------------------------------------- store
 
+    /// Adds the catalogue items the store doesn't have yet (matched by icon) and
+    /// pairs the default male and female avatars. A fresh store gets the whole
+    /// catalogue; a live one catches up with items added since it was created.
+    /// Returns what it did, one line per change; empty when there was nothing to do.
+    pub fn add_default_items(&mut self) -> Vec<String> {
+        let mut report = vec![];
+        for (kind, name, price, chip_price, icon, description) in default_items() {
+            if self.items.values().any(|i| i.icon == icon) {
+                continue;
+            }
+            let id = self.add_item(StoreItem {
+                id: 0,
+                name: name.into(),
+                kind,
+                price,
+                chip_price,
+                icon: icon.into(),
+                description: description.into(),
+                available: true,
+                pair: None,
+            });
+            report.push(format!("Added {name} {icon} as item {id}"));
+        }
+        for (he, she) in AVATAR_PAIRS {
+            let find = |icon: &str| self.items.values().find(|i| i.icon == icon).map(|i| (i.id, i.name.clone(), i.pair));
+            let (Some((a, a_name, a_pair)), Some((b, b_name, _))) = (find(he), find(she)) else {
+                continue;
+            };
+            if a_pair == Some(b) {
+                continue;
+            }
+            match self.pair_items(a, b) {
+                Ok(()) => report.push(format!("Paired {a_name} {he} with {b_name} {she}")),
+                Err(e) => report.push(format!("Skipped pairing {a_name} {he} with {b_name} {she}: {e}")),
+            }
+        }
+        report
+    }
+
     pub fn add_item(&mut self, mut item: StoreItem) -> u32 {
         item.id = self.next_item_id;
+        item.pair = None;
         self.next_item_id += 1;
         let id = item.id;
         self.items.insert(id, item);
@@ -1124,7 +1192,38 @@ impl State {
     }
 
     fn owns(&self, u: &User, item: &StoreItem) -> bool {
-        (item.price == 0 && item.chip_price == 0) || u.inventory.contains(&item.id)
+        (item.price == 0 && item.chip_price == 0)
+            || u.inventory.contains(&item.id)
+            || item.pair.is_some_and(|other| u.inventory.contains(&other))
+    }
+
+    /// Sells two avatars (a male and a female version) as one: owning either
+    /// counts as owning both. They must cost the same in both currencies, so
+    /// the cheaper one can never unlock the dearer one.
+    pub fn pair_items(&mut self, a: u32, b: u32) -> R<()> {
+        let (Some(x), Some(y)) = (self.items.get(&a), self.items.get(&b)) else {
+            return Err("No such item".into());
+        };
+        if a == b {
+            return Err("An item can't be paired with itself".into());
+        }
+        if x.kind != ItemKind::Avatar || y.kind != ItemKind::Avatar {
+            return Err("Only avatars come in pairs".into());
+        }
+        if (x.price, x.chip_price) != (y.price, y.chip_price) {
+            return Err("Paired avatars must cost the same".into());
+        }
+        for (item, other) in [(x, b), (y, a)] {
+            if item.pair.is_some_and(|q| q != other) {
+                return Err(format!("{} is already paired with another avatar", item.name));
+            }
+        }
+        for (id, other) in [(a, b), (b, a)] {
+            if let Some(item) = self.items.get_mut(&id) {
+                item.pair = Some(other);
+            }
+        }
+        Ok(())
     }
 
     /// Charges the caller for an item in the chosen currency.
@@ -3242,6 +3341,154 @@ pub(crate) mod tests {
         assert_eq!(s.users.get(&p(1)).unwrap().chips, 100_000);
         assert!(s.buy_item(p(1), crown, Currency::Chips).is_err()); // ICP only
         assert_eq!(s.treasury, 0);
+    }
+
+    fn avatar(s: &mut State, name: &str, price: u64, chip_price: u64) -> u32 {
+        s.add_item(StoreItem {
+            id: 0,
+            name: name.into(),
+            kind: ItemKind::Avatar,
+            price,
+            chip_price,
+            icon: name.into(),
+            description: String::new(),
+            available: true,
+            pair: None,
+        })
+    }
+
+    #[test]
+    fn buying_one_version_of_a_paired_avatar_gives_both() {
+        let mut s = setup();
+        let he = avatar(&mut s, "He", E8S / 10, 250_000);
+        let she = avatar(&mut s, "She", E8S / 10, 250_000);
+        s.pair_items(he, she).unwrap();
+        s.buy_item(p(1), she, Currency::Icp).unwrap();
+        assert!(s.buy_item(p(1), he, Currency::Icp).is_err()); // already owned
+        s.equip(p(1), he).unwrap();
+        s.equip(p(1), she).unwrap();
+        assert_eq!(s.users.get(&p(1)).unwrap().balance, 10 * E8S - E8S / 10);
+        assert!(s.equip(p(2), he).is_err());
+    }
+
+    #[test]
+    fn only_avatars_at_the_same_price_pair_up() {
+        let mut s = setup();
+        let a = avatar(&mut s, "A", E8S / 10, 250_000);
+        let b = avatar(&mut s, "B", E8S / 10, 250_000);
+        let dearer = avatar(&mut s, "Dearer", E8S / 4, 250_000);
+        let chips_only = avatar(&mut s, "Chips", E8S / 10, 0);
+        let beer = s.items.values().find(|i| i.name == "Beer").unwrap().id;
+        assert!(s.pair_items(a, dearer).is_err());
+        assert!(s.pair_items(a, chips_only).is_err());
+        assert!(s.pair_items(a, beer).is_err());
+        assert!(s.pair_items(a, a).is_err());
+        assert!(s.pair_items(a, 9_999).is_err());
+        s.pair_items(a, b).unwrap();
+        s.pair_items(b, a).unwrap(); // the same pair again is fine
+        let c = avatar(&mut s, "C", E8S / 10, 250_000);
+        assert!(s.pair_items(a, c).is_err()); // already paired with B
+        assert_eq!(s.items[&a].pair, Some(b));
+        assert_eq!(s.items[&b].pair, Some(a));
+    }
+
+    #[test]
+    fn items_saved_before_pairs_existed_still_load() {
+        #[derive(CandidType)]
+        struct OldItem {
+            id: u32,
+            name: String,
+            kind: ItemKind,
+            price: u64,
+            chip_price: u64,
+            icon: String,
+            description: String,
+            available: bool,
+        }
+        let old = OldItem {
+            id: 3,
+            name: "Cowboy".into(),
+            kind: ItemKind::Avatar,
+            price: E8S / 20,
+            chip_price: 100_000,
+            icon: "🤠".into(),
+            description: String::new(),
+            available: true,
+        };
+        let back: StoreItem = candid::decode_one(&candid::encode_one(&old).unwrap()).unwrap();
+        assert_eq!((back.id, back.pair), (3, None));
+    }
+
+    #[test]
+    fn a_live_store_catches_up_with_the_default_catalogue() {
+        let mut s = setup();
+        // The store as v0.1.5 has it: the first ten avatars, none paired.
+        let first: Vec<&str> = default_items().iter().take(10).map(|i| i.4).collect();
+        s.items.retain(|_, i| i.kind != ItemKind::Avatar || first.contains(&i.icon.as_str()));
+        s.items.values_mut().for_each(|i| i.pair = None);
+        let cowboy = s.items.values().find(|i| i.name == "Cowboy").unwrap().id;
+        let before = s.items.len();
+
+        let report = s.add_default_items();
+        assert_eq!(s.items.len(), before + 20);
+        assert_eq!(report.iter().filter(|l| l.starts_with("Added")).count(), 20);
+        assert_eq!(report.iter().filter(|l| l.starts_with("Paired")).count(), 12);
+        let cowgirl = s.items.values().find(|i| i.name == "Cowgirl").unwrap().id;
+        assert_eq!(s.items[&cowboy].pair, Some(cowgirl)); // existing ids are kept
+
+        assert!(s.add_default_items().is_empty()); // nothing left to do
+        assert_eq!(s.items.len(), before + 20);
+    }
+
+    #[test]
+    fn catching_up_skips_a_pair_whose_prices_were_changed() {
+        let mut s = setup();
+        s.items.retain(|_, i| i.icon != "🐴");
+        s.items.values_mut().for_each(|i| i.pair = None);
+        let cowboy = s.items.values().find(|i| i.name == "Cowboy").unwrap().id;
+        s.items.get_mut(&cowboy).unwrap().price = E8S;
+        let report = s.add_default_items();
+        assert!(report.iter().any(|l| l.starts_with("Added Cowgirl")));
+        assert!(report.iter().any(|l| l.starts_with("Skipped") && l.contains("Cowboy")), "{report:?}");
+        assert_eq!(s.items[&cowboy].pair, None);
+    }
+
+    #[test]
+    fn a_new_item_starts_unpaired() {
+        let mut s = setup();
+        let mut item = s.items.values().find(|i| i.name == "Cowboy").unwrap().clone();
+        item.name = "Sneaky".into();
+        item.pair = Some(item.id);
+        let id = s.add_item(item);
+        assert_eq!(s.items[&id].pair, None);
+    }
+
+    #[test]
+    fn default_avatars_come_in_pairs_except_the_neutral_ones() {
+        let s = setup();
+        let named = |n: &str| s.items.values().find(|i| i.name == n).unwrap_or_else(|| panic!("{n}"));
+        for (he, she) in [
+            ("Rookie", "Lucky"),
+            ("Cowboy", "Cowgirl"),
+            ("Ninja", "Kunoichi"),
+            ("Crown", "Queen"),
+            ("Viking", "Shieldmaiden"),
+            ("Wizard", "Witch"),
+            ("Merman", "Mermaid"),
+            ("Prince", "Princess"),
+        ] {
+            assert_eq!(named(he).pair, Some(named(she).id), "{he}");
+            assert_eq!(named(she).pair, Some(named(he).id), "{she}");
+        }
+        // Pirate, Astronaut, Samurai and Vampire share a name across their two versions.
+        for name in ["Pirate", "Astronaut", "Samurai", "Vampire"] {
+            let both: Vec<_> = s.items.values().filter(|i| i.name == name).collect();
+            assert_eq!(both.len(), 2, "{name}");
+            assert_eq!(both[0].pair, Some(both[1].id), "{name}");
+        }
+        for name in ["Cool Cat", "Robot", "Alien", "Shark", "Dragon", "Unicorn"] {
+            assert_eq!(named(name).pair, None, "{name}");
+        }
     }
 
     #[test]

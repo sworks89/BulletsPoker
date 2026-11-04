@@ -897,6 +897,31 @@ fn admin_add_item(item: StoreItem) -> R<u32> {
     }))
 }
 
+/// Adds the default catalogue items the store doesn't have yet and pairs the
+/// default male and female avatars. Safe to repeat. Returns one line per change.
+#[update]
+fn admin_add_default_items() -> R<Vec<String>> {
+    let p = admin()?;
+    Ok(with_mut(|s| {
+        let report = s.add_default_items();
+        for line in &report {
+            s.audit(p, line.clone(), now());
+        }
+        report
+    }))
+}
+
+/// Sells two avatars as one (a male and a female version): owning either counts as owning both.
+#[update]
+fn admin_pair_items(a: u32, b: u32) -> R<()> {
+    let p = admin()?;
+    with_mut(|s| {
+        s.pair_items(a, b)?;
+        s.audit(p, format!("Paired store items {a} and {b}"), now());
+        Ok(())
+    })
+}
+
 #[update]
 fn admin_set_item_available(id: u32, available: bool) -> R<()> {
     let p = admin()?;
