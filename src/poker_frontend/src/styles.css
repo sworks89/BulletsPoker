@@ -351,6 +351,10 @@ main { padding: 18px 0; }
 .card.deck-gold.diamonds4 { color: #1e40af; }
 .card.deck-gold::before { content: ''; position: absolute; left: 30%; right: 30%; top: 9%; height: 1px; background: linear-gradient(90deg, transparent, #c99a2e, transparent); }
 .card.deck-gold::after { content: ''; position: absolute; left: 50%; top: 9%; width: 4px; height: 4px; margin: -2px; background: #c99a2e; rotate: 45deg; }
+/* A winning card's glow replaces .card's shadow: keep these decks' own edges under it. */
+.felt-wrap .card.deck-neon.win { box-shadow: 0 0 0 1px #2b2d5c inset, 0 0 0 2px var(--accent), 0 0 12px var(--accent); }
+.felt-wrap .card.deck-pixel.win { box-shadow: 0 0 0 2px #222 inset, 0 0 0 2px var(--accent), 0 0 12px var(--accent); }
+.felt-wrap .card.deck-gold.win { box-shadow: 0 0 0 1.5px #c99a2e inset, 0 0 0 3px #fffaf0 inset, 0 0 0 4px #d9b24f inset, 0 0 0 2px var(--accent), 0 0 12px var(--accent); }
 .deck-sample { display: flex; gap: 4px; }
 .deck-sample .card { animation: none; }
 .tag.chips { background: #3b1f5c; color: #e9d5ff; }
