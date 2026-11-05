@@ -348,8 +348,9 @@ export function TablesProvider({ children }: { children: ReactNode }) {
 
   // Browser tab title shows how many tables are waiting on you.
   const waitingCount = open.filter((id) => isMyTurn(views.get(String(id)))).length;
+  const pageTitle = useRef(document.title); // the title search engines read, from index.html
   useEffect(() => {
-    document.title = waitingCount > 0 ? `(${waitingCount}) Your turn · Bullets Poker` : 'Bullets Poker';
+    document.title = waitingCount > 0 ? `(${waitingCount}) Your turn · Bullets Poker` : pageTitle.current;
   }, [waitingCount]);
 
   const value = useMemo<TablesState>(

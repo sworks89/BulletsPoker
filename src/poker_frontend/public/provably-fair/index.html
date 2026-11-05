@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Provably Fair Poker: How to Verify a Shuffle | Bullets Poker</title>
+    <meta name="description" content="How Bullets Poker commits to each shuffle before the deal, how you can check a hand afterwards, and what that does and does not prove." />
+    <link rel="canonical" href="https://www.bulletspoker.com/provably-fair/" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Bullets Poker" />
+    <meta property="og:title" content="Provably Fair Poker: How to Verify a Shuffle | Bullets Poker" />
+    <meta property="og:description" content="How Bullets Poker commits to each shuffle before the deal, how you can check a hand afterwards, and what that does and does not prove." />
+    <meta property="og:url" content="https://www.bulletspoker.com/provably-fair/" />
+    <meta property="og:image" content="https://www.bulletspoker.com/og.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="stylesheet" href="/site.css" />
+  </head>
+  <body>
+    <header class="site-top">
+      <a class="site-brand" href="/"><img src="/logo.svg" alt="" /> Bullets Poker</a>
+      <nav aria-label="Pages">
+        <a href="/how-to-play/">How to play</a>
+        <a href="/tournaments/">Tournaments</a>
+        <a href="/provably-fair/" aria-current="page">Provably fair</a>
+      </nav>
+      <a class="site-play" href="/">Play</a>
+    </header>
+    <main class="site-page">
+      <h1>Provably fair poker</h1>
+      <p>At Bullets Poker, every hand's shuffle can be checked after the hand. The game runs on the Internet Computer, and each deck comes from on-chain randomness.</p>
+
+      <h2>How it works</h2>
+      <ol>
+        <li>Before the first card is dealt, the game records a commitment: a fingerprint of the secret seed that decides the deck.</li>
+        <li>The hand is dealt and played from that deck.</li>
+        <li>About 24 hours later, the seed is revealed to the players who were dealt in.</li>
+        <li>You can check that the seed matches the commitment, and that it produces exactly the cards that were dealt.</li>
+      </ol>
+
+      <h2>What this shows</h2>
+      <p>The shuffle can't have been swapped after the commitment without that being detectable.</p>
+
+      <h2>What it doesn't show</h2>
+      <p>It isn't proof against every kind of cheating, and you still have to trust some things:</p>
+      <ul>
+        <li>The game holds the seed and the deck while a hand is played, so cards aren't secret from the canister.</li>
+        <li>You're relying on the game's code, the Internet Computer network that runs it, and its source of randomness.</li>
+        <li>Collusion between players isn't something a shuffle check can detect. Players can report it.</li>
+      </ul>
+
+      <h2>Check it yourself</h2>
+      <p>You can verify your own hands in the app, and export a hand's evidence to check it independently. The <a href="https://github.com/sworks89/BulletsPoker/blob/main/docs/provably-fair.md">protocol specification</a> and <a href="https://github.com/sworks89/BulletsPoker/blob/main/docs/provably-fair-threat-model.md">threat model</a> are public.</p>
+
+    </main>
+    <footer class="site-foot">Real-money play may be restricted where you live. Play responsibly. 18+.</footer>
+  </body>
+</html>
