@@ -8,6 +8,7 @@ use crate::state::{Channel, MessageKind, State, E8S, R};
 use crate::table::{Currency, StandOutcome, Table, TableConfig};
 use candid::{CandidType, Deserialize, Principal};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 
 const NANOS: u64 = 1_000_000_000;
 /// Finished tournament tables stay viewable this long before being removed.
@@ -835,10 +836,21 @@ impl State {
         }
     }
 
-    /// Runs every tick: opens new events, starts scheduled ones, raises blinds,
-    /// keeps tables balanced and removes finished tables.
+    /// When scheduled events waiting for their start begin, for those due
+    /// within `window` from `now`. Events starting together share an entry.
+    pub fn scheduled_starts_within(&self, now: u64, window: u64) -> BTreeSet<u64> {
+        self.tournaments
+            .values()
+            .filter(|t| t.status == TournamentStatus::Registering && t.template.kind == TournamentKind::Scheduled)
+            .filter(|t| t.start_at > now && t.start_at - now <= window)
+            .map(|t| t.start_at)
+            .collect()
+    }
+
+    /// Runs every tick: starts scheduled events, raises blinds, keeps tables
+    /// balanced, removes finished tables and opens new events. New events
+    /// come last, so an event's successor is listed as soon as it has started.
     pub fn tournament_tick(&mut self, now: u64) {
-        self.ensure_tournaments(now);
         let ids: Vec<u64> = self.tournaments.keys().copied().collect();
         for id in ids {
             let t = &self.tournaments[&id];
@@ -901,6 +913,7 @@ impl State {
                 _ => {}
             }
         }
+        self.ensure_tournaments(now);
     }
 
     /// After a hand at a tournament table: knocks out busted players, pays

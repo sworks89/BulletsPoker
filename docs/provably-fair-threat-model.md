@@ -56,8 +56,10 @@ during play. The in-app verifier states both limits in every report: the
 
 ## How a hand is committed and revealed
 
-1. **Ready tables get a seed request.** Every second, `tick` (`lib.rs`) asks
-   `State::tick` (`state.rs`) which tables are ready for a new hand. For each
+1. **Ready tables get a seed request.** Every second while any game needs it
+   (`needs_fast_tick`; otherwise every minute until a player's call wakes it),
+   `tick` (`lib.rs`) asks `State::tick` (`state.rs`) which tables are ready for
+   a new hand. For each
    one, `claim_seed_requests` takes a per-table slot in `PENDING_SEEDS` and
    spawns `seed_and_deal` as a detached task.
 2. **One `raw_rand` per request.** `seed_and_deal` awaits one `raw_rand`

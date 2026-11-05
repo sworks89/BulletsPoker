@@ -499,6 +499,10 @@ export interface Metrics {
   'active_tables' : bigint,
   'jackpot_icp_e8s' : bigint,
   'rate_limited_calls' : bigint,
+  /**
+   * The game tick is running every second, not every minute.
+   */
+  'tick_fast' : boolean,
   'heap_bytes' : bigint,
 }
 export type ModAction = {
