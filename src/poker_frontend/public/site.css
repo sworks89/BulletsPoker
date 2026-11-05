@@ -1,0 +1,16 @@
+:root { color-scheme: dark; --bg: #0b0f17; --panel: #151c2b; --line: #2a3550; --text: #e6ebf3; --muted: #9aa7bd; --accent: #f5b91a; --accent-2: #ffd257; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; color: var(--text); background: radial-gradient(ellipse at top, #16213a 0%, var(--bg) 60%); font: 16px/1.6 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+a { color: var(--accent-2); }
+.site-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; max-width: 880px; margin: 0 auto; padding: 16px; }
+.site-brand { color: var(--text); font-size: 20px; font-weight: 700; text-decoration: none; }
+.site-brand img { height: 32px; width: auto; vertical-align: middle; }
+.site-top nav { display: flex; flex-wrap: wrap; gap: 4px 16px; flex: 1; }
+.site-top nav a { color: var(--muted); text-decoration: none; }
+.site-top nav a:hover, .site-top nav a[aria-current] { color: var(--text); }
+.site-play { background: linear-gradient(180deg, var(--accent-2), var(--accent)); color: #1a1200; border-radius: 8px; padding: 8px 18px; font-weight: 700; text-decoration: none; }
+.site-page { max-width: 880px; margin: 0 auto; padding: 8px 16px 32px; }
+.site-page h1 { font-size: 34px; line-height: 1.2; margin: 16px 0; }
+.site-page h2 { color: var(--accent-2); font-size: 21px; margin: 32px 0 8px; }
+.site-page li { margin: 4px 0; }
+.site-foot { max-width: 880px; margin: 0 auto; padding: 16px 16px 32px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); }

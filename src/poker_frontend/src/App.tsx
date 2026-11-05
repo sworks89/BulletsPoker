@@ -58,7 +58,7 @@ function Shell() {
     <div className={`app ${view.name === 'table' ? 'at-table' : ''}`}>
       <header className="topbar">
         <button className="brand btn-reset" onClick={() => go({ name: 'lobby' })} aria-label="Bullets Poker, go to lobby">
-          <span className="logo">♠</span> Bullets Poker
+          <img className="logo" src="/logo.svg" alt="" /> Bullets Poker
           <span className="tag">on ICP</span>
         </button>
         <nav>
