@@ -2738,6 +2738,18 @@ impl State {
         Some(h)
     }
 
+    /// Whether `tick` must run every second rather than every minute: a
+    /// clock is running, a hand is due or a player is waiting for a seat.
+    /// A player's call wakes the tick by itself (`caller` in `lib.rs`), so
+    /// this only has to say whether to keep going. Anything else `tick` does
+    /// can wait for the slow tick: closing idle tables, weekly payouts (they
+    /// are idempotent and go by the date) and standing up absent players.
+    /// Pausing the dealing doesn't count, so lifting the pause needs no wake.
+    pub fn needs_fast_tick(&self) -> bool {
+        self.tournaments.values().any(|t| t.status == crate::tournament::TournamentStatus::Running)
+            || self.tables.values().any(|t| t.phase != Phase::Waiting || t.eligible_count() >= 2 || t.auto_sit.as_ref().is_some_and(|q| !q.is_empty()))
+    }
+
     /// Times out slow players and reports tables that need a new hand dealt.
     pub fn tick(&mut self, now: u64) -> Vec<u64> {
         self.close_periods(now);
@@ -7242,6 +7254,100 @@ pub(crate) mod tests {
         s.leave_table(p(1), table, 3 * SEC).unwrap();
         // Auto-sit takes the same amount.
         assert!(s.auto_sit(p(1), table, Some(max * 3), 4 * SEC).is_ok());
+    }
+
+    // ---- when the tick has to run every second
+
+    /// Players 1 and 2 sit down at `table` with the minimum buy-in.
+    fn seat_two(s: &mut State, table: u64, now: u64) {
+        let buy_in = s.tables[&table].config.min_buy_in;
+        s.join_table(p(1), table, 0, buy_in, None, now).unwrap();
+        s.join_table(p(2), table, 1, buy_in, None, now).unwrap();
+    }
+
+    #[test]
+    fn an_empty_game_needs_no_fast_tick() {
+        let mut s = setup();
+        s.tick(SEC); // opens the tournaments, which wait for players
+        assert!(!s.needs_fast_tick());
+    }
+
+    #[test]
+    fn a_lone_player_needs_no_fast_tick_but_a_game_of_two_does() {
+        let mut s = setup();
+        let table = 1;
+        let buy_in = s.tables[&table].config.min_buy_in;
+        s.join_table(p(1), table, 0, buy_in, None, 0).unwrap();
+        assert!(!s.needs_fast_tick(), "no clock runs and no hand can start");
+        s.join_table(p(2), table, 1, buy_in, None, 0).unwrap();
+        assert!(s.needs_fast_tick(), "a hand is due");
+    }
+
+    #[test]
+    fn players_all_sitting_out_need_no_fast_tick() {
+        let mut s = setup();
+        let table = 1;
+        seat_two(&mut s, table, 0);
+        s.sit_out(p(1), table, true, 0).unwrap();
+        assert!(!s.needs_fast_tick(), "one player left in");
+        s.sit_out(p(1), table, false, 0).unwrap();
+        assert!(s.needs_fast_tick(), "coming back makes a game of two");
+    }
+
+    #[test]
+    fn a_hand_needs_the_fast_tick_until_it_has_settled() {
+        let mut s = setup();
+        let table = 1;
+        seat_two(&mut s, table, 0);
+        s.start_hand_with_seed(table, [1; 32], SEC);
+        assert!(s.tables[&table].phase.is_betting());
+        assert!(s.needs_fast_tick(), "the action clock is running");
+
+        let seat = s.tables[&table].to_act.unwrap();
+        let actor = s.tables[&table].seats[seat].as_ref().unwrap().player;
+        s.act(actor, table, Action::Fold, 2 * SEC).unwrap();
+        assert_eq!(s.tables[&table].phase, Phase::HandOver);
+        s.leave_table(actor, table, 3 * SEC).unwrap();
+        assert!(s.tables[&table].eligible_count() < 2);
+        assert!(s.needs_fast_tick(), "the results pause still has to end");
+
+        s.tick(10 * SEC);
+        assert_eq!(s.tables[&table].phase, Phase::Waiting);
+        assert!(!s.needs_fast_tick(), "one player left, waiting");
+    }
+
+    #[test]
+    fn a_line_for_a_seat_needs_the_fast_tick_until_it_expires() {
+        let mut s = full_hu();
+        s.sit_out(p(1), HU, true, 0).unwrap();
+        s.sit_out(p(2), HU, true, 0).unwrap();
+        assert!(!s.needs_fast_tick());
+        s.auto_sit(p(3), HU, Some(1_000), 0).unwrap();
+        assert!(s.needs_fast_tick(), "seats it as soon as one opens");
+        s.tick(AUTO_SIT_EXPIRE_NS + SEC);
+        assert!(!s.needs_fast_tick(), "the browser stopped checking in, so the line is gone");
+    }
+
+    #[test]
+    fn a_running_tournament_needs_the_fast_tick() {
+        let mut s = setup();
+        s.tick(SEC);
+        assert!(!s.needs_fast_tick());
+        let id = *s.tournaments.keys().next().unwrap();
+        s.tournaments.get_mut(&id).unwrap().status = crate::tournament::TournamentStatus::Running;
+        assert!(s.needs_fast_tick(), "blinds rise and rebuy windows close on their own clock");
+    }
+
+    #[test]
+    fn scheduled_starts_are_found_only_inside_the_window() {
+        let mut s = setup();
+        s.tick(SEC);
+        let hour = 3_600 * SEC;
+        let window = 65 * SEC;
+        assert!(s.scheduled_starts_within(SEC, window).is_empty(), "sit & go's have no start time, and the hour is far off");
+        assert_eq!(s.scheduled_starts_within(hour - 30 * SEC, window).into_iter().collect::<Vec<_>>(), vec![hour], "events starting together share a start");
+        assert!(s.scheduled_starts_within(hour, window).is_empty(), "due now: the tick that runs next starts it");
+        assert!(s.scheduled_starts_within(hour - 66 * SEC, window).is_empty(), "the next slow tick still has time to see it");
     }
 }
 

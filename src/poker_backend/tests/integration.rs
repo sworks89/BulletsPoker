@@ -202,7 +202,7 @@ impl Env {
         r.unwrap()
     }
 
-    /// Lets the 1-second timer run a few times.
+    /// Steps the clock a second at a time, letting due timers run.
     fn run_timers(&self, secs: u64) {
         for _ in 0..secs {
             self.pic.advance_time(Duration::from_secs(1));
@@ -358,57 +358,41 @@ fn icp_hands_and_an_upgrade_mid_game() {
     assert_eq!(report.surplus, 0);
 }
 
-/// Upgrading from the previous release (PREVIOUS_WASM, e.g. v0.1.5's
-/// poker_backend.wasm.gz) keeps what players bought, and the store then
-/// catches up with the avatars added since, in one admin call.
+/// Upgrading from the previous release (PREVIOUS_WASM, e.g. v0.1.7's
+/// poker_backend.wasm.gz), which ticked every second whatever was going on: a
+/// hand in progress keeps its clock with nobody calling, what players bought
+/// and hold is still theirs, and the game then settles to the slow tick.
 #[test]
-fn upgrading_from_the_previous_release_adds_the_decks() {
+fn upgrading_from_the_previous_release_keeps_a_live_game_going() {
     let Ok(previous) = std::env::var("PREVIOUS_WASM") else {
         eprintln!("skipping: set PREVIOUS_WASM to the previous release's module");
         return;
     };
     let Some(env) = Env::starting_from(Some(previous)) else { return };
-    let alice = principal(1);
-    env.register(alice, "alice");
-    env.approve_and_deposit(alice, E8S).unwrap();
-    let store = |env: &Env| -> Vec<StoreItem> { env.query(alice, "list_store", encode_args(()).unwrap()) };
-    let id_of = |items: &[StoreItem], name: &str| items.iter().find(|i| i.name == name).unwrap().id;
-    let before = store(&env);
-    let cowboy = id_of(&before, "Cowboy");
+    let (alice, _, table) = env.seat_two();
+    let store: Vec<StoreItem> = env.query(alice, "list_store", encode_args(()).unwrap());
+    let cowboy = store.iter().find(|i| i.name == "Cowboy").unwrap().id;
     let r: R<()> = env.update(alice, "buy_item", encode_args((cowboy, Currency::Icp)).unwrap());
     r.unwrap();
+    env.run_timers(3);
+    let dealt = env.table(alice, table);
+    assert_eq!(dealt.hand_no, 1);
+    let seat = dealt.my_seat.unwrap() as usize;
+    let balance = env.balance(alice);
 
     env.pic.upgrade_canister(env.poker, env.wasm.clone(), encode_args(()).unwrap(), Some(env.admin)).unwrap();
-    // Before the decks are added, a profile has none and the app draws its classic cards.
-    let p: Option<Profile> = env.query(alice, "get_my_profile", encode_args(()).unwrap());
-    assert_eq!(p.unwrap().card_front, 0);
-    // Admins only: the ingress filter turns everyone else away.
-    assert!(env.pic.update_call(env.poker, alice, "admin_add_default_items", encode_args(()).unwrap()).is_err());
-    let report: R<Vec<String>> = env.update(env.admin, "admin_add_default_items", encode_args(()).unwrap());
-    let report = report.unwrap();
-    assert_eq!(report.len(), 5, "{report:?}");
-    assert!(report.iter().all(|l| l.starts_with("Added")), "{report:?}");
+    env.run_timers(1);
+    assert!(env.tick_fast(), "a hand is in progress");
+    let after = env.table(alice, table);
+    assert_eq!(after.hand_no, 1);
+    assert_eq!(after.seats[seat].as_ref().unwrap().cards, dealt.seats[seat].as_ref().unwrap().cards);
+    assert_eq!(env.balance(alice), balance);
+    let profile: Option<Profile> = env.query(alice, "get_my_profile", encode_args(()).unwrap());
+    assert!(profile.unwrap().inventory.contains(&cowboy));
 
-    let after = store(&env);
-    assert_eq!(after.len(), before.len() + 5);
-    assert_eq!(id_of(&after, "Cowboy"), cowboy);
-    let (classic, gold) = (id_of(&after, "Classic"), id_of(&after, "Gold Luxe"));
-    let p: Option<Profile> = env.query(alice, "get_my_profile", encode_args(()).unwrap());
-    let p = p.unwrap();
-    // Alice signed up before decks existed: she has the classic one, and kept her Cowboy.
-    assert_eq!(p.card_front, classic);
-    assert!(p.inventory.contains(&cowboy));
-    let r: R<()> = env.update(alice, "buy_item", encode_args((gold, Currency::Icp)).unwrap());
-    r.unwrap();
-    let r: R<()> = env.update(alice, "equip", encode_one(gold).unwrap());
-    r.unwrap();
-    let p: Option<Profile> = env.query(alice, "get_my_profile", encode_args(()).unwrap());
-    let p = p.unwrap();
-    assert_eq!(p.card_front, gold);
-    assert_eq!(p.balance, E8S - E8S / 20 - E8S / 5);
-
-    let again: R<Vec<String>> = env.update(env.admin, "admin_add_default_items", encode_args(()).unwrap());
-    assert_eq!(again.unwrap(), Vec::<String>::new());
+    env.wait_out_hand(alice, table);
+    env.run_timers(2);
+    assert!(!env.tick_fast(), "one player left in: nothing to run a clock for");
     let report = env.solvency();
     assert!(report.ok, "{report:?}");
 }
@@ -688,4 +672,193 @@ fn cycle_cost_per_hand() {
     eprintln!("CYCLES hands={N} steps={steps} simulated_ns={elapsed}");
     eprintln!("CYCLES play_total={played} idle_same_steps={idle}");
     eprintln!("CYCLES per_hand_net={} per_hand_gross={}", played.saturating_sub(idle) / N as u128, played / N as u128);
+}
+
+// -------------------------------------------------------------- adaptive tick
+
+/// Longest a hand at Penny Lane can last with nobody acting: the 25-second
+/// clock, the 30-second time bank, the 5-second results pause and some slack.
+const UNATTENDED_HAND_SECS: u64 = 25 + 30 + 5 + 5;
+
+impl Env {
+    /// Whether the game tick is running every second, from the public metrics.
+    fn tick_fast(&self) -> bool {
+        use poker_backend::metrics::{HttpRequest, HttpResponse};
+        let req = HttpRequest { method: "GET".into(), url: "/metrics".into(), headers: vec![], body: Default::default() };
+        let m: HttpResponse = self.query(Principal::anonymous(), "http_request", encode_one(req).unwrap());
+        let text = String::from_utf8(m.body.into_vec()).unwrap();
+        text.lines().find_map(|l| l.strip_prefix("bp_tick_fast ")).expect("the metric is published") == "1"
+    }
+
+    /// Two funded players sit down at Penny Lane.
+    fn seat_two(&self) -> (Principal, Principal, u64) {
+        let (alice, bob) = (principal(1), principal(2));
+        self.register(alice, "alice");
+        self.register(bob, "bob");
+        self.approve_and_deposit(alice, 2 * E8S).unwrap();
+        self.approve_and_deposit(bob, 2 * E8S).unwrap();
+        let table = 5u64;
+        for (k, who) in [alice, bob].into_iter().enumerate() {
+            let r: R<()> = self.update(who, "join_table", encode_args((table, k as u8, 40_000_000u64, None::<String>)).unwrap());
+            r.unwrap();
+        }
+        (alice, bob, table)
+    }
+
+    /// With no call from anyone, steps the clock until the hand in play ends
+    /// and the table is back to waiting. Returns the seconds it took.
+    fn wait_out_hand(&self, who: Principal, table: u64) -> u64 {
+        use poker_backend::table::Phase;
+        for secs in 1..=UNATTENDED_HAND_SECS {
+            self.run_timers(1);
+            if self.table(who, table).phase == Phase::Waiting {
+                return secs;
+            }
+        }
+        panic!("the hand did not finish in {UNATTENDED_HAND_SECS} seconds with nobody acting");
+    }
+
+    fn tournament_named(&self, name: &str) -> poker_backend::tournament::TournamentSummary {
+        let all: Vec<poker_backend::tournament::TournamentSummary> = self.query(principal(1), "list_tournaments", encode_args(()).unwrap());
+        all.into_iter().filter(|t| t.name == name).max_by_key(|t| t.id).unwrap_or_else(|| panic!("no {name}"))
+    }
+
+    /// Moves the clock to just before `start_at` the way an idle canister
+    /// lives through it (a tick per simulated minute, no calls), then a second
+    /// at a time until `id` has left `Registering`. Returns how long after
+    /// `start_at` that was, in seconds.
+    fn seconds_late(&self, id: u64, start_at: u64) -> u64 {
+        use poker_backend::tournament::{TournamentStatus, TournamentSummary};
+        let now = |env: &Env| env.pic.get_time().as_nanos_since_unix_epoch();
+        while start_at.saturating_sub(now(self)) > 90 * 1_000_000_000 {
+            self.pic.advance_time(Duration::from_secs(60));
+            self.pic.tick();
+            self.pic.tick();
+        }
+        for _ in 0..300 {
+            self.run_timers(1);
+            let all: Vec<TournamentSummary> = self.query(principal(1), "list_tournaments", encode_args(()).unwrap());
+            let waiting = all.iter().any(|t| t.id == id && t.status == TournamentStatus::Registering);
+            if !waiting {
+                return now(self).saturating_sub(start_at) / 1_000_000_000;
+            }
+        }
+        panic!("tournament {id} never left registration");
+    }
+}
+
+/// Nobody playing: the tick drops to its slow pace on its own, and the burn
+/// with it. A player's first call brings it straight back.
+#[test]
+fn the_tick_slows_when_idle_and_wakes_for_players() {
+    let Some(env) = Env::new() else { return };
+    env.run_timers(3);
+    assert!(!env.tick_fast(), "a new canister with no players settles to the slow tick");
+
+    // Long enough for the balance to reflect the burn, not the cycles a call in
+    // flight has reserved. Starts past the first entropy and solvency calls.
+    const IDLE_SECS: u64 = 1800;
+    env.run_timers(10);
+    let c0 = env.pic.cycle_balance(env.poker);
+    env.run_timers(IDLE_SECS);
+    let idle = c0.saturating_sub(env.pic.cycle_balance(env.poker)) / IDLE_SECS as u128;
+    assert!(!env.tick_fast());
+
+    // A cold start: the first hand still comes at once, from the join alone.
+    let (alice, _, table) = env.seat_two();
+    env.run_timers(3);
+    assert!(env.tick_fast());
+    assert!(env.table(alice, table).hand_no >= 1, "a hand is dealt within seconds of the second player sitting");
+
+    let c0 = env.pic.cycle_balance(env.poker);
+    env.run_timers(30);
+    let playing = c0.saturating_sub(env.pic.cycle_balance(env.poker)) / 30;
+    eprintln!("TICK idle_per_s={idle} playing_per_s={playing}");
+    assert!(idle > 0 && idle * 10 < playing, "idle should cost a small fraction of play, got {idle} vs {playing} per second");
+}
+
+/// Nobody acts and nobody calls: the action clock still runs out on time, and
+/// once the hand has ended the tick goes back to its slow pace.
+#[test]
+fn action_clocks_run_out_with_nobody_calling() {
+    let Some(env) = Env::new() else { return };
+    let (alice, bob, table) = env.seat_two();
+    env.run_timers(3);
+    let dealt = env.table(alice, table);
+    assert_eq!(dealt.hand_no, 1);
+    let actor = dealt.to_act.expect("someone to act") as usize;
+
+    let secs = env.wait_out_hand(alice, table);
+    assert!(secs >= 25, "the clock was cut short: {secs}s");
+    let after = env.table(alice, table);
+    assert!(after.seats[actor].as_ref().unwrap().sitting_out, "the player who ran out of time sits out");
+    env.run_timers(2);
+    assert!(!env.tick_fast(), "one player left in: nothing to run a clock for");
+
+    // They come back: a wake from the call alone, with the slow tick not due.
+    let them = dealt.seats[actor].as_ref().unwrap().player;
+    let r: R<()> = env.update(them, "sit_out", encode_args((table, false)).unwrap());
+    r.unwrap();
+    env.run_timers(3);
+    assert_eq!(env.table(bob, table).hand_no, 2);
+}
+
+/// Upgrades drop every timer. A hand in progress keeps its clock with no call
+/// from anyone, and an empty game still gets back to the slow pace.
+#[test]
+fn an_upgrade_mid_hand_keeps_the_clock_running() {
+    let Some(env) = Env::new() else { return };
+    let (alice, _, table) = env.seat_two();
+    env.run_timers(3);
+    assert_eq!(env.table(alice, table).hand_no, 1);
+    env.pic.upgrade_canister(env.poker, env.wasm.clone(), encode_args(()).unwrap(), Some(env.admin)).unwrap();
+    env.wait_out_hand(alice, table);
+    env.run_timers(2);
+    assert!(!env.tick_fast());
+
+    env.pic.upgrade_canister(env.poker, env.wasm.clone(), encode_args(()).unwrap(), Some(env.admin)).unwrap();
+    env.run_timers(3);
+    assert!(!env.tick_fast(), "nothing to do after this upgrade");
+}
+
+/// An idle canister starts a scheduled tournament on time: nothing calls it in
+/// the minutes before, and only the slow tick is running.
+#[test]
+fn a_scheduled_tournament_starts_on_time_while_idle() {
+    use poker_backend::tournament::TournamentStatus;
+    let Some(env) = Env::new() else { return };
+    let (alice, bob) = (principal(1), principal(2));
+    env.register(alice, "alice");
+    env.register(bob, "bob");
+    env.run_timers(3);
+    let t = env.tournament_named("Hourly Freeroll");
+    for who in [alice, bob] {
+        let r: R<()> = env.update(who, "register_tournament", encode_one(t.id).unwrap());
+        r.unwrap();
+    }
+    env.run_timers(3);
+    assert!(!env.tick_fast(), "registering alone runs no clock");
+
+    let late = env.seconds_late(t.id, t.start_at);
+    assert!(late <= 2, "started {late}s late");
+    let started = env.tournament_named("Hourly Freeroll");
+    assert_eq!(started.status, TournamentStatus::Registering, "the next hour's event opened too");
+    let all: Vec<poker_backend::tournament::TournamentSummary> = env.query(alice, "list_tournaments", encode_args(()).unwrap());
+    assert_eq!(all.iter().find(|x| x.id == t.id).unwrap().status, TournamentStatus::Running);
+    assert!(env.tick_fast(), "the tournament has clocks to run");
+}
+
+/// An event nobody registered for closes on time too, and the next one opens,
+/// so the lobby never shows a countdown stuck at zero.
+#[test]
+fn an_empty_scheduled_tournament_rolls_over_on_time() {
+    let Some(env) = Env::new() else { return };
+    env.register(principal(1), "alice");
+    env.run_timers(3);
+    let t = env.tournament_named("Hourly Freeroll");
+    let late = env.seconds_late(t.id, t.start_at);
+    assert!(late <= 2, "rolled over {late}s late");
+    assert!(env.tournament_named("Hourly Freeroll").id > t.id);
+    env.run_timers(2);
+    assert!(!env.tick_fast(), "and the game goes back to idling");
 }

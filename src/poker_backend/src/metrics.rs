@@ -40,6 +40,8 @@ pub struct Metrics {
     pub bans: u64,
     pub idle_stand_ups: u64,
     pub rate_limited_calls: u64,
+    /// The game tick is running every second, not every minute.
+    pub tick_fast: bool,
 }
 
 impl Metrics {
@@ -125,6 +127,7 @@ impl Metrics {
         gauge("bans_total", "Suspensions issued", "counter", self.bans as f64);
         gauge("idle_stand_ups_total", "Players stood up for sitting out too long", "counter", self.idle_stand_ups as f64);
         gauge("rate_limited_calls_total", "Calls refused by the rate limiter since the last upgrade", "counter", self.rate_limited_calls as f64);
+        gauge("tick_fast", "The game tick is running every second, not every minute", "gauge", b(self.tick_fast));
         out
     }
 }

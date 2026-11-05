@@ -42,12 +42,17 @@ const ICP_FEE: u64 = 10_000;
 const MAX_OPEN_TABLES: usize = 8;
 const SOLVENCY_EVERY_SECS: u64 = 600;
 const ENTROPY_EVERY_SECS: u64 = 300;
+/// The game tick's pace while players need it, and while nothing is going on.
+const FAST_TICK_SECS: u64 = 1;
+const SLOW_TICK_SECS: u64 = 60;
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
     /// Tables with a seed request (`raw_rand`) in flight; one per table at most.
     static PENDING_SEEDS: RefCell<BTreeSet<u64>> = const { RefCell::new(BTreeSet::new()) };
     static RETRYING: Cell<bool> = const { Cell::new(false) };
+    /// The every-second tick, while it is running (see `wake_fast_tick`).
+    static FAST_TICK: Cell<Option<ic_cdk_timers::TimerId>> = const { Cell::new(None) };
     /// Users with a wallet operation in flight.
     static WALLET_LOCKS: RefCell<BTreeSet<Principal>> = const { RefCell::new(BTreeSet::new()) };
     /// Per-caller request budgets (not persisted: they refill in seconds anyway).
@@ -77,6 +82,9 @@ fn caller() -> R<Principal> {
         return Err("Too many requests. Please slow down.".into());
     }
     with_mut(|s| s.touch(&p, now()));
+    // The call may be what starts a game. The tick that follows it, after the
+    // call has made its changes, decides whether to keep going.
+    wake_fast_tick();
     Ok(p)
 }
 
@@ -216,7 +224,11 @@ fn post_upgrade() {
 }
 
 fn start_timers() {
-    ic_cdk_timers::set_timer_interval(Duration::from_secs(1), || async { tick().await });
+    // Fast to begin with: upgrades drop all timers, and a hand in progress must
+    // keep its clock. The first tick stops it again if nothing needs it.
+    wake_fast_tick();
+    ic_cdk_timers::set_timer_interval(Duration::from_secs(SLOW_TICK_SECS), || async { slow_tick().await });
+    schedule_tournament_starts();
     ic_cdk_timers::set_timer_interval(Duration::from_secs(60), || async { retry_unknown_ops().await });
     ic_cdk_timers::set_timer_interval(Duration::from_secs(SOLVENCY_EVERY_SECS), || async {
         let _ = check_solvency().await;
@@ -283,7 +295,65 @@ async fn check_solvency() -> R<SolvencyReport> {
     }
 }
 
-/// Runs every second: enforces action clocks and deals new hands.
+/// Starts the every-second tick unless it is running. A trapped call rolls
+/// back both the timer and this record of it, so they can't disagree.
+fn wake_fast_tick() {
+    if FAST_TICK.get().is_none() {
+        let id = ic_cdk_timers::set_timer_interval(Duration::from_secs(FAST_TICK_SECS), || async { fast_tick().await });
+        FAST_TICK.set(Some(id));
+    }
+}
+
+/// Whether the game needs the every-second tick. A seed in flight counts: the
+/// hand it deals has a clock to run.
+fn needs_fast_tick() -> bool {
+    !PENDING_SEEDS.with(|p| p.borrow().is_empty()) || with(|s| s.needs_fast_tick())
+}
+
+/// Each timer firing costs far more than the work in `tick` (a timer is a call
+/// the canister makes to itself), so the fast timer runs only while the game
+/// needs it and stops itself when it no longer does.
+async fn fast_tick() {
+    tick().await;
+    if !needs_fast_tick() {
+        if let Some(id) = FAST_TICK.take() {
+            ic_cdk_timers::clear_timer(id);
+        }
+    }
+}
+
+/// Runs for good, so a game can never lose its clocks: whatever the fast timer
+/// is doing, the game gets a tick here at least once a minute and, if it needs
+/// more, the fast timer again.
+async fn slow_tick() {
+    schedule_tournament_starts();
+    idle_tick().await;
+}
+
+/// A tick that isn't the fast timer's, which needs none if it is running.
+async fn idle_tick() {
+    if FAST_TICK.get().is_some() {
+        return;
+    }
+    tick().await;
+    if needs_fast_tick() {
+        wake_fast_tick();
+    }
+}
+
+/// Sets a tick for the exact start of each scheduled event due before the next
+/// slow tick, so an event starts on time with no call to wake the canister.
+/// The slow tick looks a little further than its own interval: seeing an event
+/// twice only means one extra tick, while missing it would make it late.
+fn schedule_tournament_starts() {
+    let now = now();
+    let window = (SLOW_TICK_SECS + 5) * 1_000_000_000;
+    for start in with(|s| s.scheduled_starts_within(now, window)) {
+        ic_cdk_timers::set_timer(Duration::from_nanos(start - now), idle_tick());
+    }
+}
+
+/// Enforces action clocks, deals new hands and does the game's housekeeping.
 async fn tick() {
     LIMITER.with(|l| l.borrow_mut().prune(now()));
     let ready = with_mut(|s| s.tick(now()));
@@ -1198,6 +1268,7 @@ fn collect_metrics() -> metrics::Metrics {
         let mut m = metrics::Metrics::from_state(s, now);
         m.active_players_5m = active as u64;
         m.rate_limited_calls = limited;
+        m.tick_fast = FAST_TICK.get().is_some();
         m.cycles = ic_cdk::api::canister_cycle_balance() as u64;
         m.heap_bytes = metrics::heap_bytes();
         m.stable_bytes = ic_cdk::stable::stable_size() * 65_536;

@@ -109,7 +109,7 @@ scripts/                    local deploy and test-ICP funding helpers
 
 **How money moves:** 1 chip = 1 e8s of ICP. Your *poker balance* lives in the backend canister. Sitting down moves your buy-in from your balance onto the table, and standing up moves your stack back. The canister's main ICP ledger account always holds at least the sum of all balances, all chips on tables and the treasury. `admin_house_stats` reports that total so you can reconcile it against the ledger.
 
-**Game loop:** a 1-second canister timer enforces action clocks and deals the next hand about 5 seconds after the previous one ends. Players' clients poll `get_table` (a fast query) every second.
+**Game loop:** while a game needs it, a 1-second canister timer enforces action clocks and deals the next hand about 5 seconds after the previous one ends. With nothing going on it stops, because each firing costs cycles, and a 60-second timer does the housekeeping; a player's call or a scheduled tournament's start wakes it straight away (`bp_tick_fast` on `/metrics` shows which pace it is at). Players' clients poll `get_table` (a fast query) every second.
 
 ## Development
 

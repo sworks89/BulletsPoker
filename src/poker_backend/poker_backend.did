@@ -353,6 +353,8 @@ type Metrics = record {
   active_tables : nat64;
   jackpot_icp_e8s : nat64;
   rate_limited_calls : nat64;
+  // The game tick is running every second, not every minute.
+  tick_fast : bool;
   heap_bytes : nat64;
 };
 type ModAction = variant {

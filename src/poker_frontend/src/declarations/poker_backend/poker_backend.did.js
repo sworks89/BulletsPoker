@@ -130,6 +130,7 @@ export const idlFactory = ({ IDL }) => {
     'active_tables' : IDL.Nat64,
     'jackpot_icp_e8s' : IDL.Nat64,
     'rate_limited_calls' : IDL.Nat64,
+    'tick_fast' : IDL.Bool,
     'heap_bytes' : IDL.Nat64,
   });
   const Result_8 = IDL.Variant({ 'Ok' : Metrics, 'Err' : IDL.Text });
