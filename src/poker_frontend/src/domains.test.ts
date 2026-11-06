@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import icDomains from '../public/.well-known/ic-domains?raw';
 import alternativeOrigins from '../public/.well-known/ii-alternative-origins?raw';
 import notificationSenders from '../public/.well-known/ii-notification-senders?raw';
+import appMetadata from '../public/.well-known/ii-app-metadata?raw';
 import icpYaml from '../../../icp.yaml?raw';
 import headers from '../public/_headers?raw';
 import { CANISTER_ORIGIN, CUSTOM_DOMAINS, derivationOriginFor } from './domains';
@@ -41,6 +42,15 @@ describe('the files that make the custom domain work', () => {
     expect(JSON.parse(notificationSenders)).toEqual({ senders: ['b7ham-oaaaa-aaaad-aha7a-cai'] });
     const block = headers.split(/\r?\n(?=\S)/).find((b) => b.startsWith('/.well-known/ii-notification-senders'));
     expect(block).toMatch(/Content-Type: application\/json/);
+  });
+
+  it('tells Internet Identity the name and logo to show on alerts and at sign-in', () => {
+    const metadata = JSON.parse(appMetadata);
+    expect(metadata.name).toBe('Bullets Poker');
+    expect(Object.keys(import.meta.glob('../public/*', { query: '?url' }))).toContain(`../public${metadata.logo}`);
+    const block = headers.split(/\r?\n(?=\S)/).find((b) => b.startsWith('/.well-known/ii-app-metadata'));
+    expect(block).toMatch(/Content-Type: application\/json/);
+    expect(block).toMatch(/Access-Control-Allow-Origin: \*/);
   });
 
   it('serves the alternative origins as JSON that Internet Identity may read', () => {
