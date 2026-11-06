@@ -6,9 +6,14 @@ use crate::metrics::Metrics;
 use crate::tournament::StartAlert;
 use identity_notifications::{self as notifications, Notification};
 
-/// Where an alert opens. Internet Identity only opens the canister's own origin
-/// or one listed in `.well-known/ii-alternative-origins`.
-pub const SITE: &str = "https://www.bulletspoker.com";
+/// Where an alert opens: the canister address, not www.bulletspoker.com. Internet
+/// Identity opens a custom domain only if it can read the domain from
+/// `.well-known/ii-alternative-origins`, and it reads that from the canister's
+/// `ic0.app` address, which the gateway refuses for this canister. It then sends the
+/// player to that same refused address, an error page. A link on the origin alerts
+/// are sent for needs no list and opens as written, and the frontend then forwards
+/// the player to www.bulletspoker.com (`alertForward` in `links.ts`).
+pub const SITE: &str = "https://byggy-dyaaa-aaaad-aha7q-cai.icp0.io";
 
 /// Counts this kind of alert separately in the library's delivery figures.
 const START_FUNNEL: &str = "tournament_start";
@@ -62,17 +67,17 @@ mod tests {
     fn a_start_alert_names_the_event_and_is_gone_once_it_starts() {
         let n = start_notification(&alert());
         assert!(n.body.contains("Hourly Freeroll"));
-        assert_eq!(n.url.as_deref(), Some("https://www.bulletspoker.com/?tournament=7"));
+        assert_eq!(n.url.as_deref(), Some("https://byggy-dyaaa-aaaad-aha7q-cai.icp0.io/?tournament=7"));
         assert_eq!(n.key.as_deref(), Some("tournament-7"));
         assert_eq!(n.expires_at, Some(1_000));
     }
 
-    /// Internet Identity sends a player to the sending origin instead of any
-    /// address the canister's frontend doesn't vouch for.
+    /// Only the origin alerts are sent for always passes Internet Identity's check
+    /// (see `SITE`), so an alert has to open that same address.
     #[test]
-    fn alerts_open_an_address_internet_identity_will_accept() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../poker_frontend/public/.well-known/ii-alternative-origins");
-        let listed = std::fs::read_to_string(path).unwrap();
-        assert!(listed.contains(&format!("\"{SITE}\"")), "{listed}");
+    fn alerts_open_the_origin_they_are_sent_for() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../icp.yaml");
+        let config = std::fs::read_to_string(path).unwrap();
+        assert!(config.contains(&format!("notification_origin: \"{SITE}\"")), "{config}");
     }
 }

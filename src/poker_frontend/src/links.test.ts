@@ -1,5 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { readTournamentParam } from './links';
+import { CANISTER_ORIGIN, CUSTOM_DOMAINS } from './domains';
+import { alertForward, PLAY_ORIGIN, readTournamentParam } from './links';
+
+const CANISTER_HOST = new URL(CANISTER_ORIGIN).hostname;
+
+describe('forwarding an alert to the main site', () => {
+  it('sends a tapped alert from the canister address to the same tournament on the main site', () => {
+    expect(alertForward(CANISTER_HOST, '?tournament=7')).toBe('https://www.bulletspoker.com/?tournament=7');
+  });
+
+  it('forwards to a domain the site is really served at', () => {
+    expect(CUSTOM_DOMAINS).toContain(new URL(PLAY_ORIGIN).hostname);
+  });
+
+  it('leaves people who came to the canister address directly where they are', () => {
+    expect(alertForward(CANISTER_HOST, '')).toBeNull();
+    expect(alertForward(CANISTER_HOST, '?ref=abc')).toBeNull();
+    expect(alertForward(CANISTER_HOST, '?tournament=abc')).toBeNull();
+  });
+
+  it('never forwards from the main site, or from a local copy of the game', () => {
+    expect(alertForward('www.bulletspoker.com', '?tournament=7')).toBeNull();
+    expect(alertForward('bulletspoker.com', '?tournament=7')).toBeNull();
+    expect(alertForward('abcde-cai.localhost', '?tournament=7')).toBeNull();
+  });
+});
 
 describe('the link in a tournament alert', () => {
   it('reads the tournament id', () => {

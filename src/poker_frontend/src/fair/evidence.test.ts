@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CANISTER, caseNamed, recordOf, withoutRates } from './fixtures';
 import { EVIDENCE_FORMAT, MAX_EVIDENCE_CHARS, fromEvidenceJson, toEvidenceJson } from './evidence';
 import { verifyHand } from './verify';
@@ -110,14 +110,15 @@ describe('evidence JSON', () => {
       expect(err('{}')).toMatch(/format is missing/);
       expect(err('{"format":"other/v9"}')).toMatch(/Unsupported evidence format "other\/v9"/);
     });
-    it('refuses oversized text quickly', () => {
-      // Build the input outside the timer: only the check itself is measured.
-      // The bound is loose so slow CI runners don't flake; a parse of the whole
-      // text would take far longer than this.
+    it('refuses oversized text without spending time parsing it', () => {
       const huge = 'x'.repeat(MAX_EVIDENCE_CHARS + 1);
-      const t0 = Date.now();
-      expect(err(huge)).toMatch(/too large/);
-      expect(Date.now() - t0).toBeLessThan(1000);
+      const parse = vi.spyOn(JSON, 'parse');
+      try {
+        expect(err(huge)).toMatch(/too large/);
+        expect(parse).not.toHaveBeenCalled();
+      } finally {
+        parse.mockRestore();
+      }
     });
     it('refuses a huge hex string, huge arrays and nat64 overflow', () => {
       const { record, evidence } = make('showdown_default_rates');

@@ -2,7 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import './styles.css';
-import { readTournamentParam } from './links';
+import { alertForward, readTournamentParam } from './links';
 import { captureInstallPrompt } from './pwa';
 import { readRefParam, rememberRef } from './referrals';
 
@@ -16,6 +16,10 @@ if (ref) {
   window.history.replaceState(null, '', url.pathname + url.search + url.hash);
 }
 
+// A tapped alert on the canister address moves on to the main site. Read before
+// the address bar is tidied below.
+const forward = alertForward(window.location.hostname, window.location.search);
+
 // The tournament an alert opened, read once and dropped for the same reason.
 const tournament = readTournamentParam(window.location.search);
 if (new URLSearchParams(window.location.search).has('tournament')) {
@@ -26,8 +30,12 @@ if (new URLSearchParams(window.location.search).has('tournament')) {
 
 captureInstallPrompt();
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App launchTournament={tournament} />
-  </StrictMode>,
-);
+if (forward) {
+  window.location.replace(forward);
+} else {
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <App launchTournament={tournament} />
+    </StrictMode>,
+  );
+}
