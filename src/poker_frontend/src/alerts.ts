@@ -8,5 +8,5 @@ export function stateAfterError(error: unknown): AlertsState {
 }
 
 export function alertsLabel(state: AlertsState): string {
-  return state === 'on' ? '🔔 Alerts on: turn off' : '🔔 Get tournament alerts';
+  return state === 'on' ? '🔔 Alerts on: turn off' : '🔔 Turn on alerts';
 }

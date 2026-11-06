@@ -6,7 +6,7 @@ A social Texas Hold'em poker room that runs entirely on the [Internet Computer](
 
 **On your phone**
 - Installs to the home screen as an app (Android and desktop browsers offer it; iPhone uses Share, then Add to Home Screen). It adds no caching, so an installed app always runs the current release
-- Optional alerts a few minutes before a scheduled tournament you've registered for, delivered by Internet Identity with your permission. On iPhone, Internet Identity also asks you to install its ICP Alerts app
+- Optional alerts, delivered by Internet Identity with your permission: a few minutes before a scheduled tournament you've registered for, when your daily chips are ready, and for friend messages and requests while you're away (a message alert names the sender but not the words). On iPhone, Internet Identity also asks you to install its ICP Alerts app
 
 **Poker**
 - No-limit Texas Hold'em cash tables (heads-up up to 10-max) with blinds, a moving button, min-raise rules, all-ins, side pots, split pots and odd-chip handling

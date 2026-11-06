@@ -33,6 +33,7 @@ const REPORTS: MemoryId = MemoryId::new(7);
 const REPORTS_BY_TARGET: MemoryId = MemoryId::new(8);
 const REFERRALS: MemoryId = MemoryId::new(9);
 const FAIR_HANDS: MemoryId = MemoryId::new(10);
+const DAILY_ALERTS: MemoryId = MemoryId::new(14);
 /// The notification library's own memories. It shares this file's memory
 /// manager, because a second manager over the same stable memory would hand out
 /// buckets this one already owns.
@@ -83,6 +84,9 @@ pub struct Stores {
     /// player can still verify, oldest first per player. Kept until
     /// `reveal_at + FAIR_RETENTION_NS`, at most `FAIR_HANDS_PER_USER` per player.
     pub fair_hands: StableBTreeMap<(Principal, u64), u64, Mem>,
+    /// (due time, player): the next daily-chips reminder for each player who
+    /// claimed, soonest first. The value is unused.
+    pub daily_alerts: StableBTreeMap<(u64, Principal), u8, Mem>,
 }
 
 impl Stores {
@@ -103,6 +107,7 @@ impl Stores {
             reports_by_target: StableBTreeMap::init(mm.get(REPORTS_BY_TARGET)),
             referrals: StableBTreeMap::init(mm.get(REFERRALS)),
             fair_hands: StableBTreeMap::init(mm.get(FAIR_HANDS)),
+            daily_alerts: StableBTreeMap::init(mm.get(DAILY_ALERTS)),
         };
         (stores, users)
     }
@@ -116,7 +121,7 @@ mod notification_memory_tests {
     #[test]
     fn the_notification_library_has_memories_of_its_own() {
         let ids = [
-            HEAP_SNAPSHOT, USERS, USERNAMES, NOTES, DMS, HANDS, LEDGER_OPS, REPORTS, REPORTS_BY_TARGET, REFERRALS, FAIR_HANDS,
+            HEAP_SNAPSHOT, USERS, USERNAMES, NOTES, DMS, HANDS, LEDGER_OPS, REPORTS, REPORTS_BY_TARGET, REFERRALS, FAIR_HANDS, DAILY_ALERTS,
             NOTIFICATIONS.entries, NOTIFICATIONS.content, NOTIFICATIONS.metrics,
         ];
         let distinct: std::collections::BTreeSet<_> = ids.iter().collect();

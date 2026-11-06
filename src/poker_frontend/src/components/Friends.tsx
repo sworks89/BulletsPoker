@@ -6,18 +6,27 @@ import { mergeMessages } from './Chat';
 import { NotesPanel } from './Notes';
 import { BlockedPanel } from './Safety';
 import { Avatar } from '../art/Avatar';
+import { AlertsButton } from './AlertsButton';
 
-export function Friends() {
+export function Friends({ initialChat }: { initialChat?: string }) {
   const { backend, profile, run, refreshProfile, go } = useApp();
   const [friends, setFriends] = useState<FriendInfo[]>([]);
   const [requests, setRequests] = useState<PublicProfile[]>([]);
   const [search, setSearch] = useState('');
   const [found, setFound] = useState<PublicProfile | null | undefined>(undefined);
   const [chatWith, setChatWith] = useState<FriendInfo | null>(null);
+  // Opened from a message alert: show that conversation, once.
+  const chatOpened = useRef(!initialChat);
 
   usePoll(
     async () => {
-      setFriends(await backend.get_friends());
+      const list = await backend.get_friends();
+      setFriends(list);
+      const sender = chatOpened.current ? undefined : list.find((f) => f.id.toText() === initialChat);
+      if (sender) {
+        chatOpened.current = true;
+        setChatWith(sender);
+      }
     },
     5000,
     [backend],
@@ -84,6 +93,7 @@ export function Friends() {
 
       <div className="panel">
         <div className="panel-title">Friends ({friends.length})</div>
+        <AlertsButton />
         {friends.length === 0 && <p className="muted">Click a player at a table to add them.</p>}
         {friends.map((f) => (
           <div key={f.id.toText()} className="friend-row">

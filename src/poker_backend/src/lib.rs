@@ -341,6 +341,8 @@ async fn fast_tick() {
 async fn slow_tick() {
     schedule_tournament_starts();
     alerts::send_start_alerts(with_mut(|s| s.take_start_alerts(now())));
+    alerts::send_daily_alerts(with_mut(|s| s.take_daily_alerts(now(), alerts::DAILY_ALERTS_PER_TICK)));
+    alerts::prune_throttle(now());
     idle_tick().await;
 }
 
@@ -907,7 +909,19 @@ fn get_chat(channel: Channel, since: u64) -> Vec<ChatMessage> {
 #[update]
 fn send_dm(to: Principal, text: String) -> R<()> {
     let p = caller()?;
-    with_mut(|s| s.send_dm(p, to, text, now()))
+    with_mut(|s| s.send_dm(p, to, text, now()))?;
+    alert_friend(to, p, alerts::FriendAlert::Message);
+    Ok(())
+}
+
+/// Tells a player about something a friend (or would-be friend) just did, unless
+/// they're already here.
+fn alert_friend(to: Principal, from: Principal, kind: alerts::FriendAlert) {
+    let t = now();
+    let name = with(|s| if s.recently_active(&to, t) { None } else { s.user(&from).ok().map(|u| u.username) });
+    if let Some(name) = name {
+        alerts::send_friend_alert(kind, to, from, &name, t);
+    }
 }
 
 #[query]
@@ -919,7 +933,14 @@ fn get_dms(with_user: Principal, since: u64) -> Vec<ChatMessage> {
 #[update]
 fn send_friend_request(to: Principal) -> R<()> {
     let p = active_caller()?;
-    with_mut(|s| s.friend_request(p, to))
+    let pending = |s: &State| s.user(&to).is_ok_and(|u| u.friend_requests.contains(&p));
+    let already = with(pending);
+    with_mut(|s| s.friend_request(p, to))?;
+    // Not for a repeat of a request they have, nor when this accepted theirs instead.
+    if !already && with(pending) {
+        alert_friend(to, p, alerts::FriendAlert::Request);
+    }
+    Ok(())
 }
 
 #[update]

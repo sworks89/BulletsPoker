@@ -4,7 +4,7 @@ import { useApp } from '../context';
 import { errorText } from '../format';
 import { authClient } from '../ic';
 
-/** Lets a signed-in player ask Internet Identity for tournament alerts on this device. */
+/** Lets a signed-in player ask Internet Identity for alerts on this device. */
 export function AlertsButton() {
   const { principal, notify } = useApp();
   const [state, setState] = useState<AlertsState>('loading');
@@ -26,7 +26,7 @@ export function AlertsButton() {
       // Nothing may be awaited before this: browsers only open the window for a click.
       const { granted } = await authClient.requestNotificationConsent();
       setState(granted ? 'on' : 'off');
-      if (granted) notify("Alerts on. You'll hear a few minutes before your scheduled tournaments.");
+      if (granted) notify('Alerts on.');
     } catch (e) {
       setState(stateAfterError(e));
       if (stateAfterError(e) !== 'unsupported') notify(errorText(e), 'err');
@@ -51,7 +51,7 @@ export function AlertsButton() {
       </button>
       {state === 'off' && (
         <span className="muted small">
-          A reminder a few minutes before a scheduled tournament you've registered for. Internet Identity delivers it and asks your permission first. On iPhone, it also asks you to install its ICP Alerts app.
+          Get alerts for scheduled tournaments you've registered for, your daily chips, and friend messages and requests. Internet Identity delivers them and asks your permission first. On iPhone, it also asks you to install its ICP Alerts app.
         </span>
       )}
     </div>

@@ -886,6 +886,101 @@ fn registered_players_get_one_alert_before_a_scheduled_start() {
     assert_eq!(env.balance(alice), before, "the game's stable memory is untouched");
 }
 
+/// How long is enough for a player to count as away.
+const AWAY_NS: u64 = 3 * 60_000_000_000;
+
+/// A friend request alerts the player it's for once, and only if they're away.
+#[test]
+fn a_new_friend_request_alerts_a_player_who_is_away() {
+    let Some(env) = Env::new() else { return };
+    env.configure_alerts();
+    let (alice, bob, carol) = (principal(1), principal(2), principal(3));
+    env.register(alice, "alice");
+    env.register(bob, "bob");
+    env.register(carol, "carol");
+    let r: R<()> = env.update(bob, "send_friend_request", encode_one(alice).unwrap());
+    r.unwrap();
+    assert_eq!(env.metric("alerts_queued"), 0, "alice has only just been here");
+
+    env.jump_to(env.pic.get_time().as_nanos_since_unix_epoch() + AWAY_NS);
+    let r: R<()> = env.update(bob, "send_friend_request", encode_one(alice).unwrap());
+    r.unwrap();
+    assert_eq!(env.metric("alerts_queued"), 0, "she already has this request");
+    let r: R<()> = env.update(carol, "send_friend_request", encode_one(alice).unwrap());
+    r.unwrap();
+    assert_eq!(env.metric("alerts_queued"), 1, "this one is new");
+}
+
+/// Accepting someone's request, by asking them back, isn't a new request.
+#[test]
+fn asking_back_accepts_without_an_alert() {
+    let Some(env) = Env::new() else { return };
+    env.configure_alerts();
+    let (alice, bob) = (principal(1), principal(2));
+    env.register(alice, "alice");
+    env.register(bob, "bob");
+    let r: R<()> = env.update(bob, "send_friend_request", encode_one(alice).unwrap());
+    r.unwrap();
+    env.jump_to(env.pic.get_time().as_nanos_since_unix_epoch() + AWAY_NS);
+    let r: R<()> = env.update(alice, "send_friend_request", encode_one(bob).unwrap());
+    r.unwrap();
+    assert_eq!(env.metric("alerts_queued"), 0);
+}
+
+/// A burst of messages is one alert, and none reach a player who's here.
+#[test]
+fn friend_messages_alert_a_player_who_is_away_without_flooding_them() {
+    let Some(env) = Env::new() else { return };
+    env.configure_alerts();
+    let (alice, bob) = (principal(1), principal(2));
+    env.register(alice, "alice");
+    env.register(bob, "bob");
+    let r: R<()> = env.update(bob, "send_friend_request", encode_one(alice).unwrap());
+    r.unwrap();
+    let r: R<()> = env.update(alice, "respond_friend_request", encode_args((bob, true)).unwrap());
+    r.unwrap();
+
+    let dm = |text: &str| {
+        let r: R<()> = env.update(bob, "send_dm", encode_args((alice, text.to_string())).unwrap());
+        r.unwrap();
+    };
+    dm("are you there?");
+    assert_eq!(env.metric("alerts_queued"), 0, "alice is here");
+
+    env.jump_to(env.pic.get_time().as_nanos_since_unix_epoch() + AWAY_NS);
+    dm("hello");
+    assert_eq!(env.metric("alerts_queued"), 1);
+    env.pic.advance_time(Duration::from_secs(5));
+    dm("hello again");
+    assert_eq!(env.metric("alerts_queued"), 1, "one is enough for now");
+
+    env.jump_to(env.pic.get_time().as_nanos_since_unix_epoch() + 6 * 60_000_000_000);
+    dm("still there?");
+    assert_eq!(env.metric("alerts_queued"), 2, "and she hears again later");
+}
+
+/// A claim sets one reminder for when the next is ready, kept across an upgrade.
+#[test]
+fn a_daily_claim_brings_one_reminder_a_day_later() {
+    let Some(env) = Env::new() else { return };
+    env.configure_alerts();
+    let alice = principal(1);
+    env.register(alice, "alice");
+    let r: R<u64> = env.update(alice, "claim_daily_chips", encode_args(()).unwrap());
+    r.unwrap();
+    const HOUR: u64 = 3_600_000_000_000;
+    let claimed = env.pic.get_time().as_nanos_since_unix_epoch();
+
+    env.jump_to(claimed + 23 * HOUR);
+    assert_eq!(env.metric("alerts_queued"), 0, "the chips aren't ready");
+    env.pic.upgrade_canister(env.poker, env.wasm.clone(), encode_args(()).unwrap(), Some(env.admin)).unwrap();
+
+    env.jump_to(claimed + 24 * HOUR + 2 * 60_000_000_000);
+    assert_eq!(env.metric("alerts_queued"), 1);
+    env.jump_to(claimed + 72 * HOUR);
+    assert_eq!(env.metric("alerts_queued"), 1, "one reminder, not a nag");
+}
+
 /// A canister nobody has given the settings to still plays, and says so.
 #[test]
 fn missing_alert_settings_show_up_in_the_metrics() {

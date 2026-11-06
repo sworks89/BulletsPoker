@@ -49,6 +49,7 @@ const FAIR_LIST_PRUNE_PER_CALL: usize = 4;
 pub const VERIFIABLE_PAGE_MAX: usize = 100;
 pub const SIGNUP_CHIPS: u64 = 20_000;
 pub const DAILY_CHIPS: u64 = 5_000;
+const ALERT_ACTIVE_WINDOW_NS: u64 = 2 * 60 * 1_000_000_000;
 const MAX_STREAK: u32 = 7;
 /// Share of the rake paid to the creator of a player-created ICP room.
 pub const HOST_RAKE_SHARE_BPS: u64 = 2_000;
@@ -1461,10 +1462,29 @@ impl State {
             u.chips += amount;
             (amount, u.daily_streak)
         };
+        // One reminder per claim, so a player who stops claiming stops hearing about it.
+        self.stores.daily_alerts.insert((now + DAY_NS, caller), 0);
         if streak >= MAX_STREAK {
             self.award(&caller, "dedicated", None, now);
         }
         Ok(amount)
+    }
+
+    /// Whether a player made a call in the last couple of minutes. Someone in the
+    /// middle of playing doesn't need an alert to tell them what's on their screen.
+    pub fn recently_active(&self, p: &Principal, now: u64) -> bool {
+        self.users.get(p).is_some_and(|u| now.saturating_sub(u.last_seen) < ALERT_ACTIVE_WINDOW_NS)
+    }
+
+    /// The players to remind about their daily chips at `now`, each reminder
+    /// taken once. Those playing right now or suspended lose this one reminder,
+    /// and get another after their next claim.
+    pub fn take_daily_alerts(&mut self, now: u64, limit: usize) -> Vec<Principal> {
+        let due: Vec<(u64, Principal)> = self.stores.daily_alerts.iter().take_while(|e| e.key().0 <= now).take(limit).map(|e| *e.key()).collect();
+        for key in &due {
+            self.stores.daily_alerts.remove(key);
+        }
+        due.into_iter().map(|(_, p)| p).filter(|p| !self.recently_active(p, now) && self.check_not_banned(p, now).is_ok()).collect()
     }
 
     /// Saves (or, when both text and color are empty, deletes) a private note about a player.
@@ -7336,6 +7356,33 @@ pub(crate) mod tests {
         let id = *s.tournaments.keys().next().unwrap();
         s.tournaments.get_mut(&id).unwrap().status = crate::tournament::TournamentStatus::Running;
         assert!(s.needs_fast_tick(), "blinds rise and rebuy windows close on their own clock");
+    }
+
+    #[test]
+    fn a_daily_claim_sets_one_reminder_for_when_the_next_is_ready() {
+        let mut s = setup();
+        let claimed = 10 * DAY_NS;
+        s.claim_daily(p(1), claimed).unwrap();
+        let due = claimed + DAY_NS;
+        assert!(s.take_daily_alerts(due - SEC, 100).is_empty(), "the chips aren't ready yet");
+        assert_eq!(s.take_daily_alerts(due, 100), vec![p(1)]);
+        assert!(s.take_daily_alerts(due + 3 * DAY_NS, 100).is_empty(), "no second reminder without another claim");
+        s.claim_daily(p(1), due + 3 * DAY_NS).unwrap();
+        assert_eq!(s.take_daily_alerts(due + 4 * DAY_NS, 100), vec![p(1)]);
+    }
+
+    #[test]
+    fn daily_reminders_skip_players_who_are_here_and_stay_within_the_limit() {
+        let mut s = setup();
+        let claimed = 10 * DAY_NS;
+        for k in 1..=3 {
+            s.claim_daily(p(k), claimed).unwrap();
+        }
+        let due = claimed + DAY_NS;
+        s.touch(&p(2), due - 30 * SEC);
+        assert_eq!(s.take_daily_alerts(due, 1), vec![p(1)], "one at a time, soonest first");
+        assert_eq!(s.take_daily_alerts(due, 100), vec![p(3)], "player 2 is at the keyboard and can see the button");
+        assert!(s.take_daily_alerts(due + DAY_NS, 100).is_empty());
     }
 
     #[test]
