@@ -2,7 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import './styles.css';
-import { alertForward, readTournamentParam } from './links';
+import { alertForward, LAUNCH_PARAMS, readLaunchView } from './links';
 import { captureInstallPrompt } from './pwa';
 import { readRefParam, rememberRef } from './referrals';
 
@@ -20,12 +20,14 @@ if (ref) {
 // the address bar is tidied below.
 const forward = alertForward(window.location.hostname, window.location.search);
 
-// The tournament an alert opened, read once and dropped for the same reason.
-const tournament = readTournamentParam(window.location.search);
-if (new URLSearchParams(window.location.search).has('tournament')) {
+// The page an alert opened, read once and dropped for the same reason.
+const launchView = readLaunchView(window.location.search);
+{
   const url = new URL(window.location.href);
-  url.searchParams.delete('tournament');
-  window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+  if (LAUNCH_PARAMS.some((p) => url.searchParams.has(p))) {
+    LAUNCH_PARAMS.forEach((p) => url.searchParams.delete(p));
+    window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+  }
 }
 
 captureInstallPrompt();
@@ -35,7 +37,7 @@ if (forward) {
 } else {
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
-      <App launchTournament={tournament} />
+      <App launchView={launchView} />
     </StrictMode>,
   );
 }

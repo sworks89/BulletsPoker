@@ -149,7 +149,7 @@ function Shell() {
         <TableArea />
         {view.name === 'wallet' && <Wallet />}
         {view.name === 'store' && <Store />}
-        {view.name === 'friends' && <Friends />}
+        {view.name === 'friends' && <Friends key={view.chat ?? ''} initialChat={view.chat} />}
         {(view.name === 'rewards' || view.name === 'leaderboard') && (
           <Rewards key={view.name} initial={view.name === 'leaderboard' ? 'boards' : 'fish'} />
         )}
@@ -210,9 +210,9 @@ function StatusBanner() {
   );
 }
 
-export default function App({ launchTournament = null }: { launchTournament?: bigint | null }) {
+export default function App({ launchView = null }: { launchView?: View | null }) {
   return (
-    <AppProvider launchTournament={launchTournament}>
+    <AppProvider launchView={launchView}>
       <TablesProvider>
         <Shell />
       </TablesProvider>

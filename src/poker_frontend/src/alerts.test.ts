@@ -12,7 +12,7 @@ describe('the tournament alerts button', () => {
   });
 
   it('says what pressing it will do', () => {
-    expect(alertsLabel('off')).toContain('Get tournament alerts');
+    expect(alertsLabel('off')).toContain('Turn on alerts');
     expect(alertsLabel('on')).toContain('turn off');
   });
 });
