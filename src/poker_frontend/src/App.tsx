@@ -21,6 +21,8 @@ import { Avatar } from './art/Avatar';
 import { shouldOfferRegistration } from './startup';
 import { pauseBanner } from './pause';
 import { BuildBadge } from './components/BuildBadge';
+import { InstallBanner } from './components/InstallBanner';
+import { promptInstall, rememberInstallDismissed, useInstallOffer, wasInstallDismissed } from './pwa';
 
 const NAV: { name: View['name']; label: string }[] = [
   { name: 'lobby', label: 'Lobby' },
@@ -53,6 +55,8 @@ function Shell() {
     backend.get_my_roles().then(setRoles).catch(() => {});
   }, [backend, principal]);
   const staff = roles.admin || roles.moderator;
+  const installOffer = useInstallOffer();
+  const [installOpen, setInstallOpen] = useState(() => !wasInstallDismissed());
 
   return (
     <div className={`app ${view.name === 'table' ? 'at-table' : ''}`}>
@@ -119,6 +123,15 @@ function Shell() {
       <StatusBanner />
       <AccountNotice />
       <ConnectionBanner />
+      {installOpen && view.name !== 'table' && (
+        <InstallBanner
+          offer={installOffer}
+          onClose={() => {
+            rememberInstallDismissed();
+            setInstallOpen(false);
+          }}
+        />
+      )}
       <TableStrip />
 
       {principal && !profile && profileLoad === 'failed' && (
@@ -154,6 +167,14 @@ function Shell() {
         <button className="btn-reset link" onClick={() => go({ name: 'verify' })}>
           Verify a hand file
         </button>
+        {installOffer !== 'none' && (
+          <>
+            {' '}
+            <button className="btn-reset link" onClick={() => (installOffer === 'prompt' ? void promptInstall() : setInstallOpen(true))}>
+              Install the app
+            </button>
+          </>
+        )}
         <BuildBadge />
       </footer>
 
@@ -189,9 +210,9 @@ function StatusBanner() {
   );
 }
 
-export default function App() {
+export default function App({ launchTournament = null }: { launchTournament?: bigint | null }) {
   return (
-    <AppProvider>
+    <AppProvider launchTournament={launchTournament}>
       <TablesProvider>
         <Shell />
       </TablesProvider>

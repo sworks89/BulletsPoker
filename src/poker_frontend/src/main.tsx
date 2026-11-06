@@ -2,6 +2,8 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import './styles.css';
+import { readTournamentParam } from './links';
+import { captureInstallPrompt } from './pwa';
 import { readRefParam, rememberRef } from './referrals';
 
 // Keep a ?ref= code for sign-up, then drop it from the address bar so a shared
@@ -14,8 +16,18 @@ if (ref) {
   window.history.replaceState(null, '', url.pathname + url.search + url.hash);
 }
 
+// The tournament an alert opened, read once and dropped for the same reason.
+const tournament = readTournamentParam(window.location.search);
+if (new URLSearchParams(window.location.search).has('tournament')) {
+  const url = new URL(window.location.href);
+  url.searchParams.delete('tournament');
+  window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+}
+
+captureInstallPrompt();
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <App launchTournament={tournament} />
   </StrictMode>,
 );

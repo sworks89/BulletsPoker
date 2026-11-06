@@ -108,6 +108,22 @@ pub struct Tournament {
     /// refundable (and counted as owed) until the event starts, when they move
     /// to the treasury.
     pub fees_held: u64,
+    /// The start alert has gone out. Optional so older snapshots still decode.
+    pub start_alert_sent: Option<bool>,
+}
+
+/// How long before a scheduled start its alert goes out. Internet Identity keeps
+/// an alert for 5 minutes at most, and the check runs once a minute, so players
+/// hear between 3 and 4 minutes ahead.
+pub const START_ALERT_LEAD_NS: u64 = 4 * 60 * NANOS;
+
+/// A scheduled event about to start, and who registered for it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StartAlert {
+    pub id: u64,
+    pub name: String,
+    pub start_at: u64,
+    pub players: Vec<Principal>,
 }
 
 // ------------------------------------------------------------------- views
@@ -467,6 +483,7 @@ impl State {
                     prize_pool: 0,
                     collected: 0,
                     fees_held: 0,
+                    start_alert_sent: None,
                     template: tpl,
                     status: TournamentStatus::Registering,
                     start_at,
@@ -844,6 +861,21 @@ impl State {
             .filter(|t| t.status == TournamentStatus::Registering && t.template.kind == TournamentKind::Scheduled)
             .filter(|t| t.start_at > now && t.start_at - now <= window)
             .map(|t| t.start_at)
+            .collect()
+    }
+
+    /// The start alerts due at `now`, each returned once. An event counts as
+    /// alerted even with nobody registered: anyone joining later is already here.
+    pub fn take_start_alerts(&mut self, now: u64) -> Vec<StartAlert> {
+        self.tournaments
+            .values_mut()
+            .filter(|t| t.status == TournamentStatus::Registering && t.template.kind == TournamentKind::Scheduled)
+            .filter(|t| t.start_at > now && t.start_at - now <= START_ALERT_LEAD_NS)
+            .filter(|t| t.start_alert_sent.is_none())
+            .map(|t| {
+                t.start_alert_sent = Some(true);
+                StartAlert { id: t.id, name: t.template.name.clone(), start_at: t.start_at, players: t.entrants.iter().map(|e| e.player).collect() }
+            })
             .collect()
     }
 

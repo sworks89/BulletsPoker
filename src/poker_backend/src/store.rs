@@ -33,6 +33,14 @@ const REPORTS: MemoryId = MemoryId::new(7);
 const REPORTS_BY_TARGET: MemoryId = MemoryId::new(8);
 const REFERRALS: MemoryId = MemoryId::new(9);
 const FAIR_HANDS: MemoryId = MemoryId::new(10);
+/// The notification library's own memories. It shares this file's memory
+/// manager, because a second manager over the same stable memory would hand out
+/// buckets this one already owns.
+const NOTIFICATIONS: identity_notifications::Memories = identity_notifications::Memories {
+    entries: MemoryId::new(11),
+    content: MemoryId::new(12),
+    metrics: MemoryId::new(13),
+};
 
 macro_rules! candid_storable {
     ($($t:ty),*) => {$(
@@ -82,6 +90,7 @@ impl Stores {
     /// real stable memory, so existing data is picked up after an upgrade.
     pub fn init(memory: DefaultMemoryImpl) -> (Self, Users) {
         let mm = MemoryManager::init(memory);
+        identity_notifications::init(&mm, NOTIFICATIONS);
         let users = Users { map: StableBTreeMap::init(mm.get(USERS)) };
         let stores = Stores {
             heap_mem: mm.get(HEAP_SNAPSHOT),
@@ -96,6 +105,22 @@ impl Stores {
             fair_hands: StableBTreeMap::init(mm.get(FAIR_HANDS)),
         };
         (stores, users)
+    }
+}
+
+#[cfg(test)]
+mod notification_memory_tests {
+    use super::*;
+
+    /// Two structures on one memory id overwrite each other's data for good.
+    #[test]
+    fn the_notification_library_has_memories_of_its_own() {
+        let ids = [
+            HEAP_SNAPSHOT, USERS, USERNAMES, NOTES, DMS, HANDS, LEDGER_OPS, REPORTS, REPORTS_BY_TARGET, REFERRALS, FAIR_HANDS,
+            NOTIFICATIONS.entries, NOTIFICATIONS.content, NOTIFICATIONS.metrics,
+        ];
+        let distinct: std::collections::BTreeSet<_> = ids.iter().collect();
+        assert_eq!(distinct.len(), ids.len());
     }
 }
 

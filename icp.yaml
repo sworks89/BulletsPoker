@@ -9,6 +9,13 @@ canisters:
       type: "@dfinity/rust@v3.3.0"
       configuration:
         candid: src/poker_backend/poker_backend.did
+    settings:
+      # Player alerts (src/poker_backend/src/alerts.rs): who delivers them, and the
+      # address players' accounts belong to (CANISTER_ORIGIN in src/domains.ts). The
+      # release script doesn't apply settings: see "Deploying to mainnet" in the README.
+      environment_variables:
+        notification_sender: "rdmx6-jaaaa-aaaaa-aaadq-cai"
+        notification_origin: "https://byggy-dyaaa-aaaad-aha7q-cai.icp0.io"
 
   - name: poker_frontend
     recipe:

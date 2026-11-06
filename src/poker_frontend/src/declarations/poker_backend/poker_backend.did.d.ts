@@ -141,6 +141,15 @@ export interface ChatMessage {
   'time' : bigint,
 }
 /**
+ * What a channel pulls back. The rest of a [`Notification`] never leaves this
+ * canister.
+ */
+export interface Content {
+  'url' : [] | [string],
+  'title' : string,
+  'body' : string,
+}
+/**
  * What a table plays for: real ICP (1 chip = 1 e8s) or free play chips.
  */
 export type Currency = { 'Icp' : null } |
@@ -465,8 +474,14 @@ export type MessageKind = { 'System' : null } |
 export interface Metrics {
   'running_tournaments' : bigint,
   'last_solvency_surplus_e8s' : [] | [bigint],
+  /**
+   * Alerts in the last 30 days: asked for, taken by Internet Identity, shown
+   * on a device, opened by the player, and given up on.
+   */
+  'alerts_queued' : bigint,
   'treasury_e8s' : bigint,
   'jackpot_chips' : bigint,
+  'alerts_accepted' : bigint,
   'bans' : bigint,
   'last_solvency_at' : [] | [bigint],
   'last_solvency_ok' : [] | [boolean],
@@ -476,12 +491,25 @@ export interface Metrics {
   'time' : bigint,
   'seated_players' : bigint,
   'ledger_ops_unknown' : bigint,
+  'alerts_received' : bigint,
   'paused_deposits' : boolean,
   'paused_joins' : boolean,
+  /**
+   * When alert settings were first found missing, or Internet Identity first
+   * refused them (seconds since the epoch; 0 if never). The library never clears
+   * this: `alerts_accepted` rising afterwards shows the problem has gone.
+   */
+  'alerts_misconfigured_since' : bigint,
+  'alerts_opened' : bigint,
   'tables' : bigint,
   'cycles' : bigint,
   'liabilities_e8s' : bigint,
+  /**
+   * Alerts waiting for Internet Identity to take them.
+   */
+  'alerts_backlog' : bigint,
   'paused_withdrawals' : boolean,
+  'alerts_dropped' : bigint,
   'users' : bigint,
   'ledger_ops_failed' : bigint,
   /**
@@ -1279,6 +1307,12 @@ export interface Winner {
   'amount' : bigint,
 }
 export interface _SERVICE {
+  '_internet_identity_notification_content' : ActorMethod<
+    [bigint],
+    [] | [Content]
+  >,
+  '_internet_identity_notification_opened' : ActorMethod<[bigint], undefined>,
+  '_internet_identity_notification_received' : ActorMethod<[bigint], undefined>,
   'act' : ActorMethod<[bigint, Action, [] | [bigint]], Result>,
   /**
    * Takes the one-time add-on at the end of a tournament's rebuy period.

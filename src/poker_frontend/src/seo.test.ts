@@ -8,6 +8,8 @@ import provablyFair from '../public/provably-fair/index.html?raw';
 import sitemap from '../public/sitemap.xml?raw';
 import robots from '../public/robots.txt?raw';
 import logo from '../public/logo.svg?raw';
+import manifest from '../public/manifest.webmanifest?raw';
+import headers from '../public/_headers?raw';
 
 const SITE = 'https://www.bulletspoker.com';
 
@@ -67,9 +69,31 @@ describe('what search engines read', () => {
 
   it('the files pages refer to exist', () => {
     const files = Object.keys(import.meta.glob('../public/*', { query: '?url' }));
-    for (const file of ['site.css', 'favicon.svg', 'logo.svg', 'og.png']) {
+    for (const file of ['site.css', 'favicon.svg', 'logo.svg', 'og.png', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png']) {
       expect(files).toContain(`../public/${file}`);
     }
+  });
+
+  it.each(PAGES)('%s can be installed from', (_path, html) => {
+    expect(html).toContain('<link rel="manifest" href="/manifest.webmanifest" />');
+    expect(html).toContain('<link rel="apple-touch-icon" href="/apple-touch-icon.png" />');
+  });
+
+  it('the manifest describes an app that opens the game, with the icons browsers require', () => {
+    const app = JSON.parse(manifest);
+    expect(app.start_url).toBe('/');
+    expect(app.display).toBe('standalone');
+    expect(app.name).toBe('Bullets Poker');
+    const icons = app.icons as { src: string; sizes: string; purpose: string }[];
+    expect(icons.map((i) => i.sizes)).toEqual(expect.arrayContaining(['192x192', '512x512']));
+    expect(icons.some((i) => i.purpose === 'maskable')).toBe(true);
+    const files = Object.keys(import.meta.glob('../public/*', { query: '?url' }));
+    for (const icon of icons) expect(files).toContain(`../public${icon.src}`);
+  });
+
+  it('serves the manifest as what it is', () => {
+    const block = headers.split(/\r?\n(?=\S)/).find((b) => b.startsWith('/manifest.webmanifest'));
+    expect(block).toMatch(/Content-Type: application\/manifest\+json/);
   });
 
   it('the logo is on the game and on every page, and holds still on request', () => {

@@ -78,6 +78,9 @@ type ChatMessage = record {
   "text" : text;
   time : nat64;
 };
+// What a channel pulls back. The rest of a [`Notification`] never leaves this
+// canister.
+type Content = record { url : opt text; title : text; body : text };
 // What a table plays for: real ICP (1 chip = 1 e8s) or free play chips.
 type Currency = variant { Icp; Chips };
 type DepositInfo = record {
@@ -323,8 +326,12 @@ type MessageKind = variant { System; Gift; Text; Throw };
 type Metrics = record {
   running_tournaments : nat64;
   last_solvency_surplus_e8s : opt int64;
+  // Alerts in the last 30 days: asked for, taken by Internet Identity, shown
+  // on a device, opened by the player, and given up on.
+  alerts_queued : nat64;
   treasury_e8s : nat64;
   jackpot_chips : nat64;
+  alerts_accepted : nat64;
   bans : nat64;
   last_solvency_at : opt nat64;
   last_solvency_ok : opt bool;
@@ -334,12 +341,21 @@ type Metrics = record {
   time : nat64;
   seated_players : nat64;
   ledger_ops_unknown : nat64;
+  alerts_received : nat64;
   paused_deposits : bool;
   paused_joins : bool;
+  // When alert settings were first found missing, or Internet Identity first
+  // refused them (seconds since the epoch; 0 if never). The library never clears
+  // this: `alerts_accepted` rising afterwards shows the problem has gone.
+  alerts_misconfigured_since : nat64;
+  alerts_opened : nat64;
   tables : nat64;
   cycles : nat64;
   liabilities_e8s : nat64;
+  // Alerts waiting for Internet Identity to take them.
+  alerts_backlog : nat64;
   paused_withdrawals : bool;
+  alerts_dropped : nat64;
   users : nat64;
   ledger_ops_failed : nat64;
   // Players who made an update call in the last 5 minutes.
@@ -903,6 +919,9 @@ type Winner = record {
   amount : nat64;
 };
 service : (opt InitArgs) -> {
+  _internet_identity_notification_content : (nat64) -> (opt Content) query;
+  _internet_identity_notification_opened : (nat64) -> ();
+  _internet_identity_notification_received : (nat64) -> ();
   act : (nat64, Action, opt nat64) -> (Result);
   // Takes the one-time add-on at the end of a tournament's rebuy period.
   addon_tournament : (nat64) -> (Result);
