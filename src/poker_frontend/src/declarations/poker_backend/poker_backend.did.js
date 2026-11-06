@@ -3,6 +3,11 @@ export const idlFactory = ({ IDL }) => {
     'ledger' : IDL.Opt(IDL.Principal),
     'ledger_fee' : IDL.Opt(IDL.Nat64),
   });
+  const Content = IDL.Record({
+    'url' : IDL.Opt(IDL.Text),
+    'title' : IDL.Text,
+    'body' : IDL.Text,
+  });
   const Action = IDL.Variant({
     'Call' : IDL.Null,
     'Fold' : IDL.Null,
@@ -102,8 +107,10 @@ export const idlFactory = ({ IDL }) => {
   const Metrics = IDL.Record({
     'running_tournaments' : IDL.Nat64,
     'last_solvency_surplus_e8s' : IDL.Opt(IDL.Int64),
+    'alerts_queued' : IDL.Nat64,
     'treasury_e8s' : IDL.Nat64,
     'jackpot_chips' : IDL.Nat64,
+    'alerts_accepted' : IDL.Nat64,
     'bans' : IDL.Nat64,
     'last_solvency_at' : IDL.Opt(IDL.Nat64),
     'last_solvency_ok' : IDL.Opt(IDL.Bool),
@@ -113,12 +120,17 @@ export const idlFactory = ({ IDL }) => {
     'time' : IDL.Nat64,
     'seated_players' : IDL.Nat64,
     'ledger_ops_unknown' : IDL.Nat64,
+    'alerts_received' : IDL.Nat64,
     'paused_deposits' : IDL.Bool,
     'paused_joins' : IDL.Bool,
+    'alerts_misconfigured_since' : IDL.Nat64,
+    'alerts_opened' : IDL.Nat64,
     'tables' : IDL.Nat64,
     'cycles' : IDL.Nat64,
     'liabilities_e8s' : IDL.Nat64,
+    'alerts_backlog' : IDL.Nat64,
     'paused_withdrawals' : IDL.Bool,
+    'alerts_dropped' : IDL.Nat64,
     'users' : IDL.Nat64,
     'ledger_ops_failed' : IDL.Nat64,
     'active_players_5m' : IDL.Nat64,
@@ -777,6 +789,13 @@ export const idlFactory = ({ IDL }) => {
   const Result_17 = IDL.Variant({ 'Ok' : Profile, 'Err' : IDL.Text });
   const Result_18 = IDL.Variant({ 'Ok' : SpinRecord, 'Err' : IDL.Text });
   return IDL.Service({
+    '_internet_identity_notification_content' : IDL.Func(
+        [IDL.Nat64],
+        [IDL.Opt(Content)],
+        ['query'],
+      ),
+    '_internet_identity_notification_opened' : IDL.Func([IDL.Nat64], [], []),
+    '_internet_identity_notification_received' : IDL.Func([IDL.Nat64], [], []),
     'act' : IDL.Func([IDL.Nat64, Action, IDL.Opt(IDL.Nat64)], [Result], []),
     'addon_tournament' : IDL.Func([IDL.Nat64], [Result], []),
     'admin_add_default_items' : IDL.Func([], [Result_1], []),

@@ -14,3 +14,13 @@
 /.well-known/ii-alternative-origins
   Content-Type: application/json
   Access-Control-Allow-Origin: *
+
+# Internet Identity reads this to learn that the backend canister may send player
+# alerts for this address (src/poker_backend/src/alerts.rs).
+/.well-known/ii-notification-senders
+  Content-Type: application/json
+  Access-Control-Allow-Origin: *
+
+# What a browser reads to install the game.
+/manifest.webmanifest
+  Content-Type: application/manifest+json

@@ -4,6 +4,10 @@ A social Texas Hold'em poker room that runs entirely on the [Internet Computer](
 
 ## Features
 
+**On your phone**
+- Installs to the home screen as an app (Android and desktop browsers offer it; iPhone uses Share, then Add to Home Screen). It adds no caching, so an installed app always runs the current release
+- Optional alerts a few minutes before a scheduled tournament you've registered for, delivered by Internet Identity with your permission. On iPhone, Internet Identity also asks you to install its ICP Alerts app
+
 **Poker**
 - No-limit Texas Hold'em cash tables (heads-up up to 10-max) with blinds, a moving button, min-raise rules, all-ins, side pots, split pots and odd-chip handling
 - Action clock with a time bank: when your clock runs out, up to 30 seconds of extra time kicks in automatically (you're only charged what you use, and it refills 2 seconds every hand). A player who runs out of both is checked or folded and sat out ("I'm back" to return)
@@ -141,6 +145,18 @@ icp deploy -e ic   # the backend defaults to the real ICP ledger
 ```
 
 Only controllers can call the `admin_*` methods (create tables, add recurring tournaments, add store items, view house stats, withdraw the treasury). Six tables, from micro to high stakes, and the default store catalogue are created at install time.
+
+### Player alerts
+
+The backend sends alerts through Internet Identity, which needs two canister settings. `scripts/deploy-release.sh` installs code only, so set them once on mainnet (`icp.yaml` holds the same values, for any later `icp deploy`):
+
+```bash
+icp canister settings update poker_backend -e ic \
+  --add-environment-variable notification_sender=rdmx6-jaaaa-aaaaa-aaadq-cai \
+  --add-environment-variable notification_origin=https://byggy-dyaaa-aaaad-aha7q-cai.icp0.io
+```
+
+`notification_origin` must stay the canister address (`CANISTER_ORIGIN` in `src/domains.ts`), because that's where players' permission is recorded. Internet Identity also reads `.well-known/ii-notification-senders` from the frontend, which names the backend as allowed to send, so the frontend must be deployed too. Deploy the settings and the frontend before a release that first sends alerts, so Internet Identity finds the sender list. On `/metrics`, `bp_alerts_queued`, `_accepted`, `_received`, `_opened` and `_dropped` show the last 30 days' deliveries. `bp_alerts_misconfigured_since` is when the settings were first missing or refused (0 if never); it never resets, so `bp_alerts_accepted` rising afterwards means the problem has gone.
 
 ## Reproducible builds
 

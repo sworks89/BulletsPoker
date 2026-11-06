@@ -1,6 +1,7 @@
 //! BulletsPoker backend canister: Texas Hold'em with ICP buy-ins, a cosmetic
 //! item store, table gifts, chat and friends.
 
+pub mod alerts;
 pub mod cards;
 pub mod fair;
 pub mod jackpot;
@@ -134,6 +135,12 @@ fn moderator_for(target: Principal) -> R<Principal> {
 /// Largest argument any public method needs (chat, notes and reports are a few KB).
 const MAX_ARG_BYTES: usize = 16 * 1024;
 
+// The calls Internet Identity makes to fetch and acknowledge an alert's content.
+identity_notifications::endpoints!();
+
+/// The update calls among them, which `inspect_message` would otherwise refuse.
+const NOTIFICATION_RECEIPTS: [&str; 2] = ["_internet_identity_notification_received", "_internet_identity_notification_opened"];
+
 /// Drops obviously bad update calls before they cost the canister cycles:
 /// anonymous or unregistered callers, oversized arguments, privileged methods
 /// from the wrong principal, and callers who are over their request budget.
@@ -146,7 +153,13 @@ fn inspect_message() {
     if p == Principal::anonymous() || ic_cdk::api::msg_arg_data().len() > MAX_ARG_BYTES {
         return;
     }
-    let allowed = if method.starts_with("admin_") {
+    let allowed = if NOTIFICATION_RECEIPTS.contains(&method.as_str()) {
+        // Internet Identity's delivery receipts. Its service worker calls as a
+        // principal of its own, never a registered player, and the library ignores
+        // any call Internet Identity did not sign. Like `register`, these take
+        // strangers, whose fresh principals no per-caller budget could limit.
+        true
+    } else if method.starts_with("admin_") {
         ic_cdk::api::is_controller(&p)
     } else if method.starts_with("mod_") {
         ic_cdk::api::is_controller(&p) || with(|s| s.is_moderator(&p))
@@ -327,6 +340,7 @@ async fn fast_tick() {
 /// more, the fast timer again.
 async fn slow_tick() {
     schedule_tournament_starts();
+    alerts::send_start_alerts(with_mut(|s| s.take_start_alerts(now())));
     idle_tick().await;
 }
 
@@ -1269,6 +1283,7 @@ fn collect_metrics() -> metrics::Metrics {
         m.active_players_5m = active as u64;
         m.rate_limited_calls = limited;
         m.tick_fast = FAST_TICK.get().is_some();
+        alerts::fill_metrics(&mut m);
         m.cycles = ic_cdk::api::canister_cycle_balance() as u64;
         m.heap_bytes = metrics::heap_bytes();
         m.stable_bytes = ic_cdk::stable::stable_size() * 65_536;

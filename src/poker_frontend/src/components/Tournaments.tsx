@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { AlertsButton } from './AlertsButton';
 import { useApp, usePoll } from '../context';
 import { unwrap, type TournamentDetail, type TournamentSummary } from '../ic';
 import { amountWithUnit, countdown, isChips } from '../format';
@@ -40,11 +41,18 @@ export function Tournaments({ initial }: { initial?: bigint }) {
   const [tab, setTab] = useState<'sng' | 'scheduled'>('sng');
   const [selected, setSelected] = useState<bigint | null>(initial ?? null);
   const [detail, setDetail] = useState<TournamentDetail | null>(null);
+  // Opened on one event, by an alert or from its table: show the tab it's on, once.
+  const tabChosen = useRef(initial === undefined);
 
   usePoll(
     async () => {
       const l = await backend.list_tournaments();
       setList(l);
+      const opened = tabChosen.current ? undefined : l.find((t) => t.id === initial);
+      if (opened) {
+        tabChosen.current = true;
+        setTab('SitAndGo' in opened.kind ? 'sng' : 'scheduled');
+      }
       if (selected !== null) setDetail((await backend.get_tournament(selected))[0] ?? null);
     },
     3000,
@@ -83,6 +91,7 @@ export function Tournaments({ initial }: { initial?: bigint }) {
             ? 'Single-table events that start the moment they fill up. Blinds rise every few minutes; the top finishers share the prize pool.'
             : 'Multi-table events on a schedule. Tables are balanced and merged as players bust, down to a final table.'}
         </p>
+        <AlertsButton />
         {shown.map((t) => {
           const status = Object.keys(t.status)[0];
           return (

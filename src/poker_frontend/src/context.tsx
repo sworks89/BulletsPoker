@@ -61,13 +61,13 @@ export function useApp(): AppState {
   return c;
 }
 
-export function AppProvider({ children }: { children: ReactNode }) {
+export function AppProvider({ children, launchTournament = null }: { children: ReactNode; launchTournament?: bigint | null }) {
   const [actors, setActors] = useState<{ backend: Backend; ledger: Ledger } | null>(null);
   const [principal, setPrincipal] = useState<Principal | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [items, setItems] = useState<Map<number, StoreItem>>(new Map());
   const [medals, setMedals] = useState<Map<string, MedalDef>>(new Map());
-  const [view, setView] = useState<View>({ name: 'lobby' });
+  const [view, setView] = useState<View>(launchTournament === null ? { name: 'lobby' } : { name: 'tournaments', id: launchTournament });
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const notify = useCallback((text: string, kind: 'ok' | 'err' = 'ok') => {

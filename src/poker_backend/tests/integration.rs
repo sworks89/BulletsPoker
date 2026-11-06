@@ -821,6 +821,101 @@ fn an_upgrade_mid_hand_keeps_the_clock_running() {
     assert!(!env.tick_fast(), "nothing to do after this upgrade");
 }
 
+impl Env {
+    /// One figure from the public metrics.
+    fn metric(&self, name: &str) -> u64 {
+        use poker_backend::metrics::{HttpRequest, HttpResponse};
+        let req = HttpRequest { method: "GET".into(), url: "/metrics".into(), headers: vec![], body: Default::default() };
+        let m: HttpResponse = self.query(Principal::anonymous(), "http_request", encode_one(req).unwrap());
+        let text = String::from_utf8(m.body.into_vec()).unwrap();
+        let prefix = format!("bp_{name} ");
+        text.lines().find_map(|l| l.strip_prefix(prefix.as_str())).unwrap_or_else(|| panic!("no {name}")).parse().unwrap()
+    }
+
+    /// Settings as on mainnet, with the ledger standing in for Internet Identity:
+    /// it refuses the send, which leaves everything up to the send to observe.
+    fn configure_alerts(&self) {
+        let settings = pocket_ic::CanisterSettings {
+            environment_variables: Some(vec![
+                pocket_ic::EnvironmentVariable { name: "notification_sender".into(), value: self.ledger.to_text() },
+                pocket_ic::EnvironmentVariable { name: "notification_origin".into(), value: "https://byggy-dyaaa-aaaad-aha7q-cai.icp0.io".into() },
+            ]),
+            ..Default::default()
+        };
+        self.pic.update_canister_settings(self.poker, Some(self.admin), settings).unwrap();
+    }
+
+    /// Jumps the clock to `at` (nanoseconds) and lets the timers due by then run.
+    fn jump_to(&self, at: u64) {
+        let now = self.pic.get_time().as_nanos_since_unix_epoch();
+        self.pic.advance_time(Duration::from_nanos(at.saturating_sub(now)));
+        self.run_timers(3);
+    }
+}
+
+/// Registered players are alerted once, a few minutes before the start, and an
+/// upgrade neither repeats the alert nor disturbs what's in stable memory.
+#[test]
+fn registered_players_get_one_alert_before_a_scheduled_start() {
+    use poker_backend::tournament::START_ALERT_LEAD_NS;
+    let Some(env) = Env::new() else { return };
+    env.configure_alerts();
+    let (alice, bob, carol) = (principal(1), principal(2), principal(3));
+    env.register(alice, "alice");
+    env.register(bob, "bob");
+    env.register(carol, "carol");
+    env.run_timers(3);
+    let t = env.tournament_named("Hourly Freeroll");
+    for who in [alice, bob] {
+        let r: R<()> = env.update(who, "register_tournament", encode_one(t.id).unwrap());
+        r.unwrap();
+    }
+    const MINUTE: u64 = 60_000_000_000;
+
+    env.jump_to(t.start_at - START_ALERT_LEAD_NS - 2 * MINUTE);
+    assert_eq!(env.metric("alerts_queued"), 0, "too early");
+
+    env.jump_to(t.start_at - START_ALERT_LEAD_NS + MINUTE);
+    assert_eq!(env.metric("alerts_queued"), 2, "alice and bob, and not carol");
+    assert_eq!(env.metric("alerts_misconfigured_since"), 0);
+
+    let before = env.balance(alice);
+    env.pic.upgrade_canister(env.poker, env.wasm.clone(), encode_args(()).unwrap(), Some(env.admin)).unwrap();
+    env.jump_to(t.start_at - MINUTE);
+    assert_eq!(env.metric("alerts_queued"), 2, "only once, even across an upgrade");
+    assert_eq!(env.balance(alice), before, "the game's stable memory is untouched");
+}
+
+/// A canister nobody has given the settings to still plays, and says so.
+#[test]
+fn missing_alert_settings_show_up_in_the_metrics() {
+    use poker_backend::tournament::START_ALERT_LEAD_NS;
+    let Some(env) = Env::new() else { return };
+    let alice = principal(1);
+    env.register(alice, "alice");
+    env.run_timers(3);
+    let t = env.tournament_named("Hourly Freeroll");
+    let r: R<()> = env.update(alice, "register_tournament", encode_one(t.id).unwrap());
+    r.unwrap();
+    assert_eq!(env.metric("alerts_misconfigured_since"), 0);
+    env.jump_to(t.start_at - START_ALERT_LEAD_NS + 60_000_000_000);
+    assert_eq!(env.metric("alerts_queued"), 1);
+    assert_eq!(env.metric("alerts_dropped"), 1);
+    assert!(env.metric("alerts_misconfigured_since") > 0);
+}
+
+/// Internet Identity's service worker calls as a principal of its own, never a
+/// registered player, and its receipts must get past the ingress filter.
+#[test]
+fn delivery_receipts_are_accepted_from_unregistered_callers() {
+    let Some(env) = Env::new() else { return };
+    let stranger = principal(99);
+    for method in ["_internet_identity_notification_received", "_internet_identity_notification_opened"] {
+        env.pic.update_call(env.poker, stranger, method, encode_one(1u64).unwrap()).unwrap_or_else(|e| panic!("{method}: {e:?}"));
+    }
+    assert!(env.pic.update_call(env.poker, stranger, "claim_daily_chips", encode_args(()).unwrap()).is_err(), "the filter still stops strangers elsewhere");
+}
+
 /// An idle canister starts a scheduled tournament on time: nothing calls it in
 /// the minutes before, and only the slow tick is running.
 #[test]

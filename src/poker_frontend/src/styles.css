@@ -838,3 +838,9 @@ input.narrow { width: 80px; flex: none; }
 .site-about nav { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-bottom: 8px; }
 .site-about a { color: var(--accent-2); }
 body:has(.app.at-table) .site-about { display: none; }
+/* Installed, the game is the whole app: the About text is there for visitors and search engines. */
+@media (display-mode: standalone) { .site-about { display: none; } }
+.install-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font-size: 14px; }
+.install-banner .grow { flex: 1 1 200px; }
+.alerts-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 10px; }
+.alerts-row .muted { flex: 1 1 240px; }

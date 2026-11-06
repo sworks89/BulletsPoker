@@ -7339,6 +7339,40 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn start_alerts_reach_each_entrant_once_shortly_before_the_start() {
+        use crate::tournament::{TournamentKind, START_ALERT_LEAD_NS};
+        let mut s = setup();
+        s.tick(SEC);
+        let hour = 3_600 * SEC;
+        let id = *s.tournaments.iter().find(|(_, t)| t.template.kind == TournamentKind::Scheduled && t.start_at == hour && t.template.buy_in == 0 && t.template.fee == 0).unwrap().0;
+        s.register_tournament(p(1), id, SEC).unwrap();
+        s.register_tournament(p(2), id, SEC).unwrap();
+
+        assert!(s.take_start_alerts(hour - START_ALERT_LEAD_NS - SEC).is_empty(), "too early for Internet Identity to hold it");
+
+        let due = s.take_start_alerts(hour - START_ALERT_LEAD_NS);
+        let alert = due.iter().find(|a| a.id == id).expect("the event is due");
+        assert_eq!(alert.start_at, hour);
+        assert_eq!(alert.players, vec![p(1), p(2)]);
+
+        assert!(s.take_start_alerts(hour - START_ALERT_LEAD_NS + 60 * SEC).iter().all(|a| a.id != id), "only once");
+    }
+
+    #[test]
+    fn start_alerts_skip_sit_and_gos_and_events_already_under_way() {
+        use crate::tournament::{TournamentKind, TournamentStatus};
+        let mut s = setup();
+        s.tick(SEC);
+        let hour = 3_600 * SEC;
+        assert!(s.take_start_alerts(SEC).is_empty(), "sit & go's have no start time, and the hour is far off");
+        for t in s.tournaments.values_mut().filter(|t| t.template.kind == TournamentKind::Scheduled) {
+            t.status = TournamentStatus::Cancelled;
+        }
+        assert!(s.take_start_alerts(hour - 60 * SEC).is_empty(), "a cancelled event isn't starting");
+        assert!(s.take_start_alerts(hour + SEC).is_empty(), "nor is one whose start has passed");
+    }
+
+    #[test]
     fn scheduled_starts_are_found_only_inside_the_window() {
         let mut s = setup();
         s.tick(SEC);

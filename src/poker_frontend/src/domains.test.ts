@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import icDomains from '../public/.well-known/ic-domains?raw';
 import alternativeOrigins from '../public/.well-known/ii-alternative-origins?raw';
+import notificationSenders from '../public/.well-known/ii-notification-senders?raw';
+import icpYaml from '../../../icp.yaml?raw';
 import headers from '../public/_headers?raw';
 import { CANISTER_ORIGIN, CUSTOM_DOMAINS, derivationOriginFor } from './domains';
 
@@ -28,6 +30,17 @@ describe('the files that make the custom domain work', () => {
 
   it('lets Internet Identity accept every custom domain as the canister address', () => {
     expect(JSON.parse(alternativeOrigins)).toEqual({ alternativeOrigins: CUSTOM_DOMAINS.map((d) => `https://${d}`) });
+  });
+
+  it('sends alerts for the address accounts belong to, through mainnet Internet Identity', () => {
+    expect(icpYaml).toContain(`notification_origin: "${CANISTER_ORIGIN}"`);
+    expect(icpYaml).toContain('notification_sender: "rdmx6-jaaaa-aaaaa-aaadq-cai"');
+  });
+
+  it('names the game canister, and only it, as allowed to send alerts', () => {
+    expect(JSON.parse(notificationSenders)).toEqual({ senders: ['b7ham-oaaaa-aaaad-aha7a-cai'] });
+    const block = headers.split(/\r?\n(?=\S)/).find((b) => b.startsWith('/.well-known/ii-notification-senders'));
+    expect(block).toMatch(/Content-Type: application\/json/);
   });
 
   it('serves the alternative origins as JSON that Internet Identity may read', () => {

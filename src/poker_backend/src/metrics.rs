@@ -42,6 +42,19 @@ pub struct Metrics {
     pub rate_limited_calls: u64,
     /// The game tick is running every second, not every minute.
     pub tick_fast: bool,
+    /// Alerts in the last 30 days: asked for, taken by Internet Identity, shown
+    /// on a device, opened by the player, and given up on.
+    pub alerts_queued: u64,
+    pub alerts_accepted: u64,
+    pub alerts_received: u64,
+    pub alerts_opened: u64,
+    pub alerts_dropped: u64,
+    /// Alerts waiting for Internet Identity to take them.
+    pub alerts_backlog: u64,
+    /// When alert settings were first found missing, or Internet Identity first
+    /// refused them (seconds since the epoch; 0 if never). The library never clears
+    /// this: `alerts_accepted` rising afterwards shows the problem has gone.
+    pub alerts_misconfigured_since: u64,
 }
 
 impl Metrics {
@@ -128,6 +141,13 @@ impl Metrics {
         gauge("idle_stand_ups_total", "Players stood up for sitting out too long", "counter", self.idle_stand_ups as f64);
         gauge("rate_limited_calls_total", "Calls refused by the rate limiter since the last upgrade", "counter", self.rate_limited_calls as f64);
         gauge("tick_fast", "The game tick is running every second, not every minute", "gauge", b(self.tick_fast));
+        gauge("alerts_queued", "Alerts asked for in the last 30 days", "gauge", self.alerts_queued as f64);
+        gauge("alerts_accepted", "Alerts Internet Identity took in the last 30 days", "gauge", self.alerts_accepted as f64);
+        gauge("alerts_received", "Alerts shown on a device in the last 30 days", "gauge", self.alerts_received as f64);
+        gauge("alerts_opened", "Alerts a player opened in the last 30 days", "gauge", self.alerts_opened as f64);
+        gauge("alerts_dropped", "Alerts given up on in the last 30 days", "gauge", self.alerts_dropped as f64);
+        gauge("alerts_backlog", "Alerts waiting for Internet Identity to take them", "gauge", self.alerts_backlog as f64);
+        gauge("alerts_misconfigured_since", "When alert settings were first missing or refused (seconds; 0 if never, and never reset)", "gauge", self.alerts_misconfigured_since as f64);
         out
     }
 }
