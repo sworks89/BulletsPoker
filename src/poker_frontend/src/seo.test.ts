@@ -80,6 +80,14 @@ describe('what search engines read', () => {
     expect(logo).toContain('prefers-reduced-motion: reduce');
   });
 
+  it('the home page invites people to play, and every other page sends them to it', () => {
+    expect(home.match(/<title>([^<]*)/)?.[1]).toMatch(/^Bullets Poker \| Play /);
+    expect(content(home, 'name', 'description')).toMatch(/^Play /);
+    for (const [, page] of PAGES.slice(1)) {
+      expect(page).toContain('class="site-cta" href="/"');
+    }
+  });
+
   it('no page promises winnings', () => {
     for (const [, html] of PAGES) {
       expect(html).not.toMatch(/win (real )?money|guaranteed win|get rich|risk[- ]free/i);
