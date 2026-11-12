@@ -157,6 +157,19 @@ impl State {
         op
     }
 
+    /// Refuses destinations nobody could spend from: the game's own account
+    /// (any subaccount: the ICP would sit uncounted among the house's funds),
+    /// the ledger itself, and the anonymous principal.
+    pub fn check_withdraw_destination(&self, to: &Account, me: Principal) -> R<()> {
+        if to.owner == me {
+            return Err("That is the game's own account. Withdraw to your own wallet.".into());
+        }
+        if to.owner == self.ledger || to.owner == Principal::anonymous() || to.owner == Principal::management_canister() {
+            return Err("ICP sent there could never be spent. Withdraw to your own wallet.".into());
+        }
+        Ok(())
+    }
+
     /// Starts a player withdrawal: debits amount + fee and records the op.
     pub fn begin_withdraw(&mut self, user: Principal, to: Account, amount: u64, now: u64) -> R<LedgerOp> {
         if self.pause.withdrawals {
@@ -191,6 +204,7 @@ impl State {
         // Without a profile the pulled ICP would have nowhere to go.
         self.user(&user)?;
         self.check_not_banned(&user, now)?;
+        self.check_deposit_allowed(&user, amount, now)?;
         self.check_user_fails(&user, now)?;
         // Only accounts that never deposited are held back, so cheap accounts
         // burning the budget can't lock out established players.
@@ -322,6 +336,9 @@ impl State {
                         u.deposit_fails = None;
                         u.has_deposited = Some(true);
                     }
+                    // Address deposits are never refused (the ICP is already
+                    // sent), but they count toward the day's cap.
+                    self.note_deposited(&op.user, op.amount, now);
                 }
                 OpStatus::Completed { block }
             }
@@ -506,6 +523,18 @@ mod tests {
 
     fn balance(s: &State) -> u64 {
         s.users.get(&p(1)).unwrap().balance
+    }
+
+    #[test]
+    fn withdrawals_cannot_go_where_nobody_can_spend_them() {
+        let s = setup();
+        let me = p(42);
+        let to = |owner: Principal| Account { owner, subaccount: None };
+        assert!(s.check_withdraw_destination(&to(me), me).unwrap_err().contains("game's own account"), "the canister itself");
+        assert!(s.check_withdraw_destination(&Account { owner: me, subaccount: Some([1; 32]) }, me).is_err(), "any of its subaccounts");
+        assert!(s.check_withdraw_destination(&to(s.ledger), me).is_err(), "the ledger");
+        assert!(s.check_withdraw_destination(&to(Principal::anonymous()), me).is_err(), "nobody");
+        s.check_withdraw_destination(&acct(9), me).unwrap();
     }
 
     #[test]

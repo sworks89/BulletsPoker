@@ -7,6 +7,7 @@ pub mod fair;
 pub mod jackpot;
 pub mod leaderboards;
 pub mod ledger;
+pub mod limits;
 pub mod medals;
 pub mod metrics;
 pub mod moderation;
@@ -58,6 +59,8 @@ thread_local! {
     static WALLET_LOCKS: RefCell<BTreeSet<Principal>> = const { RefCell::new(BTreeSet::new()) };
     /// Per-caller request budgets (not persisted: they refill in seconds anyway).
     static LIMITER: RefCell<ratelimit::Limiter> = RefCell::new(ratelimit::Limiter::default());
+    /// Scheduled starts that already have a timer (see `schedule_tournament_starts`).
+    static ARMED_STARTS: RefCell<BTreeSet<u64>> = const { RefCell::new(BTreeSet::new()) };
 }
 
 fn with<T>(f: impl FnOnce(&State) -> T) -> T {
@@ -136,7 +139,28 @@ fn moderator_for(target: Principal) -> R<Principal> {
 const MAX_ARG_BYTES: usize = 16 * 1024;
 
 // The calls Internet Identity makes to fetch and acknowledge an alert's content.
-identity_notifications::endpoints!();
+// Written out (rather than the library's `endpoints!`) so the two updates can
+// spend from the shared budget strangers' calls draw on.
+use identity_notifications::Content as IiNotificationContent;
+
+#[query]
+fn _internet_identity_notification_content(id: u64) -> Option<IiNotificationContent> {
+    identity_notifications::notification_content(id)
+}
+
+#[update]
+fn _internet_identity_notification_received(id: u64) {
+    if LIMITER.with(|l| l.borrow_mut().take_shared(now())) {
+        identity_notifications::notification_received(id)
+    }
+}
+
+#[update]
+fn _internet_identity_notification_opened(id: u64) {
+    if LIMITER.with(|l| l.borrow_mut().take_shared(now())) {
+        identity_notifications::notification_opened(id)
+    }
+}
 
 /// The update calls among them, which `inspect_message` would otherwise refuse.
 const NOTIFICATION_RECEIPTS: [&str; 2] = ["_internet_identity_notification_received", "_internet_identity_notification_opened"];
@@ -156,15 +180,20 @@ fn inspect_message() {
     let allowed = if NOTIFICATION_RECEIPTS.contains(&method.as_str()) {
         // Internet Identity's delivery receipts. Its service worker calls as a
         // principal of its own, never a registered player, and the library ignores
-        // any call Internet Identity did not sign. Like `register`, these take
-        // strangers, whose fresh principals no per-caller budget could limit.
-        true
+        // any call Internet Identity did not sign. Fresh principals escape any
+        // per-caller budget, so these share one (spent in the endpoints).
+        LIMITER.with(|l| l.borrow().has_shared_budget(now()))
     } else if method.starts_with("admin_") {
         ic_cdk::api::is_controller(&p)
     } else if method.starts_with("mod_") {
         ic_cdk::api::is_controller(&p) || with(|s| s.is_moderator(&p))
+    } else if method == "register" {
+        // Strangers again: the sign-up proof-of-work is checked here, one hash,
+        // so a bad nonce never becomes an update call. A shared budget would let
+        // anyone lock out real sign-ups, so there is none.
+        with(|s| !s.users.contains_key(&p) && s.register_args_pass(&p, &ic_cdk::api::msg_arg_data(), now()))
     } else {
-        (method == "register" || with(|s| s.users.contains_key(&p))) && LIMITER.with(|l| l.borrow().has_budget(&p, now()))
+        with(|s| s.users.contains_key(&p)) && LIMITER.with(|l| l.borrow().has_budget(&p, now()))
     };
     if allowed {
         ic_cdk::api::accept_message();
@@ -364,9 +393,17 @@ async fn idle_tick() {
 fn schedule_tournament_starts() {
     let now = now();
     let window = (SLOW_TICK_SECS + 5) * 1_000_000_000;
-    for start in with(|s| s.scheduled_starts_within(now, window)) {
+    let due = with(|s| s.scheduled_starts_within(now, window));
+    for start in ARMED_STARTS.with_borrow_mut(|armed| starts_to_arm(armed, now, due)) {
         ic_cdk_timers::set_timer(Duration::from_nanos(start - now), idle_tick());
     }
+}
+
+/// Of the starts `due` (all after `now`), those without a timer yet. `armed`
+/// remembers what has one, forgetting starts that have come.
+fn starts_to_arm(armed: &mut BTreeSet<u64>, now: u64, due: BTreeSet<u64>) -> Vec<u64> {
+    armed.retain(|&t| t > now);
+    due.into_iter().filter(|&t| t > now && armed.insert(t)).collect()
 }
 
 /// Enforces action clocks, deals new hands and does the game's housekeeping.
@@ -575,6 +612,7 @@ async fn claim_deposit() -> R<u64> {
 #[update]
 async fn withdraw(to: Account, amount: u64) -> R<u64> {
     let p = caller()?;
+    with(|s| s.check_withdraw_destination(&to, ic_cdk::api::canister_self()))?;
     let _lock = WalletLock::acquire(p)?;
     let op = with_mut(|s| s.begin_withdraw(p, to, amount, now()))?;
     let op = run_op(op).await?;
@@ -870,7 +908,39 @@ fn leave_table(id: u64) -> R<LeaveResult> {
 #[update]
 fn top_up(id: u64, amount: u64) -> R<()> {
     let p = caller()?;
-    with_mut(|s| s.top_up(p, id, amount))
+    with_mut(|s| s.top_up(p, id, amount, now()))
+}
+
+// ------------------------------------------------------------ own limits
+
+/// Your break, deposit cap and privacy settings (see `limits`).
+#[query]
+fn get_my_limits() -> limits::Limits {
+    let p = ic_cdk::api::msg_caller();
+    with(|s| s.limits(&p, now()))
+}
+
+/// Takes a break from ICP games and deposits for `days` (1-365). It can't be
+/// ended early. Withdrawals keep working.
+#[update]
+fn take_break(days: u32) -> R<limits::Limits> {
+    let p = caller()?;
+    with_mut(|s| s.take_break(p, days, now()))
+}
+
+/// Sets (or, with none, removes) your daily ICP deposit limit in e8s. A lower
+/// limit applies at once; a higher one, or none, after 24 hours.
+#[update]
+fn set_deposit_cap(cap: Option<u64>) -> R<limits::Limits> {
+    let p = caller()?;
+    with_mut(|s| s.set_deposit_cap(p, cap, now()))
+}
+
+/// Keeps your tables off your public profile (friends still see them).
+#[update]
+fn set_hide_tables(hide: bool) -> R<limits::Limits> {
+    let p = caller()?;
+    with_mut(|s| s.set_hide_tables(p, hide, now()))
 }
 
 #[update]
@@ -1060,6 +1130,7 @@ fn admin_house_stats() -> R<HouseStats> {
 async fn admin_withdraw_treasury(to: Account, amount: u64) -> R<u64> {
     let p = admin()?;
     let op = with_mut(|s| {
+        s.check_withdraw_destination(&to, ic_cdk::api::canister_self())?;
         let op = s.begin_treasury_withdraw(p, to, amount, now())?;
         s.audit(p, format!("Treasury withdrawal of {amount} e8s to {} (op #{})", to.owner.to_text(), op.id), now());
         Ok::<_, String>(op)
@@ -1319,7 +1390,7 @@ fn collect_metrics() -> metrics::Metrics {
 fn http_request(req: metrics::HttpRequest) -> metrics::HttpResponse {
     let path = req.url.split('?').next().unwrap_or_default();
     match path {
-        "/metrics" => metrics::HttpResponse::text(200, "text/plain; version=0.0.4", collect_metrics().to_prometheus(true)),
+        "/metrics" => metrics::HttpResponse::text(200, "text/plain; version=0.0.4", collect_metrics().to_prometheus(true) + &alerts::metrics_by_kind()),
         "/health" => {
             let paused = with(|s| s.pause.withdrawals || s.pause.deposits || s.pause.dealing || s.pause.joins);
             metrics::HttpResponse::text(200, "text/plain", if paused { "ok (partially paused)".into() } else { "ok".into() })
@@ -1329,6 +1400,23 @@ fn http_request(req: metrics::HttpRequest) -> metrics::HttpResponse {
 }
 
 ic_cdk::export_candid!();
+
+#[cfg(test)]
+mod scheduled_start_tests {
+    use super::*;
+
+    /// The slow tick looks a little past its own interval, so a start can be
+    /// seen by two ticks; only the first arms a timer for it.
+    #[test]
+    fn each_start_is_armed_once() {
+        let mut armed = BTreeSet::new();
+        assert_eq!(starts_to_arm(&mut armed, 100, [160, 163].into()), vec![160, 163]);
+        assert_eq!(starts_to_arm(&mut armed, 160, [163, 220].into()), vec![220], "163 is already armed");
+        assert!(!armed.contains(&160), "starts that have come are forgotten");
+        assert_eq!(starts_to_arm(&mut armed, 300, [].into()), Vec::<u64>::new());
+        assert!(armed.is_empty(), "nothing armed is kept once its time has passed");
+    }
+}
 
 #[cfg(test)]
 mod seed_request_tests {

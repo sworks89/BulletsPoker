@@ -8,14 +8,21 @@ on:
 permissions:
   contents: read
 
+# Test with the exact toolchain releases are built with (build/reproducible/Dockerfile),
+# not whatever "stable" is today. The variable overrides rust-toolchain.toml.
+env:
+  RUSTUP_TOOLCHAIN: 1.94.1
+
 jobs:
   backend:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: CI and the release build use the same toolchain
+        run: grep -qx "ENV RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN" build/reproducible/Dockerfile
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable branch
         with:
-          toolchain: stable
+          toolchain: 1.94.1
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo test
@@ -28,7 +35,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable branch
         with:
-          toolchain: stable
+          toolchain: 1.94.1
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -67,7 +74,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable branch
         with:
-          toolchain: stable
+          toolchain: 1.94.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo install cargo-audit --locked --version 0.22.2
       - run: cargo audit

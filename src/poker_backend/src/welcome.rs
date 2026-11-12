@@ -372,6 +372,7 @@ mod tests {
         let back: User = candid::decode_one(&candid::encode_one(&old).unwrap()).unwrap();
         assert_eq!((back.username.as_str(), back.balance), ("player1", 10 * E8S));
         assert!(back.welcome.is_none());
+        assert!(back.limits.is_none(), "players stored before limits existed still load");
     }
 }
 

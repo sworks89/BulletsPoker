@@ -307,7 +307,14 @@ impl State {
             u.reports_today += 1;
             u.username.clone()
         };
+        // Only chat the reporter could see goes to the moderators: a private
+        // room's chat stays private from someone who never got in.
+        let visible = |ch: &Channel| match ch {
+            Channel::Table(id) => self.can_watch(*id, Some(caller)),
+            Channel::Lobby => true,
+        };
         let evidence = channel
+            .filter(visible)
             .map(|ch| {
                 let msgs = self.chat_since(ch, 0);
                 let mut theirs: Vec<ChatMessage> = msgs.into_iter().filter(|m| m.from == Some(target)).collect();
@@ -430,7 +437,7 @@ impl State {
             status: u.status.clone(),
             level: crate::state::level_for_xp(u.xp),
             created_at: u.created_at,
-            last_seen: u.last_seen,
+            last_seen: self.last_seen(p),
             balance: u.balance,
             chips: u.chips,
             hands_played: u.stats.hands_played,

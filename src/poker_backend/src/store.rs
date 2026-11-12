@@ -95,7 +95,7 @@ impl Stores {
     pub fn init(memory: DefaultMemoryImpl) -> (Self, Users) {
         let mm = MemoryManager::init(memory);
         identity_notifications::init(&mm, NOTIFICATIONS);
-        let users = Users { map: StableBTreeMap::init(mm.get(USERS)) };
+        let users = Users { map: StableBTreeMap::init(mm.get(USERS)), cache: UserCache::default() };
         let stores = Stores {
             heap_mem: mm.get(HEAP_SNAPSHOT),
             usernames: StableBTreeMap::init(mm.get(USERNAMES)),
@@ -158,12 +158,51 @@ pub fn load_blob(mem: &Mem) -> Option<Vec<u8>> {
 /// Users in stable memory, with a map-like API. `get` returns a copy;
 /// `get_mut` returns a guard that writes the user back when dropped (only if
 /// it was modified).
+///
+/// Decoding a user is the costly part of a read, and table views read every
+/// seated player on every poll, so the most recently written users are kept
+/// decoded on the heap. Every write goes through this type, so a cached user
+/// is never stale. Players at a table are written every hand, so they stay
+/// cached; a full cache drops whoever was written longest ago. It isn't
+/// saved: an upgrade starts it empty.
 pub struct Users {
     map: StableBTreeMap<Principal, User, Mem>,
+    cache: UserCache,
+}
+
+/// Most decoded users kept (see `Users`): a few thousand players' worth of heap.
+#[cfg(not(test))]
+pub const USER_CACHE_MAX: usize = 2_000;
+#[cfg(test)]
+pub const USER_CACHE_MAX: usize = 8;
+
+/// Users by when they were last written (see `Users`).
+#[derive(Default)]
+struct UserCache {
+    users: std::collections::BTreeMap<Principal, (u64, User)>,
+    /// Write sequence -> user, oldest first.
+    order: std::collections::BTreeMap<u64, Principal>,
+    next: u64,
+}
+
+impl UserCache {
+    fn put(&mut self, p: Principal, u: User) {
+        if let Some((seq, _)) = self.users.remove(&p) {
+            self.order.remove(&seq);
+        } else if self.users.len() >= USER_CACHE_MAX {
+            if let Some((_, oldest)) = self.order.pop_first() {
+                self.users.remove(&oldest);
+            }
+        }
+        self.order.insert(self.next, p);
+        self.users.insert(p, (self.next, u));
+        self.next += 1;
+    }
 }
 
 pub struct UserMut<'a> {
     map: &'a mut StableBTreeMap<Principal, User, Mem>,
+    cache: &'a mut UserCache,
     key: Principal,
     user: Option<User>,
     dirty: bool,
@@ -187,6 +226,7 @@ impl Drop for UserMut<'_> {
     fn drop(&mut self) {
         if self.dirty {
             if let Some(u) = self.user.take() {
+                self.cache.put(self.key, u.clone());
                 self.map.insert(self.key, u);
             }
         }
@@ -195,16 +235,30 @@ impl Drop for UserMut<'_> {
 
 impl Users {
     pub fn get(&self, p: &Principal) -> Option<User> {
-        self.map.get(p)
+        match self.cache.users.get(p) {
+            Some((_, u)) => Some(u.clone()),
+            None => self.map.get(p),
+        }
     }
 
     pub fn get_mut(&mut self, p: &Principal) -> Option<UserMut<'_>> {
-        let user = self.map.get(p)?;
-        Some(UserMut { map: &mut self.map, key: *p, user: Some(user), dirty: false })
+        let user = self.get(p)?;
+        Some(UserMut { map: &mut self.map, cache: &mut self.cache, key: *p, user: Some(user), dirty: false })
     }
 
     pub fn insert(&mut self, p: Principal, u: User) {
+        self.cache.put(p, u.clone());
         self.map.insert(p, u);
+    }
+
+    #[cfg(test)]
+    pub fn is_cached(&self, p: &Principal) -> bool {
+        self.cache.users.contains_key(p)
+    }
+
+    #[cfg(test)]
+    pub fn cached(&self) -> usize {
+        self.cache.users.len()
     }
 
     pub fn contains_key(&self, p: &Principal) -> bool {

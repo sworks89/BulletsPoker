@@ -7,7 +7,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 icp network status >/dev/null 2>&1 || icp network start -d
-icp deploy
+# Lets the frontend's CSP allow the local API (see src/poker_frontend/src/localCsp.ts).
+BP_LOCAL_NETWORK=1 icp deploy
 
 echo
 echo "Frontend: http://$(icp canister status poker_frontend --id-only).localhost:8000"

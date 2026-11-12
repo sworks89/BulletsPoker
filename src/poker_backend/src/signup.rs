@@ -61,6 +61,16 @@ impl State {
         Ok(())
     }
 
+    /// For `inspect_message`: do `register`'s raw arguments carry a nonce that
+    /// meets the current difficulty? One hash, so bad sign-ups are refused
+    /// before they cost an update call.
+    pub fn register_args_pass(&self, p: &Principal, args: &[u8], now: u64) -> bool {
+        match candid::decode_args::<(String, Option<u64>)>(args) {
+            Ok((_, Some(nonce))) => self.check_signup_pow(p, nonce, now).is_ok(),
+            _ => false,
+        }
+    }
+
     pub fn set_signup_pow_bits(&mut self, bits: u8) -> R<()> {
         if bits > MAX_POW_BITS {
             return Err(format!("At most {MAX_POW_BITS} bits"));
@@ -89,5 +99,20 @@ mod tests {
         // Nonces that don't meet the difficulty are refused.
         let bad = (0..).find(|n| pow_bits(&p, *n) < d as u32).unwrap();
         assert!(s.check_signup_pow(&p, bad, 0).is_err());
+    }
+
+    /// `inspect_message` reads the nonce straight from the call's arguments,
+    /// so a bad one is refused before the call costs anything.
+    #[test]
+    fn register_arguments_are_checked_before_the_call_runs() {
+        let s = State::new(Principal::anonymous(), 10_000);
+        let p = Principal::from_slice(&[7; 29]);
+        let good = solve(&p, s.signup_difficulty(0));
+        let bad = (0..).find(|n| pow_bits(&p, *n) < DEFAULT_POW_BITS as u32).unwrap();
+        let args = |nonce: Option<u64>| candid::encode_args((String::from("alice"), nonce)).unwrap();
+        assert!(s.register_args_pass(&p, &args(Some(good)), 0));
+        assert!(!s.register_args_pass(&p, &args(Some(bad)), 0));
+        assert!(!s.register_args_pass(&p, &args(None), 0), "no nonce");
+        assert!(!s.register_args_pass(&p, b"not candid", 0), "garbage");
     }
 }

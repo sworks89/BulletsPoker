@@ -213,6 +213,8 @@ pub struct User {
     pub fair_hand_count: Option<u32>,
     /// The equipped deck; `None` = the store's free classic deck.
     pub card_front: Option<u32>,
+    /// Limits the player set (see `crate::limits`); `None` until the first.
+    pub limits: Option<crate::limits::Limits>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq)]
@@ -454,6 +456,11 @@ heap_state! {
     /// oldest first, kept for their players to verify. Holds secret seeds:
     /// never return these before the reveal.
     fair_voided: Option<VecDeque<VoidedHand>>,
+    /// Players' latest update calls, kept here until older than
+    /// `ONLINE_WINDOW_NS` and then written to `User::last_seen`, so a call
+    /// doesn't rewrite the player's whole record in stable memory. Bounded by
+    /// the players active in that window. Read through `State::last_seen`.
+    recent_seen: Option<BTreeMap<Principal, u64>>,
 }
 
 /// Most voided fair hands kept waiting to be published.
@@ -487,7 +494,8 @@ pub struct Counters {
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct Room {
     pub owner: Principal,
-    /// SHA-256 of (table id, password) for password-protected rooms.
+    /// Stretched hash of (table id, password) for password-protected rooms
+    /// (see `room_password_hash`).
     pub password_hash: Option<Vec<u8>>,
     pub created_at: u64,
     pub last_active: u64,
@@ -973,6 +981,7 @@ impl State {
             deposit_fail_budget: None,
             prune_cursor: None,
             fair_voided: None,
+            recent_seen: None,
             entropy: vec![],
         };
         let mut s = State::from_snapshot(users, stores, snap);
@@ -995,9 +1004,30 @@ impl State {
         self.users.get_mut(p).ok_or_else(|| "Create a profile first".to_string())
     }
 
+    /// Notes a registered player's call (see `recent_seen`).
     pub fn touch(&mut self, p: &Principal, now: u64) {
-        if let Some(mut u) = self.users.get_mut(p) {
-            u.last_seen = now;
+        if self.users.contains_key(p) {
+            self.recent_seen.get_or_insert_with(BTreeMap::new).insert(*p, now);
+        }
+    }
+
+    /// When the player last made an update call.
+    pub fn last_seen(&self, p: &Principal) -> u64 {
+        match self.recent_seen.as_ref().and_then(|m| m.get(p)) {
+            Some(t) => *t,
+            None => self.users.get(p).map_or(0, |u| u.last_seen),
+        }
+    }
+
+    /// Writes activity that is no longer recent back to the user records.
+    pub fn flush_seen(&mut self, now: u64) {
+        let Some(map) = self.recent_seen.as_mut() else { return };
+        let old: Vec<(Principal, u64)> = map.iter().filter(|(_, t)| now.saturating_sub(**t) >= ONLINE_WINDOW_NS).map(|(p, t)| (*p, *t)).collect();
+        for (p, t) in old {
+            map.remove(&p);
+            if let Some(mut u) = self.users.get_mut(&p) {
+                u.last_seen = t;
+            }
         }
     }
 
@@ -1080,6 +1110,7 @@ impl State {
                 has_deposited: None,
                 fair_hand_count: None,
                 card_front: None,
+                limits: None,
             },
         );
         Ok(self.profile(&caller).unwrap())
@@ -1122,8 +1153,8 @@ impl State {
             .collect()
     }
 
-    fn is_online(&self, p: &Principal, u: &User, now: u64) -> bool {
-        now.saturating_sub(u.last_seen) < ONLINE_WINDOW_NS || !self.tables_of(p).is_empty()
+    fn is_online(&self, p: &Principal, now: u64) -> bool {
+        now.saturating_sub(self.last_seen(p)) < ONLINE_WINDOW_NS || !self.tables_of(p).is_empty()
     }
 
     pub fn public_profile(&self, p: &Principal, now: u64) -> Option<PublicProfile> {
@@ -1135,8 +1166,8 @@ impl State {
             avatar: self.icon(u.avatar),
             stats: u.stats.clone(),
             level: level_for_xp(u.xp),
-            online: self.is_online(p, &u, now),
-            tables: self.tables_of(p),
+            online: if self.hides_tables(p) { now.saturating_sub(self.last_seen(p)) < ONLINE_WINDOW_NS } else { self.is_online(p, now) },
+            tables: if self.hides_tables(p) { vec![] } else { self.tables_of(p) },
             medals: u.medals.keys().cloned().collect(),
         })
     }
@@ -1473,7 +1504,7 @@ impl State {
     /// Whether a player made a call in the last couple of minutes. Someone in the
     /// middle of playing doesn't need an alert to tell them what's on their screen.
     pub fn recently_active(&self, p: &Principal, now: u64) -> bool {
-        self.users.get(p).is_some_and(|u| now.saturating_sub(u.last_seen) < ALERT_ACTIVE_WINDOW_NS)
+        self.users.contains_key(p) && now.saturating_sub(self.last_seen(p)) < ALERT_ACTIVE_WINDOW_NS
     }
 
     /// The players to remind about their daily chips at `now`, each reminder
@@ -1749,7 +1780,7 @@ impl State {
                     id: *f,
                     username: u.username.clone(),
                     avatar: self.icon(u.avatar),
-                    online: self.is_online(f, &u, now),
+                    online: self.is_online(f, now),
                     tables: self.tables_of(f),
                 })
             })
@@ -2017,6 +2048,7 @@ impl State {
         }
         let name = self.user(&caller)?.username.clone();
         let currency = self.table_currency(id)?;
+        self.check_can_play(&caller, currency, now)?;
         self.check_not_leaving(&caller, self.game_of(id))?;
         if !self.can_watch(id, Some(caller)) {
             self.unlock_room(caller, id, password.unwrap_or_default())?;
@@ -2085,6 +2117,7 @@ impl State {
         }
         let currency = self.table_currency(table)?;
         self.check_not_banned(&caller, now)?;
+        self.check_can_play(&caller, currency, now)?;
         if !self.can_watch(table, Some(caller)) {
             return Err("Enter the table password first".into());
         }
@@ -2223,6 +2256,7 @@ impl State {
         if cash_seats >= MAX_CASH_SEATS {
             return Err(format!("You can play at most {MAX_CASH_SEATS} cash tables at once"));
         }
+        self.check_can_play(&caller, self.tables[&game].config.currency, now)?;
         let cfg = &self.tables[&game].config;
         let currency = cfg.currency;
         let required = self.min_return_buy_in(game, &caller, now);
@@ -2311,8 +2345,9 @@ impl State {
         }
     }
 
-    pub fn top_up(&mut self, caller: Principal, id: u64, amount: u64) -> R<()> {
+    pub fn top_up(&mut self, caller: Principal, id: u64, amount: u64, now: u64) -> R<()> {
         let currency = self.table_currency(id)?;
+        self.check_can_play(&caller, currency, now)?;
         self.debit_in(&caller, currency, amount)?;
         if let Err(e) = self.table_mut(id)?.top_up(&caller, amount) {
             self.credit_in(&caller, currency, amount)?;
@@ -2496,7 +2531,7 @@ impl State {
             self.after_tournament_hand(id, now);
         } else {
             // Leavers stay seated through the results pause (see `settle_leavers`).
-            self.auto_top_up(id);
+            self.auto_top_up(id, now);
         }
     }
 
@@ -2650,7 +2685,7 @@ impl State {
     }
 
     /// Refills stacks of players with auto top-up on when they drop below half the max buy-in.
-    fn auto_top_up(&mut self, id: u64) {
+    fn auto_top_up(&mut self, id: u64, now: u64) {
         let t = &self.tables[&id];
         let currency = t.config.currency;
         let max = t.config.max_buy_in;
@@ -2660,6 +2695,7 @@ impl State {
             .flatten()
             .filter(|s| !s.left && !s.is_leaving() && s.stack < max / 2)
             .filter(|s| self.users.get(&s.player).is_some_and(|u| u.settings.auto_top_up))
+            .filter(|s| self.check_can_play(&s.player, currency, now).is_ok())
             .map(|s| (s.player, max - s.stack))
             .collect();
         for (p, want) in wants {
@@ -2772,6 +2808,7 @@ impl State {
 
     /// Times out slow players and reports tables that need a new hand dealt.
     pub fn tick(&mut self, now: u64) -> Vec<u64> {
+        self.flush_seen(now);
         self.close_periods(now);
         self.close_referral_week(now);
         self.sweep_fish_surplus(now);
@@ -3135,8 +3172,17 @@ impl State {
     pub fn unlock_room(&mut self, caller: Principal, id: u64, password: String) -> R<()> {
         let room = self.rooms.get_mut(&id).ok_or("No such table")?;
         let Some(hash) = &room.password_hash else { return Ok(()) };
-        if password.len() > 32 || room_password_hash(id, &password) != *hash {
+        if password.len() > 32 {
             return Err("Wrong table password".into());
+        }
+        let stretched = room_password_hash(id, &password);
+        if stretched != *hash {
+            // Rooms from before stretching hold the fast hash: accept it once
+            // and store the stretched one in its place.
+            if legacy_room_password_hash(id, &password) != *hash {
+                return Err("Wrong table password".into());
+            }
+            room.password_hash = Some(stretched);
         }
         if room.guests.len() >= MAX_ROOM_GUESTS && !room.guests.contains(&caller) {
             return Err("This table has too many guests".into());
@@ -3146,7 +3192,26 @@ impl State {
     }
 }
 
+/// Hash rounds for room passwords: enough to make guessing from a leaked
+/// snapshot slow, few enough that a wrong guess (anyone can try one with
+/// `join_table`) costs the canister little.
+const ROOM_PASSWORD_ROUNDS: u32 = 10_000;
+
+/// Iterated SHA-256 of (domain, table id, password), salted by the table id.
 fn room_password_hash(table_id: u64, password: &str) -> Vec<u8> {
+    let mut h = Sha256::new();
+    h.update(b"bp-room-password/v2");
+    h.update(table_id.to_le_bytes());
+    h.update(password.as_bytes());
+    let mut d = h.finalize();
+    for _ in 1..ROOM_PASSWORD_ROUNDS {
+        d = Sha256::digest(d);
+    }
+    d.to_vec()
+}
+
+/// The single-round hash rooms used before stretching (see `unlock_room`).
+fn legacy_room_password_hash(table_id: u64, password: &str) -> Vec<u8> {
     let mut h = Sha256::new();
     h.update(table_id.to_le_bytes());
     h.update(password.as_bytes());
@@ -3193,6 +3258,59 @@ pub(crate) mod tests {
     /// Everything the house holds as its own or earmarked: treasury plus reward pools.
     pub(crate) fn house_take(s: &State) -> u64 {
         s.treasury + s.house_stats().rewards_pools
+    }
+
+    /// A call notes the player's activity on the heap; the user record in
+    /// stable memory is rewritten only once that activity has aged out.
+    #[test]
+    fn activity_is_noted_on_the_heap_and_written_back_when_it_ages() {
+        let mut s = setup();
+        let stored = s.users.get(&p(1)).unwrap().last_seen;
+        s.touch(&p(1), 10 * SEC);
+        assert_eq!(s.users.get(&p(1)).unwrap().last_seen, stored, "no stable write per call");
+        assert_eq!(s.last_seen(&p(1)), 10 * SEC);
+        assert!(s.recently_active(&p(1), 11 * SEC));
+        s.touch(&p(99), 10 * SEC);
+        assert_eq!(s.recent_seen.as_ref().unwrap().len(), 1, "strangers aren't noted");
+        s.flush_seen(10 * SEC + ONLINE_WINDOW_NS - 1);
+        assert_eq!(s.recent_seen.as_ref().unwrap().len(), 1, "still recent");
+        s.flush_seen(10 * SEC + ONLINE_WINDOW_NS);
+        assert_eq!(s.users.get(&p(1)).unwrap().last_seen, 10 * SEC, "written back");
+        assert_eq!(s.last_seen(&p(1)), 10 * SEC);
+        assert!(s.recent_seen.as_ref().unwrap().is_empty());
+        assert!(!s.recently_active(&p(1), 10 * SEC + ONLINE_WINDOW_NS));
+    }
+
+    /// Reads come from the heap cache, which every kind of write keeps current.
+    #[test]
+    fn the_user_cache_never_serves_a_stale_player() {
+        let mut s = setup();
+        assert_eq!(s.users.get(&p(1)).unwrap().chips, SIGNUP_CHIPS);
+        s.users.get_mut(&p(1)).unwrap().chips = 7;
+        assert_eq!(s.users.get(&p(1)).unwrap().chips, 7, "after get_mut");
+        let mut u = s.users.get(&p(1)).unwrap();
+        u.chips = 8;
+        s.users.insert(p(1), u);
+        assert_eq!(s.users.get(&p(1)).unwrap().chips, 8, "after insert");
+        {
+            let g = s.users.get_mut(&p(1)).unwrap();
+            assert_eq!(g.chips, 8, "a read-only guard writes nothing");
+        }
+        assert_eq!(s.users.get(&p(1)).unwrap().chips, 8);
+        // Past the cap (8 under test), whoever was written longest ago goes first.
+        for k in 10..=40u8 {
+            s.register(p(k), format!("bulk{k}"), 0).unwrap();
+        }
+        assert_eq!(s.users.cached(), crate::store::USER_CACHE_MAX);
+        assert!(s.users.is_cached(&p(40)) && !s.users.is_cached(&p(10)));
+        assert!(!s.users.is_cached(&p(1)));
+        assert_eq!(s.users.get(&p(1)).unwrap().chips, 8, "read from stable memory once evicted");
+        // Reads don't fill it (a query's would be thrown away); writes do.
+        assert!(!s.users.is_cached(&p(1)));
+        s.users.get_mut(&p(1)).unwrap().chips = 9;
+        assert!(s.users.is_cached(&p(1)), "just written");
+        assert!(s.users.is_cached(&p(40)) && !s.users.is_cached(&p(33)), "the oldest made room");
+        assert_eq!(s.users.get(&p(1)).unwrap().chips, 9);
     }
 
     #[test]
@@ -4070,6 +4188,22 @@ pub(crate) mod tests {
         assert_eq!(s3.bet, t.config.big_blind, "posted a big blind to come back in");
     }
 
+    /// Room passwords are stretched (many hash rounds), so a leaked heap
+    /// snapshot doesn't give away passwords players reuse elsewhere. Rooms
+    /// hashed the old fast way still open, and move to the new hash as they do.
+    #[test]
+    fn room_passwords_are_slow_to_guess_and_old_ones_still_open() {
+        let mut s = setup();
+        let id = 7;
+        s.rooms.insert(id, Room { owner: p(1), password_hash: Some(legacy_room_password_hash(id, "aces")), created_at: 0, last_active: 0, guests: BTreeSet::new() });
+        assert!(s.unlock_room(p(2), id, "kings".into()).is_err());
+        s.unlock_room(p(2), id, "aces".into()).unwrap();
+        assert_eq!(s.rooms[&id].password_hash, Some(room_password_hash(id, "aces")), "upgraded on the first correct entry");
+        s.unlock_room(p(3), id, "aces".into()).unwrap();
+        assert_ne!(room_password_hash(id, "aces"), room_password_hash(8, "aces"), "the table id salts it");
+        assert_ne!(room_password_hash(id, "aces"), legacy_room_password_hash(id, "aces"));
+    }
+
     #[test]
     fn password_rooms_are_private() {
         let mut s = setup();
@@ -4096,6 +4230,11 @@ pub(crate) mod tests {
         s.send_chat(p(3), Channel::Table(id), "hi".into(), 20 * SEC).unwrap();
         // And they can sit without typing it again.
         s.join_table(p(3), id, 1, 2_000, None, 0).unwrap();
+        // A report about the room from someone who can't watch it carries no chat.
+        let outsider = s.report(p(2), p(1), crate::moderation::ReportReason::AbusiveChat, String::new(), Some(Channel::Table(id)), 30 * SEC).unwrap();
+        assert!(s.stores.reports.get(&outsider).unwrap().evidence.is_empty(), "p2 never entered the password");
+        let guest = s.report(p(3), p(1), crate::moderation::ReportReason::AbusiveChat, String::new(), Some(Channel::Table(id)), 31 * SEC).unwrap();
+        assert_eq!(s.stores.reports.get(&guest).unwrap().evidence.len(), 1, "p3 is a guest");
         // Public tables stay open to everyone.
         assert!(!s.table_view(1, None, 1).unwrap().restricted);
     }
@@ -5010,7 +5149,7 @@ pub(crate) mod tests {
         assert!(s.act(p(k), table, Action::Call, SEC).is_err(), "their turns are played for them");
         s.tick(2 * SEC); // folded for them
         assert!(s.tables[&table].phase.is_betting());
-        assert!(s.top_up(p(k), table, 1).is_err());
+        assert!(s.top_up(p(k), table, 1, 2 * SEC).is_err());
         assert!(s.join_table(p(k), table, 5, buy, None, 2 * SEC).is_err());
         assert!(s.join_game(p(k), table, buy, 2 * SEC).is_err(), "not another copy of the game either");
         assert_eq!(s.leave_table(p(k), table, 2 * SEC).unwrap(), LeaveResult::AfterHand);
