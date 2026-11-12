@@ -530,6 +530,7 @@ impl State {
             return Err("Tournament is full".into());
         }
         let (currency, buy_in, fee) = (t.template.currency, t.template.buy_in, t.template.fee);
+        self.check_can_play(&caller, currency, now)?;
         self.debit_in(&caller, currency, buy_in.checked_add(fee).ok_or("Amount too large")?)?;
         let mut risen = None;
         if currency == Currency::Icp {
@@ -724,6 +725,7 @@ impl State {
     pub fn rebuy(&mut self, caller: Principal, id: u64, now: u64) -> R<()> {
         self.check_not_banned(&caller, now)?;
         let t = self.tournaments.get(&id).ok_or("No such tournament")?;
+        self.check_can_play(&caller, t.template.currency, now)?;
         if !t.rebuys_open() {
             return Err("The rebuy period is over".into());
         }
@@ -782,6 +784,7 @@ impl State {
     pub fn addon(&mut self, caller: Principal, id: u64, now: u64) -> R<()> {
         self.check_not_banned(&caller, now)?;
         let t = self.tournaments.get(&id).ok_or("No such tournament")?;
+        self.check_can_play(&caller, t.template.currency, now)?;
         if t.template.addon_cost == 0 {
             return Err("This tournament has no add-on".into());
         }

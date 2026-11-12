@@ -168,10 +168,16 @@ impl Env {
     fn register(&self, who: Principal, name: &str) {
         let challenge: poker_backend::signup::SignupChallenge = self.query(who, "get_signup_challenge", encode_args(()).unwrap());
         let nonce = poker_backend::signup::solve(&who, challenge.difficulty);
-        // Without the proof-of-work, sign-up is refused. The profile isn't read, so this
-        // also works against an older release whose profile has fewer fields.
-        let r: R<candid::Reserved> = self.update(who, "register", encode_args((name.to_string(), None::<u64>)).unwrap());
-        assert!(r.is_err() || challenge.difficulty == 0);
+        // Without the proof-of-work, sign-up is refused: before the call runs
+        // (`inspect_message`), or, by older releases, with an error. The profile
+        // isn't read, so this also works against an older release whose profile
+        // has fewer fields.
+        if challenge.difficulty > 0 {
+            match self.pic.update_call(self.poker, who, "register", encode_args((name.to_string(), None::<u64>)).unwrap()) {
+                Err(e) => assert!(e.reject_message.contains("rejected the message"), "{e:?}"),
+                Ok(bytes) => assert!(decode_one::<R<candid::Reserved>>(&bytes).unwrap().is_err()),
+            }
+        }
         let r: R<candid::Reserved> = self.update(who, "register", encode_args((name.to_string(), Some(nonce))).unwrap());
         r.unwrap();
     }

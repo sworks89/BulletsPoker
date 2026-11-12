@@ -88,6 +88,11 @@ pub fn friend_notification(kind: FriendAlert, from: Principal, name: &str) -> No
     }
 }
 
+/// Sent at high urgency as a trial. Some daily reminders were accepted by
+/// Internet Identity but never shown, and it keeps an alert only a few
+/// minutes. The library describes urgency as how Internet Identity schedules
+/// an alert against the app's other traffic, not as a promise to wake a
+/// device; `bp_alerts_by_kind{kind="daily_chips"}` shows whether it helps.
 pub fn daily_notification() -> Notification {
     Notification {
         title: "Your daily chips are ready".into(),
@@ -95,6 +100,7 @@ pub fn daily_notification() -> Notification {
         url: Some(format!("{SITE}/?open=lobby")),
         key: Some("daily-chips".into()),
         funnel: Some(DAILY_FUNNEL.into()),
+        urgency: Some(notifications::Urgency::High),
         ..Default::default()
     }
 }
@@ -147,6 +153,27 @@ pub fn fill_metrics(m: &mut Metrics) {
     m.alerts_misconfigured_since = figures.misconfigured.map_or(0, |m| m.since / 1_000_000_000);
 }
 
+/// The per-kind lines for `/metrics`.
+pub fn metrics_by_kind() -> String {
+    funnel_metrics(&notifications::metrics().funnels)
+}
+
+/// One Prometheus series per alert kind and stage, so a kind that is lost
+/// (accepted but never received, say) shows up on its own.
+pub fn funnel_metrics(funnels: &[notifications::types::Funnel]) -> String {
+    if funnels.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("# HELP bp_alerts_by_kind Alerts of each kind at each delivery stage\n# TYPE bp_alerts_by_kind gauge\n");
+    for f in funnels {
+        let c = &f.counts;
+        for (stage, v) in [("queued", c.queued), ("accepted", c.accepted), ("received", c.received), ("opened", c.opened), ("dropped", c.dropped), ("deferred", c.deferred)] {
+            out.push_str(&format!("bp_alerts_by_kind{{kind=\"{}\",stage=\"{stage}\"}} {v}\n", f.name));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +200,25 @@ mod tests {
     #[test]
     fn the_daily_alert_opens_the_lobby_where_the_button_is() {
         assert_eq!(daily_notification().url, Some(format!("{SITE}/?open=lobby")));
+    }
+
+    /// See `daily_notification`: high urgency, as a trial.
+    #[test]
+    fn the_daily_alert_goes_out_at_high_urgency() {
+        assert_eq!(daily_notification().urgency, Some(notifications::Urgency::High));
+    }
+
+    #[test]
+    fn each_kind_of_alert_gets_its_own_metrics_lines() {
+        let funnels = vec![notifications::types::Funnel {
+            name: DAILY_FUNNEL.into(),
+            counts: notifications::types::Counts { queued: 6, accepted: 6, received: 4, opened: 2, dropped: 1, deferred: 0 },
+        }];
+        let text = funnel_metrics(&funnels);
+        assert!(text.contains("bp_alerts_by_kind{kind=\"daily_chips\",stage=\"accepted\"} 6\n"), "{text}");
+        assert!(text.contains("bp_alerts_by_kind{kind=\"daily_chips\",stage=\"received\"} 4\n"), "{text}");
+        assert_eq!(text.matches("# TYPE").count(), 1);
+        assert!(funnel_metrics(&[]).is_empty());
     }
 
     #[test]

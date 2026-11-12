@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { solvePow } from '../pow';
 import { useApp, usePoll } from '../context';
-import { unwrap, type LeaderboardEntry, type RewardsView, type Settings } from '../ic';
-import { icp } from '../format';
+import { unwrap, type LeaderboardEntry, type Limits, type RewardsView, type Settings } from '../ic';
+import { countdown, errorText, icp, parseIcp } from '../format';
 import { Avatar } from '../art/Avatar';
 import { ownsItem } from '../store';
 import { Dialog } from './Dialog';
@@ -84,6 +84,8 @@ export function ProfilePage() {
       <MedalsPanel />
 
       <SettingsPanel />
+
+      <LimitsPanel />
 
       <div className="panel">
         <div className="panel-title">My avatars</div>
@@ -193,6 +195,102 @@ function SettingsPanel() {
   );
 }
 
+const BREAKS = [1, 7, 30, 180];
+
+/** Limits the player sets for themselves: a break, a deposit cap, privacy. */
+function LimitsPanel() {
+  const { backend, run } = useApp();
+  const [limits, setLimits] = useState<Limits | null>(null);
+  const [cap, setCap] = useState('');
+  usePoll(async () => setLimits(await backend.get_my_limits()), 60000, [backend]);
+  if (!limits) return null;
+  const nowNs = BigInt(Date.now()) * 1_000_000n;
+  const onBreak = limits.excluded_until > nowNs;
+  const pending = limits.pending_cap[0];
+  const save = async (f: () => Promise<{ Ok: Limits } | { Err: string }>, done: string) => {
+    const r = await run(async () => unwrap(await f()), done);
+    if (r) setLimits(r);
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-title">Limits & privacy</div>
+
+      <p className="small">
+        <b>Take a break.</b>{' '}
+        {onBreak ? (
+          <>You're on a break from ICP games and deposits for another {countdown(limits.excluded_until)}. Play-chip tables stay open, and you can still withdraw.</>
+        ) : (
+          <>
+            Closes ICP tables, tournaments and deposits for you, stands you up from ICP tables (after the current hand) and refunds ICP tournaments that haven't
+            started. Tournaments already under way carry on. It can't be ended early. Play chips and withdrawals keep working.
+          </>
+        )}
+      </p>
+      <div className="row gap wrap">
+        {BREAKS.map((d) => (
+          <button
+            key={d}
+            className="btn ghost small"
+            onClick={() => {
+              if (
+                confirm(
+                  `Take a ${d}-day break from ICP games and deposits? You'll leave your ICP tables after the current hand and get your entry back from ICP tournaments that haven't started. You won't be able to end the break early.`,
+                )
+              ) {
+                void save(() => backend.take_break(d), `Break started: ${d} day${d === 1 ? '' : 's'}`);
+              }
+            }}
+          >
+            {d} day{d === 1 ? '' : 's'}
+          </button>
+        ))}
+      </div>
+
+      <p className="small">
+        <b>Daily deposit limit.</b>{' '}
+        {limits.deposit_cap[0] !== undefined
+          ? `${icp(limits.deposit_cap[0])} ICP a day (${icp(limits.deposited_today)} used today).`
+          : 'None set.'}{' '}
+        A lower limit applies at once; a higher one, or removing it, waits 24 hours.
+        {pending && (
+          <>
+            {' '}
+            Changing to {pending.cap[0] !== undefined ? `${icp(pending.cap[0])} ICP` : 'no limit'} in {countdown(pending.from)}.
+          </>
+        )}
+      </p>
+      <form
+        className="row gap"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          // A bad amount throws inside `run`, which shows it.
+          await save(() => backend.set_deposit_cap([parseIcp(cap)]), 'Deposit limit saved');
+          setCap('');
+        }}
+      >
+        <input value={cap} onChange={(e) => setCap(e.target.value)} placeholder="ICP per day" inputMode="decimal" aria-label="Daily deposit limit in ICP" />
+        <button className="btn" disabled={!cap}>
+          Set limit
+        </button>
+        {limits.deposit_cap[0] !== undefined && (
+          <button type="button" className="btn ghost" onClick={() => save(() => backend.set_deposit_cap([]), 'Your limit ends in 24 hours')}>
+            Remove
+          </button>
+        )}
+      </form>
+
+      <label className="setting">
+        <input type="checkbox" checked={limits.hide_tables} onChange={() => save(() => backend.set_hide_tables(!limits.hide_tables), 'Saved')} />
+        <span>
+          <b>Hide my tables on my profile</b>
+          <span className="muted small">Your profile won't say which tables you're at. Friends still see it, and anyone looking at a table still sees who sits there.</span>
+        </span>
+      </label>
+    </div>
+  );
+}
+
 export function Leaderboard() {
   const { backend } = useApp();
   const [rows, setRows] = useState<LeaderboardEntry[]>([]);
@@ -239,12 +337,22 @@ export function Register() {
   const [ref, setRef] = useState<string | null>(() => peekRememberedRef());
 
   // Sign-ups carry a small proof-of-work against bulk bot accounts. The
-  // difficulty can rise while we work, so retry a couple of times.
+  // difficulty can rise while we work, so retry a couple of times. The game
+  // checks the work before accepting the call, so a stale answer is refused
+  // outright (the call throws) rather than answered with an error.
   const register = async () => {
     for (let attempt = 0; ; attempt++) {
       const { difficulty } = await backend.get_signup_challenge();
       const nonce = await solvePow(principal!.toUint8Array(), difficulty);
-      const r = await backend.register(name.trim(), [nonce]);
+      let r: Awaited<ReturnType<typeof backend.register>>;
+      try {
+        r = await backend.register(name.trim(), [nonce]);
+      } catch (e) {
+        // Anything other than a refused proof-of-work (offline, say) is shown as it is.
+        if (!errorText(e).includes('rejected the message')) throw e;
+        if (attempt >= 2) throw new Error('Lots of people are signing up right now. Please try again in a minute.');
+        continue;
+      }
       if ('Ok' in r || attempt >= 2 || !r.Err.includes('Sign-up check failed')) {
         const done = unwrap(r);
         await attachReferrer();

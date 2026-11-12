@@ -2,6 +2,12 @@ target/
 node_modules/
 dist/
 .icp/cache/
+# icp-cli's working data, except the mainnet canister ids, which every deploy
+# trusts and so are reviewed like code (they are public).
+.icp/data/*
+!.icp/data/mappings/
+.icp/data/mappings/*
+!.icp/data/mappings/ic.ids.json
 *.log
 .pocket-ic/
 .env

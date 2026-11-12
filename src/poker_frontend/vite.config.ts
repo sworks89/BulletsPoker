@@ -1,6 +1,22 @@
 import { execSync } from 'node:child_process';
-import { defineConfig, type ServerOptions } from 'vite';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { defineConfig, type Plugin, type ServerOptions } from 'vite';
 import react from '@vitejs/plugin-react';
+import { withLocalConnectSources } from './src/localCsp';
+
+/** A local network build (see src/localCsp.ts) lets the page call the local API. */
+function localNetworkCsp(): Plugin {
+  return {
+    name: 'local-network-csp',
+    apply: 'build',
+    closeBundle() {
+      if (process.env.BP_LOCAL_NETWORK !== '1') return;
+      const file = resolve(__dirname, 'dist/_headers');
+      writeFileSync(file, withLocalConnectSources(readFileSync(file, 'utf-8')));
+    },
+  };
+}
 
 // In production the frontend canister sets the `ic_env` cookie (canister ids and
 // the network's root key). The dev server simulates it from the running local
@@ -18,7 +34,7 @@ function devServerConfig(): ServerOptions {
 }
 
 export default defineConfig(({ command }) => ({
-  plugins: [react()],
+  plugins: [react(), localNetworkCsp()],
   build: { outDir: 'dist', emptyOutDir: true },
   ...(command === 'serve' ? { server: devServerConfig() } : {}),
 }));

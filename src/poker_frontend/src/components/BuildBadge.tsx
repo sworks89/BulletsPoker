@@ -8,7 +8,9 @@ import { classify, controllersFromRead, controllersView, hexToBytes, parseReleas
 const RELEASES_API = 'https://api.github.com/repos/sworks89/BulletsPoker/releases';
 const DOC_URL = 'https://github.com/sworks89/BulletsPoker/blob/main/docs/reproducible-builds.md';
 const CACHE_KEY = 'bp.releases.v1';
-const CACHE_MS = 2 * 60 * 1000;
+/** GitHub allows 60 unauthenticated calls an hour per IP, shared by everyone
+ * behind one NAT: keep the list an hour, across tabs and visits. */
+const CACHE_MS = 60 * 60 * 1000;
 
 /** Same decision as ic.ts: a page served from localhost is a local network. */
 function network(): 'ic' | 'local' {
@@ -16,22 +18,25 @@ function network(): 'ic' | 'local' {
   return h === 'localhost' || h === '127.0.0.1' || h.endsWith('.localhost') ? 'local' : 'ic';
 }
 
-async function fetchReleases(): Promise<Release[]> {
-  try {
-    const raw = sessionStorage.getItem(CACHE_KEY);
-    if (raw) {
-      const c = JSON.parse(raw) as { at: number; json: unknown };
-      if (Date.now() - c.at < CACHE_MS) return parseReleases(c.json);
-    }
-  } catch { /* storage unavailable or corrupt: fetch */ }
+/** The published releases, from the cache unless `fresh`. */
+async function fetchReleases(fresh = false): Promise<{ releases: Release[]; cached: boolean }> {
+  if (!fresh) {
+    try {
+      const raw = localStorage.getItem(CACHE_KEY);
+      if (raw) {
+        const c = JSON.parse(raw) as { at: number; json: unknown };
+        if (Date.now() - c.at < CACHE_MS) return { releases: parseReleases(c.json), cached: true };
+      }
+    } catch { /* storage unavailable or corrupt: fetch */ }
+  }
   const res = await fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' } });
   if (!res.ok) throw new Error(`GitHub ${res.status}`);
   const json: unknown = await res.json();
   if (!Array.isArray(json)) throw new Error('unexpected releases response');
   try {
-    sessionStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), json }));
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), json }));
   } catch { /* ignore */ }
-  return parseReleases(json);
+  return { releases: parseReleases(json), cached: false };
 }
 
 /** Module hash and controllers from the IC's certified read_state, verified by the agent. */
@@ -96,8 +101,16 @@ export function BuildBadge() {
         setControllers(controllersFromRead(live));
         if (live.status === 'rejected') throw live.reason;
         if (rel.status === 'rejected') throw rel.reason;
-        setReleases(rel.value);
-        setState(classify(live.value.hash, rel.value, net));
+        let { releases: list, cached } = rel.value;
+        let verdict = classify(live.value.hash, list, net);
+        // A release newer than the cached list: look again before saying no match.
+        if (cached && verdict.kind === 'none') {
+          list = (await fetchReleases(true)).releases;
+          if (!alive) return;
+          verdict = classify(live.value.hash, list, net);
+        }
+        setReleases(list);
+        setState(verdict);
       } catch (e) {
         if (alive) {
           setControllers((c) => (c === undefined ? null : c));

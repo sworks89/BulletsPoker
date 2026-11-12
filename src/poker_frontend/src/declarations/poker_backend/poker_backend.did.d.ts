@@ -434,6 +434,34 @@ export interface LedgerOp {
   'amount' : bigint,
 }
 /**
+ * Stored on the player (`User::limits`), created the first time they set one.
+ * New fields must be `Option<T>` so stored records still decode.
+ */
+export interface Limits {
+  /**
+   * No ICP games or deposits before this time (ns); 0 = no break.
+   */
+  'excluded_until' : bigint,
+  /**
+   * Leave the player's tables (and the "at a table" part of being online)
+   * off their public profile. Friends still see them.
+   */
+  'hide_tables' : boolean,
+  /**
+   * ICP deposited on `deposit_day` (e8s), wallet and address deposits alike.
+   */
+  'deposited_today' : bigint,
+  'pending_cap' : [] | [PendingCap],
+  /**
+   * Most ICP deposited per UTC day, in e8s.
+   */
+  'deposit_cap' : [] | [bigint],
+  /**
+   * The UTC day `deposited_today` counts.
+   */
+  'deposit_day' : bigint,
+}
+/**
  * One line of a hand's action log, used for hand histories and replays.
  */
 export interface LogEntry {
@@ -631,6 +659,19 @@ export interface PauseFlags {
   'dealing' : boolean,
   'reason' : [] | [string],
 }
+/**
+ * A loosened deposit cap waiting for its cooling-off day.
+ */
+export interface PendingCap {
+  /**
+   * The new cap in e8s; `None` removes the cap.
+   */
+  'cap' : [] | [bigint],
+  /**
+   * When it applies (ns).
+   */
+  'from' : bigint,
+}
 export type Phase = { 'Flop' : null } |
   { 'Turn' : null } |
   { 'River' : null } |
@@ -794,7 +835,9 @@ export type Result_16 = { 'Ok' : Array<Report> } |
   { 'Err' : string };
 export type Result_17 = { 'Ok' : Profile } |
   { 'Err' : string };
-export type Result_18 = { 'Ok' : SpinRecord } |
+export type Result_18 = { 'Ok' : Limits } |
+  { 'Err' : string };
+export type Result_19 = { 'Ok' : SpinRecord } |
   { 'Err' : string };
 export type Result_2 = { 'Ok' : number } |
   { 'Err' : string };
@@ -1455,6 +1498,10 @@ export interface _SERVICE {
    * Your recent deposits and withdrawals, newest first.
    */
   'get_my_ledger_ops' : ActorMethod<[], Array<LedgerOp>>,
+  /**
+   * Your break, deposit cap and privacy settings (see `limits`).
+   */
+  'get_my_limits' : ActorMethod<[], Limits>,
   'get_my_profile' : ActorMethod<[], [] | [Profile]>,
   'get_my_roles' : ActorMethod<[], Roles>,
   /**
@@ -1560,6 +1607,15 @@ export interface _SERVICE {
   'send_friend_request' : ActorMethod<[Principal], Result>,
   'send_gift' : ActorMethod<[bigint, Principal, number, Currency], Result>,
   /**
+   * Sets (or, with none, removes) your daily ICP deposit limit in e8s. A lower
+   * limit applies at once; a higher one, or none, after 24 hours.
+   */
+  'set_deposit_cap' : ActorMethod<[[] | [bigint]], Result_18>,
+  /**
+   * Keeps your tables off your public profile (friends still see them).
+   */
+  'set_hide_tables' : ActorMethod<[boolean], Result_18>,
+  /**
    * Saves a private note about a player. Empty text and no color deletes it.
    */
   'set_note' : ActorMethod<[Principal, string, [] | [NoteColor]], Result>,
@@ -1576,7 +1632,12 @@ export interface _SERVICE {
   /**
    * Spins the oldest banked Fish Buffet spin for ICP cashback.
    */
-  'spin_wheel' : ActorMethod<[], Result_18>,
+  'spin_wheel' : ActorMethod<[], Result_19>,
+  /**
+   * Takes a break from ICP games and deposits for `days` (1-365). It can't be
+   * ended early. Withdrawals keep working.
+   */
+  'take_break' : ActorMethod<[number], Result_18>,
   'throw_item' : ActorMethod<[bigint, Principal, number, Currency], Result>,
   'top_up' : ActorMethod<[bigint, bigint], Result>,
   /**

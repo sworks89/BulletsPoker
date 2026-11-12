@@ -398,6 +398,18 @@ export const idlFactory = ({ IDL }) => {
     'last_winners' : IDL.Vec(BoardRow),
     'board' : IDL.Text,
   });
+  const PendingCap = IDL.Record({
+    'cap' : IDL.Opt(IDL.Nat64),
+    'from' : IDL.Nat64,
+  });
+  const Limits = IDL.Record({
+    'excluded_until' : IDL.Nat64,
+    'hide_tables' : IDL.Bool,
+    'deposited_today' : IDL.Nat64,
+    'pending_cap' : IDL.Opt(PendingCap),
+    'deposit_cap' : IDL.Opt(IDL.Nat64),
+    'deposit_day' : IDL.Nat64,
+  });
   const Ban = IDL.Record({ 'until' : IDL.Nat64, 'reason' : IDL.Text });
   const Settings = IDL.Record({
     'auto_top_up' : IDL.Bool,
@@ -787,7 +799,8 @@ export const idlFactory = ({ IDL }) => {
   const Result_15 = IDL.Variant({ 'Ok' : ReportPage, 'Err' : IDL.Text });
   const Result_16 = IDL.Variant({ 'Ok' : IDL.Vec(Report), 'Err' : IDL.Text });
   const Result_17 = IDL.Variant({ 'Ok' : Profile, 'Err' : IDL.Text });
-  const Result_18 = IDL.Variant({ 'Ok' : SpinRecord, 'Err' : IDL.Text });
+  const Result_18 = IDL.Variant({ 'Ok' : Limits, 'Err' : IDL.Text });
+  const Result_19 = IDL.Variant({ 'Ok' : SpinRecord, 'Err' : IDL.Text });
   return IDL.Service({
     '_internet_identity_notification_content' : IDL.Func(
         [IDL.Nat64],
@@ -858,6 +871,7 @@ export const idlFactory = ({ IDL }) => {
     'get_leaderboards' : IDL.Func([], [IDL.Vec(BoardView)], ['query']),
     'get_min_return_buy_in' : IDL.Func([IDL.Nat64], [IDL.Nat64], ['query']),
     'get_my_ledger_ops' : IDL.Func([], [IDL.Vec(LedgerOp)], ['query']),
+    'get_my_limits' : IDL.Func([], [Limits], ['query']),
     'get_my_profile' : IDL.Func([], [IDL.Opt(Profile)], ['query']),
     'get_my_roles' : IDL.Func([], [Roles], ['query']),
     'get_my_seats' : IDL.Func([], [IDL.Vec(SeatRef)], ['query']),
@@ -937,6 +951,8 @@ export const idlFactory = ({ IDL }) => {
         [Result],
         [],
       ),
+    'set_deposit_cap' : IDL.Func([IDL.Opt(IDL.Nat64)], [Result_18], []),
+    'set_hide_tables' : IDL.Func([IDL.Bool], [Result_18], []),
     'set_note' : IDL.Func(
         [IDL.Principal, IDL.Text, IDL.Opt(NoteColor)],
         [Result],
@@ -946,7 +962,8 @@ export const idlFactory = ({ IDL }) => {
     'set_status' : IDL.Func([IDL.Text], [Result], []),
     'show_cards' : IDL.Func([IDL.Nat64], [Result], []),
     'sit_out' : IDL.Func([IDL.Nat64, IDL.Bool], [Result], []),
-    'spin_wheel' : IDL.Func([], [Result_18], []),
+    'spin_wheel' : IDL.Func([], [Result_19], []),
+    'take_break' : IDL.Func([IDL.Nat32], [Result_18], []),
     'throw_item' : IDL.Func(
         [IDL.Nat64, IDL.Principal, IDL.Nat32, Currency],
         [Result],
